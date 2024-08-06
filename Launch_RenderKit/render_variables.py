@@ -343,12 +343,13 @@ def NODE_PT_output_path_variable_list(self, context):
 	prefs = context.preferences.addons[__package__].preferences
 	settings = context.scene.render_kit_settings
 	
-	if not (False) and prefs.render_output_variables:
-		active_node = bpy.context.scene.node_tree.nodes.active
+	if not (False) and prefs.render_output_variables and context.scene.node_tree and context.scene.node_tree.type == 'COMPOSITING':
+		active_node = context.scene.node_tree.nodes.active
 		if isinstance(active_node, bpy.types.CompositorNodeOutputFile):
+#		if active_node.type == 'OUTPUT_FILE':
 			# Get file path and all output file names from the current active node
-			paths = [bpy.context.scene.node_tree.nodes.active.base_path]
-			for slot in bpy.context.scene.node_tree.nodes.active.file_slots:
+			paths = [context.scene.node_tree.nodes.active.base_path]
+			for slot in context.scene.node_tree.nodes.active.file_slots:
 				paths.append(slot.path)
 			paths = ''.join(paths)
 			
@@ -365,4 +366,3 @@ def NODE_PT_output_path_variable_list(self, context):
 				input.enabled = False
 			input.prop(settings, 'output_file_serial')
 			layout.use_property_split = False # Base path interface doesn't specify false, it assumes it, so the UI gets screwed up if we don't reset here
-			
