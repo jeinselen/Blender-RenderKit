@@ -11,6 +11,7 @@ from .render_2_end import render_kit_end
 from .render_autosave import RENDER_PT_autosave_video, RENDER_PT_autosave_image
 from .render_batch import batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render, render_batch_menu_item
 from .render_display import RENDER_PT_total_render_time_display, image_viewer_feedback_display
+from . import render_node
 from .render_proxy import render_proxy_start, render_proxy_menu_item
 from .render_region import RENDER_PT_render_region
 from .render_variables import CopyToClipboard, OutputVariablePopup, RENDER_PT_output_path_variable_list, NODE_PT_output_path_variable_list
@@ -83,6 +84,9 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			('OFF', 'Node Compositing Off', 'Force node compositing off when rendering proxies'),
 			],
 		default='OFF')
+	
+	# Render node
+# TODO: add node editor tab preference
 	
 	
 	
@@ -578,6 +582,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 # Local project settings
 
 class RenderKitSettings(bpy.types.PropertyGroup):
+	# Autosave images
 	file_location: bpy.props.StringProperty(
 		name="File Location",
 		description="Leave a single forward slash to auto generate folders alongside project files",
@@ -612,7 +617,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 			('OPEN_EXR', 'OpenEXR', 'Save as exr'),
 			],
 		default='JPEG')
-
+	
 	# Variables for render time calculation
 	start_date: bpy.props.StringProperty(
 		name="Render Start Date",
@@ -622,7 +627,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		name="Total Render Time",
 		description="Stores the total time spent rendering in seconds",
 		default=0)
-
+	
 	# Variables for render time estimation
 	estimated_render_time_active: bpy.props.BoolProperty(
 		name="Render Active",
@@ -636,7 +641,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		name="Estimated Render Time",
 		description="Stores the estimated time remaining to render",
 		default="0:00:00.00")
-
+	
 	# Variables for output file path processing
 	output_file_path: bpy.props.StringProperty(
 		name="Original Render Path",
@@ -800,6 +805,53 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		min=0,
 		max=1,
 		subtype="FACTOR")
+	
+	# Render node
+	def get_node_outputs(self, context):
+		node = context.active_node
+		if node:
+			return [(output.name, output.name, "") for output in node.outputs]
+		else:
+			return [('None', 'None', '')]
+	
+	node_resolution_x: bpy.props.IntProperty(
+		name="Resolution X",
+		default=4096)
+	node_resolution_y: bpy.props.IntProperty(
+		name="Resolution Y",
+		default=4096)
+	node_samples: bpy.props.IntProperty(
+		name="Samples",
+		default=16)
+	node_color_space: bpy.props.EnumProperty(
+		name="Color Space",
+		items=[
+			('sRGB', "sRGB", ""),
+			('Linear', "Linear", ""),
+		],
+		default='Linear')
+	node_render_device: bpy.props.EnumProperty(
+		name="Render Device",
+		items=[
+			('CPU', "CPU", ""),
+			('GPU', "GPU", ""),
+		],
+		default='GPU'
+	)
+	node_filepath: bpy.props.StringProperty(
+		name="File Path",
+		default="//{project}/{item}-{material}-{node}.png")
+	node_uvmap: bpy.props.StringProperty(
+		name="UV Map",
+		default="UVMap")
+#	node_output: bpy.props.StringProperty(
+#		name="Node Output",
+#		default="RenderKit_RenderNode")
+	node_output: EnumProperty(
+		name="Node Output",
+		items=get_node_outputs)
+
+
 
 
 
@@ -846,6 +898,9 @@ def register():
 	bpy.types.RENDER_PT_output.append(RENDER_PT_total_render_time_display)
 	bpy.types.NODE_PT_active_node_properties.prepend(NODE_PT_output_path_variable_list)
 	
+	########## Render Node ##########
+	render_node.register()
+	
 	# Add keymaps for proxy and batch rendering
 	wm = bpy.context.window_manager
 	kc = wm.keyconfigs.addon
@@ -873,6 +928,9 @@ def unregister():
 	for km, kmi in keymaps:
 		km.keymap_items.remove(kmi)
 	keymaps.clear()
+	
+	########## Render Node ##########
+	render_node.unregister()
 	
 	# Remove proxy and batch render menu items
 	bpy.types.TOPBAR_MT_render.remove(render_batch_menu_item)
