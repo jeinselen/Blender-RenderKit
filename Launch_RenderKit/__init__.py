@@ -86,7 +86,14 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		default='OFF')
 	
 	# Render node
-# TODO: add node editor tab preference
+	rendernode_enable: bpy.props.BoolProperty(
+		name='Render Node Panel',
+		description='Adds node baking to the Node Properties panel of the material editor',
+		default=True)
+	rendernode_confirm: bpy.props.BoolProperty(
+		name='Render Node Confirmation',
+		description='Confirms node render completion with a popup window',
+		default=True)
 	
 	
 	
@@ -319,7 +326,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		
 		layout = self.layout
 		
-		########## Render Region, Render Batch, Render Proxy ##########
+		########## Render Region, Render Batch, Render Proxy, Render Node ##########
 		
 		layout.label(text="General", icon="PREFERENCES") # TOOL_SETTINGS SETTINGS PREFERENCES
 		grid0 = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
@@ -358,6 +365,14 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			subgrid.prop(self, "proxy_compositing", text="")
 			subgrid.prop(self, "proxy_resolutionMultiplier")
 			subgrid.prop(self, "proxy_format", text="")
+		
+		# Render Node settings
+		grid0.prop(self, "rendernode_enable")
+		input = grid0.row()
+		if not self.render_node_enable:
+			input.active = False
+			input.active = False
+		input.prop(self, "rendernode_confirm")
 		
 		
 		
@@ -807,13 +822,11 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		subtype="FACTOR")
 	
 	# Render node
-	def get_node_outputs(self, context):
-		node = context.active_node
-		if node:
-			return [(output.name, output.name, "") for output in node.outputs]
-		else:
-			return [('None', 'None', '')]
-	
+	node_render_device: bpy.props.EnumProperty(
+		name="Render Device",
+		items=[	('CPU', "CPU", ""),
+				('GPU', "GPU", ""),],
+		default='GPU')
 	node_resolution_x: bpy.props.IntProperty(
 		name="Resolution X",
 		default=4096)
@@ -823,31 +836,54 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	node_samples: bpy.props.IntProperty(
 		name="Samples",
 		default=16)
+	node_margin: bpy.props.IntProperty(
+		name="Margin",
+		default=0)
 	node_color_space: bpy.props.EnumProperty(
 		name="Color Space",
-		items=[
-			('sRGB', "sRGB", ""),
-			('Linear', "Linear", ""),
-		],
+		items=[	('sRGB', "sRGB", ""),
+				('Linear', "Linear", ""),],
 		default='Linear')
-	node_render_device: bpy.props.EnumProperty(
-		name="Render Device",
-		items=[
-			('CPU', "CPU", ""),
-			('GPU', "GPU", ""),
-		],
-		default='GPU'
-	)
+	node_format: bpy.props.EnumProperty(
+		name="File Format",
+		items=[	('PNG', "PNG", ""),
+				('EXR', "EXR", ""),],
+		default='PNG')
 	node_filepath: bpy.props.StringProperty(
 		name="File Path",
 		default="//{project}/{item}-{material}-{node}.png")
+	
+	
+	
 	node_uvmap: bpy.props.StringProperty(
 		name="UV Map",
 		default="UVMap")
-#	node_output: bpy.props.StringProperty(
-#		name="Node Output",
-#		default="RenderKit_RenderNode")
-	node_output: EnumProperty(
+	
+	def get_obj_uvmaps(self, context):
+		obj = context.active_object
+		if obj and len(obj.data.uv_layers) > 0:
+			return [(layer.name, layer.name, '') for layer in obj.data.uv_layers]
+		else:
+			return [('None', 'None', 'No available UV maps')]
+	
+	node_uvmaps: bpy.props.EnumProperty(
+		name="UV Map",
+		items=get_obj_uvmaps)
+	
+	
+	
+	node_output: bpy.props.StringProperty(
+		name="Node Output",
+		default="Color")
+	
+	def get_node_outputs(self, context):
+		node = context.active_node
+		if node:
+			return [(output.name, output.name, output.label) for output in node.outputs]
+		else:
+			return [('None', 'None', 'No available outputs')]
+	
+	node_outputs: bpy.props.EnumProperty(
 		name="Node Output",
 		items=get_node_outputs)
 
