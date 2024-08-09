@@ -18,7 +18,7 @@ from .utility_time import secondsToStrings
 # Available variables
 # Includes both headers (string starting with "title,") and variables (string with brackets, commas segment multi-variable lines)
 variableArray = ["title,Project,SCENE_DATA",
-					"{project}", "{scene}", "{viewlayer}", "{collection}", "{camera}", "{item}", "{material}", "{node}",
+					"{project}", "{scene}", "{viewlayer}", "{collection}", "{camera}", "{item}", "{material}", "{node}", "{socket}",
 				"title,Image,NODE_COMPOSITING",
 					"{display}", "{colorspace}", "{look}", "{exposure}", "{gamma}", "{curves}", "{compositing}",
 				"title,Render,SCENE",
@@ -37,7 +37,7 @@ variableArray = ["title,Project,SCENE_DATA",
 # 	•Replaces {duration}{rtime}{rH}{rM}{rS} only if valid 0.0+ float is provided
 # 	•Replaces {serial} only if valid 0+ integer is provided
 
-def replaceVariables(string, rendertime=-1.0, serial=-1):
+def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 	scene = bpy.context.scene
 	settings = scene.render_kit_settings
 	
@@ -181,6 +181,8 @@ def replaceVariables(string, rendertime=-1.0, serial=-1):
 	string = string.replace("{item}", projectItem)
 	string = string.replace("{material}", projectMaterial)
 	string = string.replace("{node}", projectNode)
+	if len(socket) > 0: # Only enabled if a value is supplied
+		string = string.replace("{socket}", str(socket))
 	
 	# Image variables
 	sceneOverride = scene.render.image_settings if bpy.context.scene.render.image_settings.color_management == "OVERRIDE" else scene
@@ -282,8 +284,9 @@ class OutputVariablePopup(bpy.types.Operator):
 	bl_idname = "ed.autosave_render_variable_popup"
 	bl_options = {'REGISTER', 'INTERNAL'}
 	
-	postrender: bpy.props.BoolProperty()
-	autoclose: bpy.props.BoolProperty()
+	postrender: bpy.props.BoolProperty(default=False)
+	noderender: bpy.props.BoolProperty(default=False)
+	autoclose: bpy.props.BoolProperty(default=True)
 	
 	@classmethod
 	def poll(cls, context):
@@ -305,8 +308,8 @@ class OutputVariablePopup(bpy.types.Operator):
 				x = item.split(',')
 				col = grid.column()
 				col.label(text = x[1], icon = x[2])
-			# Display list elements
-			elif item not in ["{duration}", "{rtime}", "{rH},{rM},{rS}", "{frame}"] or self.postrender:
+			# Display list elements (filtering out time and node socket variables unless specifically enabled)
+			elif (item not in ["{duration}", "{rtime}", "{rH},{rM},{rS}", "{frame}"] or self.postrender) and (item not in ["{socket}"] or self.noderender):
 				if ',' in item:
 					subrow = col.row(align = True)
 					for subitem in item.split(','):
@@ -329,6 +332,7 @@ def RENDER_PT_output_path_variable_list(self, context):
 		layout = self.layout
 		ops = layout.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF") # LINENUMBERS_OFF, THREE_DOTS, SHORTDISPLAY, ALIGN_JUSTIFY
 		ops.postrender = False
+		ops.noderender = False
 		ops.autoclose = True
 		layout.use_property_decorate = False
 		layout.use_property_split = True
@@ -359,6 +363,7 @@ def NODE_PT_output_path_variable_list(self, context):
 			layout.use_property_split = True
 			ops = layout.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
 			ops.postrender = False
+			ops.noderender = False
 			ops.autoclose = True
 			input = layout.row()
 			if not '{serial}' in paths:

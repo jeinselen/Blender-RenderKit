@@ -1,6 +1,8 @@
 import bpy
 import os
-from .render_variables import replaceVariables
+import time
+from .render_variables import replaceVariables, OutputVariablePopup
+from .utility_time import secondsToReadable
 
 class RENDERKIT_OT_render_node(bpy.types.Operator):
 	bl_idname = "node.render_node"
@@ -42,7 +44,10 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		bpy.ops.ed.undo_push()
 		
 		# Set target file location and name
-		abs_path = bpy.path.abspath(replaceVariables(settings.node_filepath))
+		file_path = settings.node_filepath
+		file_path += '.' + settings.node_format.replace("OPEN_EXR", "EXR").lower()
+		file_path = replaceVariables(file_path, socket=settings.node_outputs)
+		abs_path = bpy.path.abspath(file_path)
 		
 		# Store the original active node and node tree
 		original_node_tree = source_node.id_data
@@ -104,7 +109,9 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene.render.bake.use_split_materials = False
 		
 		# Create render image
-		image = bpy.data.images.new("RenderKit_RenderNodeImage", width=settings.node_resolution_x, height=settings.node_resolution_y, alpha=True, float_buffer=True, is_data=False)
+		image = bpy.data.images.new("RenderKit_RenderNodeImage", width=settings.node_resolution_x, height=settings.node_resolution_y, alpha=True, float_buffer=True)
+		if settings.node_format != 'OPEN_EXR':
+			image.use_half_precision = True
 		
 		# Create temporary image node and emission node for baking
 		node_tree = obj.active_material.node_tree
@@ -130,7 +137,8 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		if not os.path.exists(abs_dir):
 			os.makedirs(abs_dir)
 		image.filepath_raw = abs_path
-		image.file_format = 'PNG'
+		image.alpha_mode = 'CHANNEL_PACKED'
+		image.file_format = settings.node_format
 		image.save()
 		
 		# Ensure valid links and sockets before attempting to restore
@@ -203,6 +211,7 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 	def poll(cls, context):
 		obj = context.active_object
 		return (context.space_data.tree_type == 'ShaderNodeTree' and context.object.active_material is not None and obj and obj.type == 'MESH' and context.active_node)
+		# context.scene.node_tree.type ?
 	
 	def draw(self, context):
 		prefs = context.preferences.addons[__package__].preferences
@@ -210,7 +219,7 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 		
 		layout = self.layout
 		
-		layout.prop(settings, "node_render_device", expand=True)
+		layout.prop(settings, "node_render_device")#, expand=True)
 		
 		grid = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
 		grid.prop(settings, "node_resolution_x", text='X')
@@ -218,9 +227,19 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 		grid.prop(settings, "node_samples")
 		grid.prop(settings, "node_margin")
 		
-		# UNUSED
-		layout.prop(settings, "node_color_space", expand=True)
-		layout.prop(settings, "node_format", expand=True)
+#		layout.prop(settings, "node_color_space")#, expand=True)
+		layout.prop(settings, "node_format")#, expand=True)
+		
+		# Naming variables popup and output serial number
+		ops = layout.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
+		ops.postrender = True
+		ops.noderender = True
+		ops.autoclose = True
+		input = layout.row()
+		if not '{serial}' in settings.node_filepath:
+			input.active = False
+			input.enabled = False
+		input.prop(settings, 'output_file_serial')
 		
 		# Primary items that might actually need to change
 		layout.prop(settings, "node_filepath")

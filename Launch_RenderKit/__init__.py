@@ -389,6 +389,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			input.enabled = False
 		ops = input.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
 		ops.postrender = True
+		ops.noderender = True
 		ops.autoclose = False
 		
 		########## Autosave Videos ##########
@@ -825,7 +826,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	node_render_device: bpy.props.EnumProperty(
 		name="Render Device",
 		items=[	('CPU', "CPU", ""),
-				('GPU', "GPU", ""),],
+				('GPU', "GPU", ""), ],
 		default='GPU')
 	node_resolution_x: bpy.props.IntProperty(
 		name="Resolution X",
@@ -839,19 +840,20 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	node_margin: bpy.props.IntProperty(
 		name="Margin",
 		default=0)
-	node_color_space: bpy.props.EnumProperty(
-		name="Color Space",
-		items=[	('sRGB', "sRGB", ""),
-				('Linear', "Linear", ""),],
-		default='Linear')
+#	node_color_space: bpy.props.EnumProperty(
+#		name="Color Space",
+#		items=[	('sRGB', "sRGB", ""),
+#				('Linear', "Linear", ""),],
+#		default='Linear')
 	node_format: bpy.props.EnumProperty(
 		name="File Format",
-		items=[	('PNG', "PNG", ""),
-				('EXR', "EXR", ""),],
+		items=[	('OPEN_EXR', "EXR", ""),
+				('PNG', "PNG", ""),
+				('TIFF', "TIF", "") ],
 		default='PNG')
 	node_filepath: bpy.props.StringProperty(
 		name="File Path",
-		default="//{project}/{item}-{material}-{node}.png")
+		default="//{project}/{item}-{material}-{node}-{socket}")
 	
 	
 	
@@ -878,7 +880,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	
 	def get_node_outputs(self, context):
 		node = context.active_node
-		if node:
+		if node and len(node.outputs) > 0:
 			return [(output.name, output.name, output.label) for output in node.outputs]
 		else:
 			return [('None', 'None', 'No available outputs')]
