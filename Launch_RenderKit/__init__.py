@@ -336,6 +336,14 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		grid0.prop(self, "batch_enable")
 		grid0.separator()
 		
+		# Render Node settings
+		grid0.prop(self, "rendernode_enable")
+		input = grid0.row()
+		if not self.rendernode_enable:
+			input.active = False
+			input.active = False
+		input.prop(self, "rendernode_confirm")
+		
 		# Proxy settings
 		grid0.prop(self, "proxy_enable")
 		input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
@@ -365,14 +373,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			subgrid.prop(self, "proxy_compositing", text="")
 			subgrid.prop(self, "proxy_resolutionMultiplier")
 			subgrid.prop(self, "proxy_format", text="")
-		
-		# Render Node settings
-		grid0.prop(self, "rendernode_enable")
-		input = grid0.row()
-		if not self.render_node_enable:
-			input.active = False
-			input.active = False
-		input.prop(self, "rendernode_confirm")
 		
 		
 		
@@ -826,7 +826,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	node_render_device: bpy.props.EnumProperty(
 		name="Render Device",
 		items=[	('CPU', "CPU", ""),
-				('GPU', "GPU", ""), ],
+				('GPU', "GPU", "") ],
 		default='GPU')
 	node_resolution_x: bpy.props.IntProperty(
 		name="Resolution X",
