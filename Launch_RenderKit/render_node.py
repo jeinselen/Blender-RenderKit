@@ -22,6 +22,8 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 	def execute(self, context):
 		prefs = context.preferences.addons[__package__].preferences
 		settings = context.scene.render_kit_settings
+		bpy.ops.ed.undo_push()
+		bpy.ops.ed.undo_push()
 		
 		# Check for active mesh object
 		obj = context.active_object
@@ -65,38 +67,18 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		file_path = replaceVariables(file_path, socket=settings.node_outputs)
 		
 		# Check for the active output node
-		material = obj.active_material
-		node_tree = material.node_tree
+		node_tree = obj.active_material.node_tree
 		output_node = None
-		original_output_node = None
-		original_output_link = None
-		original_from_socket_name = None
+		output_node_temp = False
 		
-		for node in material.node_tree.nodes:
+		for node in node_tree.nodes:
 			if node.type == 'OUTPUT_MATERIAL' and node.is_active_output:
 				output_node = node
 				break
-		
-		if output_node:
-			original_output_node = output_node
-			if output_node.inputs[0].is_linked:
-				original_output_link = output_node.inputs[0].links[0]
-				original_from_socket_name = original_output_link.from_socket.name
-		else:
+		if not output_node:
 			# Create new output node
-			output_node = material.node_tree.nodes.new(type='ShaderNodeOutputMaterial')
-			material.node_tree.links.new(output_node.inputs[0], source_node.outputs[settings.node_outputs])
-		
-		# Store original settings
-		original_engine = scene.render.engine
-		original_film = scene.render.film_transparent
-		original_device = scene.cycles.device
-		original_samples = scene.cycles.samples
-		original_bake = scene.cycles.bake_type
-		original_margin = scene.render.bake.margin
-		original_clear = scene.render.bake.use_clear
-		original_selectedtoactive = scene.render.bake.use_selected_to_active
-		original_splitmaterials = scene.render.bake.use_split_materials
+			output_node = node_tree.nodes.new(type='ShaderNodeOutputMaterial')
+			output_node_temp = True
 		
 		# Create render image
 		image = bpy.data.images.new("RenderKit_RenderNodeImage", width=settings.node_resolution_x, height=settings.node_resolution_y, alpha=True, float_buffer=True)
@@ -110,13 +92,24 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		node_tree.nodes.active = image_node
 		emission_node = node_tree.nodes.new(type='ShaderNodeEmission')
 		
-		# Connect original node to output node
+		# Connect source node output socket to output node input socket
 		if output_socket:
 			node_tree.links.new(output_socket, emission_node.inputs[0])
 			node_tree.links.new(emission_node.outputs[0], output_node.inputs[0])
 		else:
 			self.report({'ERROR'}, "Render Kit — Render Node could not find the selected output socket")
 			return {'CANCELLED'}
+		
+		# Store original settings
+		original_engine = scene.render.engine
+		original_film = scene.render.film_transparent
+		original_device = scene.cycles.device
+		original_samples = scene.cycles.samples
+		original_bake = scene.cycles.bake_type
+		original_margin = scene.render.bake.margin
+		original_clear = scene.render.bake.use_clear
+		original_selectedtoactive = scene.render.bake.use_selected_to_active
+		original_splitmaterials = scene.render.bake.use_split_materials
 		
 		# Set bake settings
 		scene.render.engine = 'CYCLES'
@@ -130,32 +123,39 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene.render.bake.use_split_materials = False
 		
 		# Start render time
+		settings.start_date = str(time.time())
 		
 		# Render to image
 		bpy.ops.object.bake(type='EMIT')
 		
-		# Calculate render time
+		# Calculate render time and check for serial number
+		render_time = round(time.time() - float(settings.start_date), 2)
+		if '{serial}' in file_path:
+			settings.output_file_serial_used = True
+			
+		# Replace variables again (this time with render time and serial number)
+		file_path = replaceVariables(file_path, rendertime=render_time, serial=settings.output_file_serial)
+		
+		# Increment the output serial number if it was used in the output path
+		if settings.output_file_serial_used:
+			settings.output_file_serial += 1
 		
 		# Save rendered image
-#		file_path = replaceVariables(file_path)
 		abs_path = bpy.path.abspath(file_path)
 		abs_dir = os.path.dirname(abs_path)
 		if not os.path.exists(abs_dir):
 			os.makedirs(abs_dir)
 		image.filepath_raw = abs_path
-#		image.alpha_mode = 'CHANNEL_PACKED'
 		image.file_format = settings.node_format
 		image.save()
-		
-		# Remove the new output node if it was temporarily created
-		if not original_output_node:
-			material.node_tree.nodes.remove(output_node)
 		
 		# Remove temporary nodes
 		node_tree.nodes.remove(emission_node)
 		node_tree.nodes.remove(image_node)
+		if output_node_temp:
+			node_tree.nodes.remove(output_node)
 		
-		# Remove the image
+		# Remove rendered image
 		bpy.data.images.remove(image)
 		
 		# Restore original settings
@@ -169,7 +169,10 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene.render.bake.use_selected_to_active = original_selectedtoactive
 		scene.render.bake.use_split_materials = original_splitmaterials
 		
-		# And then undo, because correctly restoring original states is just a nightmare that will not end
+		# And then just undo all of the above (doesn't affect file saving)
+		# ...because I could never seem to get manually restoring everything to actually work
+		bpy.ops.ed.undo()
+		bpy.ops.ed.undo()
 		bpy.ops.ed.undo()
 		
 		# Provide success feedback
@@ -177,8 +180,9 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		if prefs.rendernode_confirm:
 			def draw(self, context):
 				self.layout.label(text=str(file_path))
-			bpy.context.window_manager.popup_menu(draw, title="Render Node Completed", icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
-#			bpy.context.window_manager.popup_menu(draw, title="Render Node Completed " + secondsToReadable(render_time), icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
+			# Popup window
+#			bpy.context.window_manager.popup_menu(draw, title="Render Node Completed", icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
+			bpy.context.window_manager.popup_menu(draw, title="Render Node Completed " + secondsToReadable(render_time), icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
 			
 		
 		return {'FINISHED'}
