@@ -4,6 +4,8 @@ import time
 from .render_variables import replaceVariables, OutputVariablePopup
 from .utility_time import secondsToStrings, secondsToReadable, readableToSeconds
 
+
+
 class RENDERKIT_OT_render_node(bpy.types.Operator):
 	bl_idname = "node.render_node"
 	bl_label = "Render Node"
@@ -15,15 +17,13 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 	def draw(self, context):
 		try:
 			layout = self.layout
-			layout.label(text="Blender will be unresponsive while processing, proceed?")
+			layout.label(text="Blender will be unresponsive while rendering")
 		except Exception as exc:
 			print(str(exc) + ' | Error in Render Kit: Render Node confirmation header')
 	
 	def execute(self, context):
 		prefs = context.preferences.addons[__package__].preferences
 		settings = context.scene.render_kit_settings
-		bpy.ops.ed.undo_push()
-		bpy.ops.ed.undo_push()
 		
 		# Check for active mesh object
 		obj = context.active_object
@@ -38,8 +38,8 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 			return {'CANCELLED'}
 		
 		# Check if the selected output exists
-		if settings.node_outputs not in [output.name for output in source_node.outputs]:
-			self.report({'ERROR'}, f"Render Kit — Render Node output '{settings.node_outputs}' not found")
+		if settings.node_output not in [output.name for output in source_node.outputs]:
+			self.report({'ERROR'}, f"Render Kit — Render Node output '{settings.node_output}' not found")
 			return {'CANCELLED'}
 		
 		# Check for selected UV map
@@ -55,42 +55,41 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene = context.scene
 		
 		# Get the output socket by name
-		original_node_outputs = {output.name: output for output in source_node.outputs}
-		output_socket = original_node_outputs[settings.node_outputs]
+		original_node_output = {output.name: output for output in source_node.outputs}
+		output_socket = original_node_output[settings.node_output]
 		
 		# Set active UV map
 		obj.data.uv_layers.active = uvmap
 		
-		# Set target file location and name
-		file_path = settings.node_filepath
-		file_path += '.' + settings.node_format.replace("OPEN_EXR", "EXR").lower()
-		file_path = replaceVariables(file_path, socket=settings.node_outputs)
-		
-		# Check for the active output node
-		node_tree = obj.active_material.node_tree
-		output_node = None
-		output_node_temp = False
-		
-		for node in node_tree.nodes:
-			if node.type == 'OUTPUT_MATERIAL' and node.is_active_output:
-				output_node = node
-				break
-		if not output_node:
-			# Create new output node
-			output_node = node_tree.nodes.new(type='ShaderNodeOutputMaterial')
-			output_node_temp = True
-		
 		# Create render image
-		image = bpy.data.images.new("RenderKit_RenderNodeImage", width=settings.node_resolution_x, height=settings.node_resolution_y, alpha=True, float_buffer=True)
+		bpy.ops.image.new(
+			name='RenderKit_RenderNodeImage',
+			width=1024,
+			height=1024,
+			color=(0.0, 0.0, 0.0, 0.0),
+			alpha=True,
+			generated_type='BLANK',
+			float=True,
+			use_stereo_3d=False,
+			tiled=False)
+		image = bpy.data.images["RenderKit_RenderNodeImage"]
 		if settings.node_format != 'OPEN_EXR':
 			image.use_half_precision = True
 		
-		# Create temporary image node and emission node for baking
+		# Get active node tree
+		node_tree = obj.active_material.node_tree
+		
+		# Create temporary emission, output, and image nodes for rendering
+		emission_node = node_tree.nodes.new(type='ShaderNodeEmission')
+		
+		output_node = node_tree.nodes.new(type='ShaderNodeOutputMaterial')
+		output_node.select = True
+		node_tree.nodes.active = output_node
+		
 		image_node = node_tree.nodes.new(type='ShaderNodeTexImage')
 		image_node.image = image
 		image_node.select = True
 		node_tree.nodes.active = image_node
-		emission_node = node_tree.nodes.new(type='ShaderNodeEmission')
 		
 		# Connect source node output socket to output node input socket
 		if output_socket:
@@ -101,6 +100,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 			return {'CANCELLED'}
 		
 		# Store original settings
+		# TODO: REMOVE THIS BLOCK IF POSSIBLE
 		original_engine = scene.render.engine
 		original_film = scene.render.film_transparent
 		original_device = scene.cycles.device
@@ -118,7 +118,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene.cycles.samples = settings.node_samples
 		scene.cycles.bake_type = 'EMIT'
 		scene.render.bake.margin = settings.node_margin
-		scene.render.bake.use_clear = True
+		scene.render.bake.use_clear = False
 		scene.render.bake.use_selected_to_active = False
 		scene.render.bake.use_split_materials = False
 		
@@ -132,7 +132,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		render_time = round(time.time() - float(settings.start_date), 2)
 		if '{serial}' in file_path:
 			settings.output_file_serial_used = True
-			
+		
 		# Replace variables again (this time with render time and serial number)
 		file_path = replaceVariables(file_path, rendertime=render_time, serial=settings.output_file_serial)
 		
@@ -140,25 +140,30 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		if settings.output_file_serial_used:
 			settings.output_file_serial += 1
 		
-		# Save rendered image
+		# Set target file location and name
+		file_path = settings.node_filepath
+		file_path += '.' + settings.node_format.replace("OPEN_EXR", "EXR").lower()
+		file_path = replaceVariables(file_path, socket=settings.node_output)
+		
+		# Get absolute path
 		abs_path = bpy.path.abspath(file_path)
 		abs_dir = os.path.dirname(abs_path)
 		if not os.path.exists(abs_dir):
 			os.makedirs(abs_dir)
+		# Save texture file
 		image.filepath_raw = abs_path
 		image.file_format = settings.node_format
 		image.save()
 		
-		# Remove temporary nodes
+		# Remove temporary nodes and image data
+		# TODO: REMOVE THIS BLOCK IF POSSIBLE
 		node_tree.nodes.remove(emission_node)
+		node_tree.nodes.remove(output_node)
 		node_tree.nodes.remove(image_node)
-		if output_node_temp:
-			node_tree.nodes.remove(output_node)
-		
-		# Remove rendered image
 		bpy.data.images.remove(image)
 		
 		# Restore original settings
+		# TODO: REMOVE THIS BLOCK IF POSSIBLE
 		scene.render.engine = original_engine
 		scene.render.film_transparent = original_film
 		scene.cycles.device = original_device
@@ -169,23 +174,21 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene.render.bake.use_selected_to_active = original_selectedtoactive
 		scene.render.bake.use_split_materials = original_splitmaterials
 		
-		# And then just undo all of the above (doesn't affect file saving)
-		# ...because I could never seem to get manually restoring everything to actually work
-		bpy.ops.ed.undo()
-		bpy.ops.ed.undo()
-		bpy.ops.ed.undo()
+		# Reselect original active node
+		source_node.select = True
+		node_tree.nodes.active = source_node
 		
 		# Provide success feedback
 		self.report({'INFO'}, f"Node render saved to {file_path}")
 		if prefs.rendernode_confirm:
-			def draw(self, context):
-				self.layout.label(text=str(file_path))
-			# Popup window
-#			bpy.context.window_manager.popup_menu(draw, title="Render Node Completed", icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
-			bpy.context.window_manager.popup_menu(draw, title="Render Node Completed " + secondsToReadable(render_time), icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
-			
+			self.show_completion_popup(context, file_path, render_time)
 		
 		return {'FINISHED'}
+	
+	def show_completion_popup(self, context, filepath, rendertime):
+		def draw(self, context):
+			self.layout.label(text=filepath)
+		context.window_manager.popup_menu(draw, title="Render Node Completed " + secondsToReadable(rendertime), icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
 
 
 
@@ -231,12 +234,8 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 		
 		# Primary items that might actually need to change
 		layout.prop(settings, "node_filepath")
-		
 		layout.prop_search(settings, "node_uvmap", context.active_object.data, "uv_layers")
-		layout.prop(settings, "node_uvmaps")
-		
 		layout.prop_search(settings, "node_output", context.active_node, "outputs")
-		layout.prop(settings, "node_outputs")
 		
 		# Render node button
 		layout.operator(RENDERKIT_OT_render_node.bl_idname)
@@ -245,18 +244,18 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 
 # Class Registration
 
-def menu_func(self, context):
-	self.layout.operator(RENDERKIT_OT_render_node.bl_idname)
+#def menu_func(self, context):
+#	self.layout.operator(RENDERKIT_OT_render_node.bl_idname)
 
 def register():
 	bpy.utils.register_class(RENDERKIT_OT_render_node)
 	bpy.utils.register_class(RENDERKIT_PT_render_node)
-	bpy.types.NODE_MT_context_menu.append(menu_func)
+#	bpy.types.NODE_MT_context_menu.append(menu_func)
 
 def unregister():
 	bpy.utils.unregister_class(RENDERKIT_OT_render_node)
 	bpy.utils.unregister_class(RENDERKIT_PT_render_node)
-	bpy.types.NODE_MT_context_menu.remove(menu_func)
+#	bpy.types.NODE_MT_context_menu.remove(menu_func)
 
 if __name__ == "__main__":
 	register()

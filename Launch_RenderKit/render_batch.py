@@ -30,7 +30,7 @@ class batch_render_start(bpy.types.Operator):
 	def draw(self, context):
 		try:
 			layout = self.layout
-			layout.label(text="Blender will be unresponsive while processing, proceed?")
+			layout.label(text="Blender will be unresponsive while rendering")
 		except Exception as exc:
 			print(str(exc) + ' | Error in Render Kit: Begin Batch Render confirmation header')
 	

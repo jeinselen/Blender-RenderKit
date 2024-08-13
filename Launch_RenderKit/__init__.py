@@ -854,40 +854,12 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	node_filepath: bpy.props.StringProperty(
 		name="File Path",
 		default="//{project}/{item}-{material}-{node}-{socket}")
-	
-	
-	
 	node_uvmap: bpy.props.StringProperty(
 		name="UV Map",
 		default="UVMap")
-	
-	def get_obj_uvmaps(self, context):
-		obj = context.active_object
-		if obj and len(obj.data.uv_layers) > 0:
-			return [(layer.name, layer.name, '') for layer in obj.data.uv_layers]
-		else:
-			return [('None', 'None', 'No available UV maps')]
-	
-	node_uvmaps: bpy.props.EnumProperty(
-		name="UV Map",
-		items=get_obj_uvmaps)
-	
-	
-	
 	node_output: bpy.props.StringProperty(
 		name="Node Output",
 		default="Color")
-	
-	def get_node_outputs(self, context):
-		node = context.active_node
-		if node and len(node.outputs) > 0:
-			return [(output.name, output.name, output.label) for output in node.outputs]
-		else:
-			return [('None', 'None', 'No available outputs')]
-	
-	node_outputs: bpy.props.EnumProperty(
-		name="Node Output",
-		items=get_node_outputs)
 
 
 
