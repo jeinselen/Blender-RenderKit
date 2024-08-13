@@ -39,6 +39,7 @@ variableArray = ["title,Project,SCENE_DATA",
 
 def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 	scene = bpy.context.scene
+	view_layer = bpy.context.view_layer
 	settings = scene.render_kit_settings
 	
 	# Get render engine feature sets
@@ -148,21 +149,34 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 	
 	# Get conditional project variables Item > Material > Node
 	projectItem = projectMaterial = projectNode = 'None'
-	if bpy.context.view_layer.objects.active:
-		# Set active object name
-		projectItem = bpy.context.view_layer.objects.active.name
+	if view_layer.objects.active:
+		# Set active object
+		obj = view_layer.objects.active
 		
-		if bpy.context.view_layer.objects.active.active_material:
-			# Set active material slot name
-			projectMaterial = bpy.context.view_layer.objects.active.active_material.name
+		# Set active object name
+#		projectItem = obj.name
+		projectItem = sub(r'[<>:"/\\\|?*]+', "-", obj.name) # Sanitised
+		
+		if obj.active_material:
+			# Set active material
+			mat = obj.active_material
 			
-			if bpy.context.view_layer.objects.active.active_material.use_nodes and bpy.context.view_layer.objects.active.active_material.node_tree.nodes.active:
-				if bpy.context.view_layer.objects.active.active_material.node_tree.nodes.active.type == 'TEX_IMAGE' and bpy.context.view_layer.objects.active.active_material.node_tree.nodes.active.image:
+			# Set active material slot name
+#			projectMaterial = mat.name
+			projectMaterial = sub(r'[<>:"/\\\|?*]+', "-", mat.name) # Sanitised
+			
+			if mat.use_nodes and mat.node_tree.nodes.active:
+				# Set active node tree node
+				node = mat.node_tree.nodes.active
+				
+				if node.type == 'TEX_IMAGE' and node.image:
 					# Set active texture node image name
-					projectNode = bpy.context.view_layer.objects.active.active_material.node_tree.nodes.active.image.name
+#					projectNode = node.image.name
+					projectNode = sub(r'[<>:"/\\\|?*]+', "-", node.image.name) # Sanitised
 				else:
 					# Set active node name
-					projectNode = bpy.context.view_layer.objects.active.active_material.node_tree.nodes.active.name
+#					projectNode = node.name
+					projectNode = sub(r'[<>:"/\\\|?*]+', "-", node.name) # Sanitised
 	
 	# Set node name to the Batch Render Target if active and available
 	if settings.batch_active and settings.batch_type == 'imgs' and bpy.data.materials.get(settings.batch_images_material) and bpy.data.materials[settings.batch_images_material].node_tree.nodes.get(settings.batch_images_node):
@@ -175,7 +189,7 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 	# Project variables
 	string = string.replace("{project}", os.path.splitext(os.path.basename(bpy.data.filepath))[0])
 	string = string.replace("{scene}", scene.name)
-	string = string.replace("{viewlayer}", bpy.context.view_layer.name)
+	string = string.replace("{viewlayer}", view_layer.name)
 	string = string.replace("{collection}", settings.batch_collection_name if len(settings.batch_collection_name) > 0 else bpy.context.collection.name)
 	string = string.replace("{camera}", scene.camera.name)
 	string = string.replace("{item}", projectItem)
@@ -237,6 +251,7 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 	# Consider adding hash-mark support for inserting frames: sub(r'#+(?!.*#)', "", absolute_path)
 	# Batch variables
 	string = string.replace("{batch}", format(settings.batch_index, '04'))
+	
 	return string
 
 
@@ -281,7 +296,7 @@ class CopyToClipboard(bpy.types.Operator):
 class OutputVariablePopup(bpy.types.Operator):
 	"""List of the available variables"""
 	bl_label = "Variable List"
-	bl_idname = "ed.autosave_render_variable_popup"
+	bl_idname = "ed.output_variable_popup"
 	bl_options = {'REGISTER', 'INTERNAL'}
 	
 	postrender: bpy.props.BoolProperty(default=False)
