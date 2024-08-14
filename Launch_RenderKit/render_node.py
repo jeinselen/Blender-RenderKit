@@ -3,6 +3,7 @@ import os
 import time
 from .render_variables import replaceVariables, OutputVariablePopup
 from .utility_time import secondsToStrings, secondsToReadable, readableToSeconds
+from .utility_filecheck import checkExistingAndIncrement
 
 
 
@@ -53,6 +54,10 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		
 		# Get active scene
 		scene = context.scene
+		
+		# Get the file path and do the initial variable replacement
+		file_path = settings.node_filepath + '.' + settings.node_format.replace("OPEN_EXR", "EXR").lower()
+		file_path = replaceVariables(file_path) # Must be completed before the active nodes change
 		
 		# Get the output socket by name
 		original_node_output = {output.name: output for output in source_node.outputs}
@@ -130,28 +135,23 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		
 		# Calculate render time and check for serial number
 		render_time = round(time.time() - float(settings.start_date), 2)
-		if '{serial}' in file_path:
-			settings.output_file_serial_used = True
 		
-		# Replace variables again (this time with render time and serial number)
-		file_path = replaceVariables(file_path, rendertime=render_time, serial=settings.output_file_serial)
+		# Check for serial number usage in the file path
+		settings.output_file_serial_used = True if '{serial}' in file_path else False
+		
+		# Replace variables (part two, this time with all of the custom elements)
+		file_path = replaceVariables(file_path, rendertime=render_time, serial=settings.output_file_serial, socket=settings.node_output)
 		
 		# Increment the output serial number if it was used in the output path
 		if settings.output_file_serial_used:
 			settings.output_file_serial += 1
+			settings.output_file_serial_used = False
 		
-		# Set target file location and name
-		file_path = settings.node_filepath
-		file_path += '.' + settings.node_format.replace("OPEN_EXR", "EXR").lower()
-		file_path = replaceVariables(file_path, socket=settings.node_output)
+		# Check for existing directory and files
+		file_path = checkExistingAndIncrement(file_path)
 		
-		# Get absolute path
-		abs_path = bpy.path.abspath(file_path)
-		abs_dir = os.path.dirname(abs_path)
-		if not os.path.exists(abs_dir):
-			os.makedirs(abs_dir)
 		# Save texture file
-		image.filepath_raw = abs_path
+		image.filepath_raw = file_path
 		image.file_format = settings.node_format
 		image.save()
 		

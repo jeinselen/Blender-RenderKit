@@ -840,11 +840,6 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	node_margin: bpy.props.IntProperty(
 		name="Margin",
 		default=0)
-#	node_color_space: bpy.props.EnumProperty(
-#		name="Color Space",
-#		items=[	('sRGB', "sRGB", ""),
-#				('Linear', "Linear", ""),],
-#		default='Linear')
 	node_format: bpy.props.EnumProperty(
 		name="File Format",
 		items=[	('OPEN_EXR', "EXR", ""),
@@ -852,13 +847,13 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 				('TIFF', "TIF", "") ],
 		default='PNG')
 	node_filepath: bpy.props.StringProperty(
-		name="File Path",
+		name="Output",
 		default="//{project}/{item}-{material}-{node}-{socket}")
 	node_uvmap: bpy.props.StringProperty(
-		name="UV Map",
+		name="Map",
 		default="UVMap")
 	node_output: bpy.props.StringProperty(
-		name="Node Output",
+		name="Socket",
 		default="Color")
 
 
