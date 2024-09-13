@@ -14,7 +14,7 @@ from .render_display import RENDER_PT_total_render_time_display, image_viewer_fe
 from . import render_node
 from .render_proxy import render_proxy_start, render_proxy_menu_item
 from .render_region import RENDER_PT_render_region
-from .render_variables import CopyToClipboard, OutputVariablePopup, RENDER_PT_output_path_variable_list, NODE_PT_output_path_variable_list
+from .render_variables import CopyVariableToClipboard, OutputVariablePopup, RENDER_PT_output_path_variable_list, NODE_PT_output_path_variable_list
 
 
 
@@ -867,7 +867,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 # •Registration function
 # •Unregistration function
 
-classes = (RenderKitPreferences, RenderKitSettings, RENDER_PT_autosave_video, RENDER_PT_autosave_image, batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render, render_proxy_start, RENDER_PT_render_region, CopyToClipboard, OutputVariablePopup)
+classes = (RenderKitPreferences, RenderKitSettings, RENDER_PT_autosave_video, RENDER_PT_autosave_image, batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render, render_proxy_start, RENDER_PT_render_region, CopyVariableToClipboard, OutputVariablePopup)
 
 keymaps = []
 

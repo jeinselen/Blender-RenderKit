@@ -259,7 +259,7 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 ###########################################################################
 # Copy string to clipboard
 
-class CopyToClipboard(bpy.types.Operator):
+class CopyVariableToClipboard(bpy.types.Operator):
 	"""Copy variable to the clipboard"""
 	bl_label = "Copy to clipboard"
 	bl_idname = "ed.autosave_render_copy_to_clipboard"
@@ -328,14 +328,14 @@ class OutputVariablePopup(bpy.types.Operator):
 				if ',' in item:
 					subrow = col.row(align = True)
 					for subitem in item.split(','):
-						ops = subrow.operator(CopyToClipboard.bl_idname, text = subitem, emboss = False)
+						ops = subrow.operator(CopyVariableToClipboard.bl_idname, text=subitem, emboss=False)
 						ops.string = subitem
 						ops.close = self.autoclose
 				else:
-					ops = col.operator(CopyToClipboard.bl_idname, text = item, emboss = False)
+					ops = col.operator(CopyVariableToClipboard.bl_idname, text=item, emboss=False)
 					ops.string = item
 					ops.close = self.autoclose
-		layout.label(text = 'Click a variable to copy it to the clipboard', icon = "COPYDOWN")
+		layout.label(text='Click a variable to copy it to the clipboard', icon="COPYDOWN") # COPYDOWN PASTEDOWN
 
 # Render output UI
 def RENDER_PT_output_path_variable_list(self, context):
@@ -345,7 +345,7 @@ def RENDER_PT_output_path_variable_list(self, context):
 	if not (False) and prefs.render_output_variables:
 		# UI layout for Scene Output
 		layout = self.layout
-		ops = layout.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF") # LINENUMBERS_OFF, THREE_DOTS, SHORTDISPLAY, ALIGN_JUSTIFY
+		ops = layout.operator(OutputVariablePopup.bl_idname, text="Variable List", icon="LINENUMBERS_OFF") # LINENUMBERS_OFF, THREE_DOTS, SHORTDISPLAY, ALIGN_JUSTIFY
 		ops.postrender = False
 		ops.noderender = False
 		ops.autoclose = True
@@ -376,7 +376,7 @@ def NODE_PT_output_path_variable_list(self, context):
 			layout = self.layout
 			layout.use_property_decorate = False
 			layout.use_property_split = True
-			ops = layout.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
+			ops = layout.operator(OutputVariablePopup.bl_idname, text="Variable List", icon="LINENUMBERS_OFF")
 			ops.postrender = False
 			ops.noderender = False
 			ops.autoclose = True

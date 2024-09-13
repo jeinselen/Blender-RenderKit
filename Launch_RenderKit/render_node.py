@@ -20,7 +20,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 			layout = self.layout
 			layout.label(text="Blender will be unresponsive while rendering")
 		except Exception as exc:
-			print(str(exc) + ' | Error in Render Kit: Render Node confirmation header')
+			print(str(exc) + ' | Error in Render Kit — Render Node confirmation header')
 	
 	def execute(self, context):
 		prefs = context.preferences.addons[__package__].preferences
@@ -98,8 +98,14 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		
 		# Connect source node output socket to output node input socket
 		if output_socket:
-			node_tree.links.new(output_socket, emission_node.inputs[0])
-			node_tree.links.new(emission_node.outputs[0], output_node.inputs[0])
+			if output_socket.type == 'SHADER':
+				# For testing purposes, use these lines in Blender:
+				# C.active_object.active_material.node_tree.nodes.active.outputs[0].name
+				# C.active_object.active_material.node_tree.nodes.active.outputs[0].type
+				node_tree.links.new(output_socket, output_node.inputs[0])
+			else:
+				node_tree.links.new(output_socket, emission_node.inputs[0])
+				node_tree.links.new(emission_node.outputs[0], output_node.inputs[0])
 		else:
 			self.report({'ERROR'}, "Render Kit — Render Node could not find the selected output socket")
 			return {'CANCELLED'}
@@ -121,7 +127,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene.render.film_transparent = True
 		scene.cycles.device = 'GPU' if settings.node_render_device == 'GPU' else 'CPU'
 		scene.cycles.samples = settings.node_samples
-		scene.cycles.bake_type = 'EMIT'
+		scene.cycles.bake_type = 'COMBINED' if output_socket.type == 'SHADER' else 'EMIT'
 		scene.render.bake.margin = settings.node_margin
 		scene.render.bake.use_clear = False
 		scene.render.bake.use_selected_to_active = False
@@ -131,7 +137,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		settings.start_date = str(time.time())
 		
 		# Render to image
-		bpy.ops.object.bake(type='EMIT')
+		bpy.ops.object.bake()
 		
 		# Calculate render time and check for serial number
 		render_time = round(time.time() - float(settings.start_date), 2)
@@ -191,6 +197,8 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		context.window_manager.popup_menu(draw, title="Render Node Completed " + secondsToReadable(rendertime), icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
 
 
+###########################################################################
+# UI rendering classes
 
 class RENDERKIT_PT_render_node(bpy.types.Panel):
 	bl_space_type = 'NODE_EDITOR'
@@ -207,38 +215,70 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 	
 	def draw(self, context):
 		settings = context.scene.render_kit_settings
-		
 		layout = self.layout
 		
-		layout.prop(settings, "node_render_device", expand=True)
-		
-		grid = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
-		grid.prop(settings, "node_resolution_x", text='X')
-		grid.prop(settings, "node_resolution_y", text='Y')
-		grid.prop(settings, "node_samples")
-		grid.prop(settings, "node_margin")
-		
-#		layout.prop(settings, "node_color_space")#, expand=True)
-		layout.prop(settings, "node_format", expand=True)
-		
-		# Naming variables popup and output serial number
-		ops = layout.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
-		ops.postrender = True
-		ops.noderender = True
-		ops.autoclose = True
-		input = layout.row()
-		if not '{serial}' in settings.node_filepath:
-			input.active = False
-			input.enabled = False
-		input.prop(settings, 'output_file_serial')
-		
 		# Primary items that might actually need to change
-		layout.prop(settings, "node_filepath")
 		layout.prop_search(settings, "node_uvmap", context.active_object.data, "uv_layers")
 		layout.prop_search(settings, "node_output", context.active_node, "outputs")
 		
 		# Render node button
 		layout.operator(RENDERKIT_OT_render_node.bl_idname)
+
+class RENDERKIT_PT_render_node_settings(bpy.types.Panel):
+	bl_space_type = "NODE_EDITOR"
+	bl_region_type = "UI"
+	bl_category = 'Node'
+	bl_parent_id = "RENDERKIT_PT_render_node"
+	bl_options = {'DEFAULT_CLOSED'}
+	bl_label = "Settings"
+	
+	@classmethod
+	def poll(cls, context):
+		return True
+	
+	def draw_header(self, context):
+		try:
+			layout = self.layout
+		except Exception as exc:
+			print(str(exc) + " | Error in Render Kit — Render Node Settings panel header")
+			
+	def draw(self, context):
+		try:
+			settings = context.scene.render_kit_settings
+			layout = self.layout
+			
+			# Naming variables popup and output serial number
+			ops = layout.operator(OutputVariablePopup.bl_idname, text="Variable List", icon="LINENUMBERS_OFF")
+			ops.postrender = True
+			ops.noderender = True
+			ops.autoclose = True
+			input = layout.row()
+			if not '{serial}' in settings.node_filepath:
+				input.active = False
+				input.enabled = False
+			input.prop(settings, 'output_file_serial')
+			
+			# Output filepath
+			layout.prop(settings, "node_filepath")
+			
+			# Output format
+			layout.prop(settings, "node_format", expand=True)
+			
+			# Render device
+			layout.prop(settings, "node_render_device", expand=True)
+			
+			# Render settings
+			grid = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
+			grid.prop(settings, "node_resolution_x", text='X')
+			grid.prop(settings, "node_resolution_y", text='Y')
+			grid.prop(settings, "node_samples")
+			grid.prop(settings, "node_margin")
+			
+			# Mesh format
+#			layout.prop(settings, "node_evaluated")
+			
+		except Exception as exc:
+			print(str(exc) + " | Error in Render Kit — Render Node Settings panel")
 
 
 
@@ -247,14 +287,18 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 #def menu_func(self, context):
 #	self.layout.operator(RENDERKIT_OT_render_node.bl_idname)
 
+classes = (RENDERKIT_OT_render_node, RENDERKIT_PT_render_node, RENDERKIT_PT_render_node_settings,)
+
 def register():
-	bpy.utils.register_class(RENDERKIT_OT_render_node)
-	bpy.utils.register_class(RENDERKIT_PT_render_node)
+	# Register classes
+	for cls in classes:
+		bpy.utils.register_class(cls)
 #	bpy.types.NODE_MT_context_menu.append(menu_func)
 
 def unregister():
-	bpy.utils.unregister_class(RENDERKIT_OT_render_node)
-	bpy.utils.unregister_class(RENDERKIT_PT_render_node)
+	# Deregister classes
+	for cls in reversed(classes):
+		bpy.utils.unregister_class(cls)
 #	bpy.types.NODE_MT_context_menu.remove(menu_func)
 
 if __name__ == "__main__":
