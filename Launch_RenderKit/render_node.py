@@ -32,6 +32,9 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 			self.report({'ERROR'}, "Render Kit — Render Node no active mesh object selected")
 			return {'CANCELLED'}
 		
+		# Ensure the active object is selected in layout
+		obj.select_set(True)
+		
 		# Check for active node
 		source_node = context.active_node
 		if not source_node:
@@ -63,14 +66,17 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		original_node_output = {output.name: output for output in source_node.outputs}
 		output_socket = original_node_output[settings.node_output]
 		
+		# Set active output type
+		output_type = 'COMBINED' if output_socket.type == 'SHADER' else ('NORMAL' if output_socket.type == 'VECTOR' and output_socket.name == 'Normal' else 'EMIT')
+		
 		# Set active UV map
 		obj.data.uv_layers.active = uvmap
 		
 		# Create render image
 		bpy.ops.image.new(
 			name='RenderKit_RenderNodeImage',
-			width=1024,
-			height=1024,
+			width=settings.node_resolution_x,
+			height=settings.node_resolution_y,
 			color=(0.0, 0.0, 0.0, 0.0),
 			alpha=True,
 			generated_type='BLANK',
@@ -84,9 +90,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		# Get active node tree
 		node_tree = obj.active_material.node_tree
 		
-		# Create temporary emission, output, and image nodes for rendering
-		emission_node = node_tree.nodes.new(type='ShaderNodeEmission')
-		
+		# Create temporary output, and image nodes for rendering
 		output_node = node_tree.nodes.new(type='ShaderNodeOutputMaterial')
 		output_node.select = True
 		node_tree.nodes.active = output_node
@@ -96,27 +100,38 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		image_node.select = True
 		node_tree.nodes.active = image_node
 		
+		emission_node = False
+		diffuse_node = False
+		
 		# Connect source node output socket to output node input socket
 		if output_socket:
-			if output_socket.type == 'SHADER':
-				# For testing purposes, use these lines in Blender:
-				# C.active_object.active_material.node_tree.nodes.active.outputs[0].name
-				# C.active_object.active_material.node_tree.nodes.active.outputs[0].type
-				node_tree.links.new(output_socket, output_node.inputs[0])
-			else:
+			# For further development of custom types, use these lines in the Blender Console:
+			# C.active_object.active_material.node_tree.nodes.active.outputs[0].name
+			# C.active_object.active_material.node_tree.nodes.active.outputs[0].type
+			if output_type == 'EMIT':
+				emission_node = node_tree.nodes.new(type='ShaderNodeEmission')
 				node_tree.links.new(output_socket, emission_node.inputs[0])
 				node_tree.links.new(emission_node.outputs[0], output_node.inputs[0])
+			if output_type == 'NORMAL':
+				diffuse_node = node_tree.nodes.new(type='ShaderNodeBsdfDiffuse')
+				node_tree.links.new(output_socket, diffuse_node.inputs[2])
+				node_tree.links.new(diffuse_node.outputs[0], output_node.inputs[0])
+			else:
+				node_tree.links.new(output_socket, output_node.inputs[0])
 		else:
 			self.report({'ERROR'}, "Render Kit — Render Node could not find the selected output socket")
 			return {'CANCELLED'}
 		
 		# Store original settings
-		# TODO: REMOVE THIS BLOCK IF POSSIBLE
+		# TODO: remove this block if we undo to remove elements
 		original_engine = scene.render.engine
 		original_film = scene.render.film_transparent
 		original_device = scene.cycles.device
 		original_samples = scene.cycles.samples
 		original_bake = scene.cycles.bake_type
+		original_space = scene.render.bake.normal_space
+		original_view = scene.render.bake.view_from
+		original_target = scene.render.bake.target
 		original_margin = scene.render.bake.margin
 		original_clear = scene.render.bake.use_clear
 		original_selectedtoactive = scene.render.bake.use_selected_to_active
@@ -127,7 +142,10 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene.render.film_transparent = True
 		scene.cycles.device = 'GPU' if settings.node_render_device == 'GPU' else 'CPU'
 		scene.cycles.samples = settings.node_samples
-		scene.cycles.bake_type = 'COMBINED' if output_socket.type == 'SHADER' else 'EMIT'
+		scene.cycles.bake_type = output_type
+		scene.render.bake.normal_space = 'TANGENT'
+		scene.render.bake.view_from = 'ABOVE_SURFACE'
+		scene.render.bake.target = 'IMAGE_TEXTURES'
 		scene.render.bake.margin = settings.node_margin
 		scene.render.bake.use_clear = False
 		scene.render.bake.use_selected_to_active = False
@@ -137,7 +155,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		settings.start_date = str(time.time())
 		
 		# Render to image
-		bpy.ops.object.bake()
+		bpy.ops.object.bake(type=output_type)
 		
 		# Calculate render time and check for serial number
 		render_time = round(time.time() - float(settings.start_date), 2)
@@ -154,7 +172,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 			settings.output_file_serial_used = False
 		
 		# Check for existing directory and files
-		file_path = checkExistingAndIncrement(file_path)
+		file_path = checkExistingAndIncrement(file_path, overwrite=settings.node_overwrite)
 		
 		# Save texture file
 		image.filepath_raw = file_path
@@ -162,19 +180,23 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		image.save()
 		
 		# Remove temporary nodes and image data
-		# TODO: REMOVE THIS BLOCK IF POSSIBLE
-		node_tree.nodes.remove(emission_node)
+		# TODO: remove this block if we undo to remove elements
+		if emission_node: node_tree.nodes.remove(emission_node)
+		if diffuse_node: node_tree.nodes.remove(diffuse_node)
 		node_tree.nodes.remove(output_node)
 		node_tree.nodes.remove(image_node)
 		bpy.data.images.remove(image)
 		
 		# Restore original settings
-		# TODO: REMOVE THIS BLOCK IF POSSIBLE
+		# TODO: remove this block if we undo to remove elements
 		scene.render.engine = original_engine
 		scene.render.film_transparent = original_film
 		scene.cycles.device = original_device
 		scene.cycles.samples = original_samples
 		scene.cycles.bake_type = original_bake
+		scene.render.bake.normal_space = original_space
+		scene.render.bake.view_from = original_view
+		scene.render.bake.target = original_target
 		scene.render.bake.margin = original_margin
 		scene.render.bake.use_clear = original_clear
 		scene.render.bake.use_selected_to_active = original_selectedtoactive
@@ -260,6 +282,7 @@ class RENDERKIT_PT_render_node_settings(bpy.types.Panel):
 			
 			# Output filepath
 			layout.prop(settings, "node_filepath")
+			layout.prop(settings, "node_overwrite")
 			
 			# Output format
 			layout.prop(settings, "node_format", expand=True)

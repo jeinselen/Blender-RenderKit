@@ -176,7 +176,7 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 				else:
 					# Set active node name
 #					projectNode = node.name
-					projectNode = sub(r'[<>:"/\\\|?*]+', "-", node.name) # Sanitised
+					projectNode = sub(r'[<>:"/\\\|?*]+', "-", node.label) # Sanitised
 	
 	# Set node name to the Batch Render Target if active and available
 	if settings.batch_active and settings.batch_type == 'imgs' and bpy.data.materials.get(settings.batch_images_material) and bpy.data.materials[settings.batch_images_material].node_tree.nodes.get(settings.batch_images_node):

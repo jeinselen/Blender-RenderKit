@@ -8,14 +8,14 @@ import bpy
 import os
 from re import search
 
-def checkExistingAndIncrement(path):
+def checkExistingAndIncrement(path, overwrite=False):
 	abs_path = bpy.path.abspath(path)
 	abs_dir, abs_name = os.path.split(abs_path)
 	abs_name, abs_ext = os.path.splitext(abs_name)
 	
 	if not os.path.exists(abs_dir):
 		os.makedirs(abs_dir)
-	elif os.path.isfile(abs_path):
+	elif os.path.isfile(abs_path) and not overwrite:
 		# If the file exists, determine the correct serial number to increment
 		serial = -1
 		for file in os.listdir(abs_dir):

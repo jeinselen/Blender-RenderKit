@@ -823,6 +823,19 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		subtype="FACTOR")
 	
 	# Render node
+	node_uvmap: bpy.props.StringProperty(
+		name="Map",
+		default="UVMap")
+	node_output: bpy.props.StringProperty(
+		name="Socket",
+		default="Color")
+	node_filepath: bpy.props.StringProperty(
+		name="Output",
+		default="//{project}/{item}-{material}-{node}-{socket}")
+	node_overwrite: bpy.props.BoolProperty(
+		name="Overwrite",
+		description="Files with the same name in the same location will be overwritten",
+		default=False)
 	node_render_device: bpy.props.EnumProperty(
 		name="Render Device",
 		items=[	('CPU', "CPU", ""),
@@ -846,15 +859,6 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 				('PNG', "PNG", ""),
 				('TIFF', "TIF", "") ],
 		default='PNG')
-	node_filepath: bpy.props.StringProperty(
-		name="Output",
-		default="//{project}/{item}-{material}-{node}-{socket}")
-	node_uvmap: bpy.props.StringProperty(
-		name="Map",
-		default="UVMap")
-	node_output: bpy.props.StringProperty(
-		name="Socket",
-		default="Color")
 
 
 
