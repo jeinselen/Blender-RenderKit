@@ -2,9 +2,13 @@ import bpy
 import os
 import time
 from .render_variables import replaceVariables, OutputVariablePopup
-from .utility_time import secondsToStrings, secondsToReadable, readableToSeconds
 from .utility_filecheck import checkExistingAndIncrement
+from .utility_notifications import render_notifications
+from .utility_time import secondsToStrings, secondsToReadable, readableToSeconds
 
+# ImageMagick processing
+from re import sub
+import subprocess
 
 
 class RENDERKIT_OT_render_node(bpy.types.Operator):
@@ -157,11 +161,11 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		# Render to image
 		bpy.ops.object.bake(type=output_type)
 		
-		# Calculate render time and check for serial number
-		render_time = round(time.time() - float(settings.start_date), 2)
-		
 		# Check for serial number usage in the file path
 		settings.output_file_serial_used = True if '{serial}' in file_path else False
+		
+		# Calculate render
+		render_time = round(time.time() - float(settings.start_date), 2)
 		
 		# Replace variables (part two, this time with all of the custom elements)
 		file_path = replaceVariables(file_path, rendertime=render_time, serial=settings.output_file_serial, socket=settings.node_output)
@@ -178,6 +182,39 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		image.filepath_raw = file_path
 		image.file_format = settings.node_format
 		image.save()
+		
+		# Process output file with ImageMagick (mip flooding)
+		if settings.node_mip_flood and prefs.magick_exists:
+			absolute_path = bpy.path.abspath(file_path)
+			# Pyramid scaling referenced from here: 
+			magick_command = prefs.magick_location + ' "' + absolute_path + '" -channel alpha -threshold 99% +channel'
+			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
+			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
+			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
+			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
+			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
+			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
+			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
+			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
+			magick_command += ' -layers RemoveDups -filter Gaussian -resize ' + str(settings.node_resolution_x) + 'x' + str(settings.node_resolution_y) + '\! -reverse'
+			magick_command += ' -background None -channel alpha -gamma 4 +channel -flatten -alpha off "' + absolute_path + '"'
+			
+			# Remove any accidental double spaces
+			magick_command = sub(r'\s{2,}', " ", magick_command)
+			
+			# Print command to the terminal
+			print('ImageMagick command:')
+			print(magick_command)
+			print('')
+			
+			# Run ImageMagick command in a new process
+			try:
+				subprocess.Popen(magick_command, shell=True)
+			except Exception as exc:
+				print(str(exc) + " | Error in Render Kit: failed to process ImageMagick command")
+		
+		# Calculate render + processing time
+#		render_time = round(time.time() - float(settings.start_date), 2)
 		
 		# Remove temporary nodes and image data
 		# TODO: remove this block if we undo to remove elements
@@ -208,8 +245,8 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		
 		# Provide success feedback
 		self.report({'INFO'}, f"Node render saved to {file_path}")
-		if prefs.rendernode_confirm:
-			self.show_completion_popup(context, file_path, render_time)
+		self.show_completion_popup(context, file_path, render_time)
+		render_notifications(render_time)
 		
 		return {'FINISHED'}
 	
@@ -290,7 +327,11 @@ class RENDERKIT_PT_render_node_settings(bpy.types.Panel):
 			
 			# Output filepath
 			layout.prop(settings, "node_filepath")
-			layout.prop(settings, "node_overwrite")
+			
+			# Output file options
+			row = layout.row(align=False)
+			row.prop(settings, "node_overwrite", expand=True)
+			row.prop(settings, "node_mip_flood", expand=True)
 			
 			# Output format
 			layout.prop(settings, "node_format", expand=True)

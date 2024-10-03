@@ -15,7 +15,7 @@ import subprocess
 
 # Local imports
 from .render_variables import replaceVariables
-from .utility_notifications import send_email, send_pushover, voice_say
+from .utility_notifications import render_notifications
 from .utility_time import secondsToReadable, readableToSeconds
 
 # Format validation lists
@@ -399,46 +399,8 @@ def render_kit_end(scene):
 		scene.render.image_settings.color_mode = original_colormode
 		scene.render.image_settings.color_depth = original_colordepth
 	
-	# Render complete notifications, only if the time spent rendering exceeds the minimum time defined in the preferences
-	if render_time > float(prefs.minimum_time):
-		if bpy.app.online_access and prefs.email_enable:
-			# Subject line variable replacement
-			subject = replaceVariables(
-				prefs.email_subject,
-				rendertime=render_time,
-				serial=settings.output_file_serial
-				)
-			# Body text variable replacement
-			message = replaceVariables(
-				prefs.email_message,
-				rendertime=render_time,
-				serial=settings.output_file_serial
-				)
-			send_email(subject, message)
-		
-		if bpy.app.online_access and prefs.pushover_enable and len(prefs.pushover_key) == 30 and len(prefs.pushover_app) == 30:
-			subject = replaceVariables(
-				prefs.pushover_subject,
-				rendertime=render_time,
-				serial=settings.output_file_serial
-				)
-			message = replaceVariables(
-				prefs.pushover_message,
-				rendertime=render_time,
-				serial=settings.output_file_serial
-				)
-			send_pushover(subject, message)
-		
-		# MacOS Siri text-to-speech announcement
-		# Re-check voice location just to be extra-sure (otherwise this is only checked when the add-on is first enable)
-		bpy.context.preferences.addons[__package__].preferences.check_voice_location()
-		if prefs.voice_exists and prefs.voice_enable:
-			message = replaceVariables(
-				prefs.voice_message,
-				rendertime=render_time,
-				serial=settings.output_file_serial
-				)
-			voice_say(message)
+	# Render complete notifications
+	render_notifications(render_time)
 	
 	# Save external log file
 	if prefs.external_render_time:

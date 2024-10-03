@@ -38,12 +38,48 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		description='Adds batch rendering panel to the Properties > Output section and rendering menu',
 		default=True)
 	
+	# Render node
+	rendernode_enable: bpy.props.BoolProperty(
+		name='Render Node Panel',
+		description='Adds node baking to the Node Properties panel of the material editor',
+		default=True)
+	
+	# Render node settings (auto process output images)
+	magick_location: bpy.props.StringProperty(
+		name="ImageMagick location",
+		description="System location where the the ImageMagick command line interface is installed",
+		default="/opt/local/bin/magick",
+		maxlen=4096,
+		update=lambda self, context: self.check_magick_location())
+	magick_location_previous: bpy.props.StringProperty(default="")
+	magick_exists: bpy.props.BoolProperty(
+		name="ImageMagick exists",
+		description='Stores the existence of ImageMagick at the defined system location',
+		default=False)
+	
+	# Validate the ImageMagick location string on value change and plugin registration
+	def check_magick_location(self):
+		# Ensure it points at ImageMagick
+		if not self.magick_location.endswith('magick'):
+			self.magick_location = self.magick_location + 'magick'
+		# Test if it's a valid path and replace with valid path if such exists
+		if self.magick_location != self.magick_location_previous:
+			if which(self.magick_location) is None:
+				if which("magick") is None:
+					self.magick_exists = False
+				else:
+					self.magick_location = which("magick")
+					self.magick_exists = True
+			else:
+				self.magick_exists = True
+			self.magick_location_previous = self.magick_location
+	
 	# Proxy render
 	proxy_enable: bpy.props.BoolProperty(
 		name='Render Proxy',
 		description='Adds a proxy rendering option to the rendering menu',
 		default=True)
-	show_proxy_settings: bpy.props.BoolProperty(
+	proxy_show_settings: bpy.props.BoolProperty(
 		name='Proxy Settings   ',
 		description='Shows proxy rendering options in the preferences panel',
 		default=False)
@@ -84,16 +120,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			('OFF', 'Node Compositing Off', 'Force node compositing off when rendering proxies'),
 			],
 		default='OFF')
-	
-	# Render node
-	rendernode_enable: bpy.props.BoolProperty(
-		name='Render Node Panel',
-		description='Adds node baking to the Node Properties panel of the material editor',
-		default=True)
-	rendernode_confirm: bpy.props.BoolProperty(
-		name='Render Node Confirmation',
-		description='Confirms node render completion with a popup window',
-		default=True)
 	
 	
 	
@@ -338,11 +364,20 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		
 		# Render Node settings
 		grid0.prop(self, "rendernode_enable")
-		input = grid0.row()
+		input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
 		if not self.rendernode_enable:
 			input.active = False
-			input.active = False
-		input.prop(self, "rendernode_confirm")
+			input.enabled = False
+		
+		# ImageMagick settings
+		input.prop(self, "magick_location", text="")
+		# Location exists success/fail
+		if self.magick_exists:
+			input.label(text="✔︎ installed")
+		else:
+			input.label(text="✘ missing")
+		
+		
 		
 		# Proxy settings
 		grid0.prop(self, "proxy_enable")
@@ -350,14 +385,14 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		if not self.proxy_enable:
 			input.active = False
 			input.enabled = False
-			input.prop(self, "show_proxy_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
-		elif self.show_proxy_settings:
-			input.prop(self, "show_proxy_settings", icon = "DISCLOSURE_TRI_DOWN", emboss = False)
+			input.prop(self, "proxy_show_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
+		elif self.proxy_show_settings:
+			input.prop(self, "proxy_show_settings", icon = "DISCLOSURE_TRI_DOWN", emboss = False)
 		else:
-			input.prop(self, "show_proxy_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
+			input.prop(self, "proxy_show_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
 		input.separator()
 		
-		if self.proxy_enable and self.show_proxy_settings:
+		if self.proxy_enable and self.proxy_show_settings:
 			# Subgrid Layout
 			margin = layout.row()
 			margin.separator(factor=2.0)
@@ -369,7 +404,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 				subgrid.prop(self, "proxy_renderSamples")
 			else:
 #				subgrid.separator()
-				subgrid.prop(context.scene.display, "render_aa")
+				subgrid.prop(context.scene.display, "render_aa", text="")
 			subgrid.prop(self, "proxy_compositing", text="")
 			subgrid.prop(self, "proxy_resolutionMultiplier")
 			subgrid.prop(self, "proxy_format", text="")
@@ -685,6 +720,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		description="Indicates if sequence processing is currently active",
 		default=False)
 	
+	# ProRes
 	autosave_video_prores: bpy.props.BoolProperty(
 		name="Enable ProRes Output",
 		description="Automatically compiles completed image sequences into a ProRes compressed .mov file",
@@ -706,6 +742,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		maxlen=4096,
 		subtype="DIR_PATH")
 	
+	# MP4
 	autosave_video_mp4: bpy.props.BoolProperty(
 		name="Enable MP4 Output",
 		description="Automatically compiles completed image sequences into an H.264 compressed .mp4 file",
@@ -726,6 +763,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		maxlen=4096,
 		subtype="DIR_PATH")
 	
+	# Custom
 	autosave_video_custom: bpy.props.BoolProperty(
 		name="Enable Custom Output",
 		description="Automatically compiles completed image sequences using a custom FFmpeg string",
@@ -859,6 +897,10 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 				('PNG', "PNG", ""),
 				('TIFF', "TIF", "") ],
 		default='PNG')
+	node_mip_flood: bpy.props.BoolProperty(
+		name="Mip Flooding",
+		description="Process final texture with ImageMagick, filling transparent areas with mip map flooding",
+		default=False)
 
 
 
@@ -886,6 +928,7 @@ def register():
 	bpy.types.Scene.render_kit_settings = bpy.props.PointerProperty(type=RenderKitSettings)
 	
 	# Update command line tool locations
+	bpy.context.preferences.addons[__package__].preferences.check_magick_location()
 	bpy.context.preferences.addons[__package__].preferences.check_ffmpeg_location()
 	bpy.context.preferences.addons[__package__].preferences.check_voice_location()
 	
