@@ -899,12 +899,12 @@ def register():
 	bpy.app.handlers.render_cancel.append(render_kit_end)
 	bpy.app.handlers.render_complete.append(render_kit_end)
 	
-	# Add render estimate display
+	# Add render time displays
+	bpy.types.RENDER_PT_output.append(RENDER_PT_total_render_time_display)
 	bpy.types.IMAGE_MT_editor_menus.append(image_viewer_feedback_display)
 	
 	# Add variable popup UI
 	bpy.types.RENDER_PT_output.prepend(RENDER_PT_output_path_variable_list)
-	bpy.types.RENDER_PT_output.append(RENDER_PT_total_render_time_display)
 	bpy.types.NODE_PT_active_node_properties.prepend(NODE_PT_output_path_variable_list)
 	
 	########## Render Node ##########
@@ -951,12 +951,12 @@ def unregister():
 	bpy.app.handlers.render_cancel.remove(render_kit_end)
 	bpy.app.handlers.render_complete.remove(render_kit_end)
 	
-	# Remove render estimate display
+	# Remove render time displays
+	bpy.types.RENDER_PT_output.remove(RENDER_PT_total_render_time_display)
 	bpy.types.IMAGE_MT_editor_menus.remove(image_viewer_feedback_display)
 	
 	# Remove variable popup UI
 	bpy.types.RENDER_PT_output.remove(RENDER_PT_output_path_variable_list)
-	bpy.types.RENDER_PT_output.remove(RENDER_PT_total_render_time_display)
 	bpy.types.NODE_PT_active_node_properties.remove(NODE_PT_output_path_variable_list)
 	
 	# Remove extension settings reference

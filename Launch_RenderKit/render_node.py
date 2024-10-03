@@ -219,6 +219,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		context.window_manager.popup_menu(draw, title="Render Node Completed " + secondsToReadable(rendertime), icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
 
 
+
 ###########################################################################
 # UI rendering classes
 
@@ -244,7 +245,14 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 		layout.prop_search(settings, "node_output", context.active_node, "outputs")
 		
 		# Render node button
-		layout.operator(RENDERKIT_OT_render_node.bl_idname)
+		button = layout.row()
+#		no_output = False if settings.node_output in [output.name for output in source_node.outputs] else True
+#		no_uvmap = False if context.active_object.data.uv_layers.get(settings.node_uvmap) else True
+#		if no_output or no_uvmap:
+		if settings.node_output not in [output.name for output in context.active_node.outputs] or not context.active_object.data.uv_layers.get(settings.node_uvmap):
+			button.active = False
+			button.enabled = False
+		button.operator(RENDERKIT_OT_render_node.bl_idname)
 
 class RENDERKIT_PT_render_node_settings(bpy.types.Panel):
 	bl_space_type = "NODE_EDITOR"
