@@ -870,10 +870,23 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	node_filepath: bpy.props.StringProperty(
 		name="Output",
 		default="//{project}/{item}-{material}-{node}-{socket}")
+	# TODO: add file name option in conjunction with Delivery Kit file location
 	node_overwrite: bpy.props.BoolProperty(
 		name="Overwrite",
 		description="Files with the same name in the same location will be overwritten",
 		default=False)
+	node_extend: bpy.props.EnumProperty(
+		name="UV Islands",
+		items=[	('NONE', "Transparent", "Render with UV islands as alpha"),
+				('BLEND', "Edge Blend", "ImageMagick post processing, extending edges with blending"),
+				('MIP', "Mip Flood", "ImageMagick post processing, extending edges with mip flooding") ],
+		default='NONE')
+	node_format: bpy.props.EnumProperty(
+		name="File Format",
+		items=[	('OPEN_EXR', "EXR", ""),
+				('PNG', "PNG", ""),
+				('TIFF', "TIF", "") ],
+		default='PNG')
 	node_render_device: bpy.props.EnumProperty(
 		name="Render Device",
 		items=[	('CPU', "CPU", ""),
@@ -891,16 +904,6 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	node_margin: bpy.props.IntProperty(
 		name="Margin",
 		default=0)
-	node_format: bpy.props.EnumProperty(
-		name="File Format",
-		items=[	('OPEN_EXR', "EXR", ""),
-				('PNG', "PNG", ""),
-				('TIFF', "TIF", "") ],
-		default='PNG')
-	node_mip_flood: bpy.props.BoolProperty(
-		name="Mip Flooding",
-		description="Process final texture with ImageMagick, filling transparent areas with mip map flooding",
-		default=False)
 
 
 

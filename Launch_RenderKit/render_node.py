@@ -63,6 +63,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene = context.scene
 		
 		# Get the file path and do the initial variable replacement
+		# TODO: add file name option in conjunction with Delivery Kit file location
 		file_path = settings.node_filepath + '.' + settings.node_format.replace("OPEN_EXR", "EXR").lower()
 		file_path = replaceVariables(file_path) # Must be completed before the active nodes change
 		
@@ -184,20 +185,21 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		image.save()
 		
 		# Process output file with ImageMagick (mip flooding)
-		if settings.node_mip_flood and prefs.magick_exists:
+		if settings.node_extend != "NONE" and prefs.magick_exists:
 			absolute_path = bpy.path.abspath(file_path)
-			# Pyramid scaling referenced from here: 
+			# Pyramid scaling reference: https://imagemagick.org/Usage/canvas/#sparse-color
+			# Mip flooding reference: https://www.artstation.com/blogs/secarri/XOBq/the-god-of-war-texture-optimization-algorithm-mip-flooding
 			magick_command = prefs.magick_location + ' "' + absolute_path + '" -channel alpha -threshold 99% +channel'
-			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
-			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
-			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
-			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
-			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
-			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
-			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
-			magick_command += ' \( +clone -resize 50% -channel alpha -threshold 1% +channel \)'
-			magick_command += ' -layers RemoveDups -filter Gaussian -resize ' + str(settings.node_resolution_x) + 'x' + str(settings.node_resolution_y) + '\! -reverse'
-			magick_command += ' -background None -channel alpha -gamma 4 +channel -flatten -alpha off "' + absolute_path + '"'
+			if settings.node_extend == "BLEND":
+				magick_command += ' \( +clone -filter Gaussian -resize 50% -channel alpha -threshold 1% +channel \)' * 10
+				magick_command += ' -layers RemoveDups -filter Gaussian'
+			else:
+				magick_command += ' \( +clone -filter Gaussian -resize 50% -channel alpha -threshold 12.5% +channel \)' * 10
+				magick_command += ' -layers RemoveDups -filter Point'
+			magick_command += ' -resize ' + str(settings.node_resolution_x) + 'x' + str(settings.node_resolution_y) + '\! -reverse'
+			if settings.node_extend == "BLEND":
+				magick_command += ' -channel alpha -gamma 4 +channel'
+			magick_command += ' -background None -flatten -alpha off "' + absolute_path + '"'
 			
 			# Remove any accidental double spaces
 			magick_command = sub(r'\s{2,}', " ", magick_command)
@@ -214,7 +216,8 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 				print(str(exc) + " | Error in Render Kit: failed to process ImageMagick command")
 		
 		# Calculate render + processing time
-#		render_time = round(time.time() - float(settings.start_date), 2)
+		# When enabled, the reported time below and the saved time above will differ
+		render_time = round(time.time() - float(settings.start_date), 2)
 		
 		# Remove temporary nodes and image data
 		# TODO: remove this block if we undo to remove elements
@@ -315,23 +318,25 @@ class RENDERKIT_PT_render_node_settings(bpy.types.Panel):
 			layout = self.layout
 			
 			# Naming variables popup and output serial number
-			ops = layout.operator(OutputVariablePopup.bl_idname, text="Variable List", icon="LINENUMBERS_OFF")
+			row = layout.row(align=False)
+			ops = row.operator(OutputVariablePopup.bl_idname, text="Variable List", icon="LINENUMBERS_OFF")
 			ops.postrender = True
 			ops.noderender = True
 			ops.autoclose = True
-			input = layout.row()
+			input = row.column()
 			if not '{serial}' in settings.node_filepath:
 				input.active = False
 				input.enabled = False
-			input.prop(settings, 'output_file_serial')
+			input.prop(settings, 'output_file_serial', text='serial')
 			
 			# Output filepath
-			layout.prop(settings, "node_filepath")
+			layout.prop(settings, "node_filepath", text='')
+			# TODO: add file name option in conjunction with Delivery Kit file location
 			
 			# Output file options
 			row = layout.row(align=False)
-			row.prop(settings, "node_overwrite", expand=True)
-			row.prop(settings, "node_mip_flood", expand=True)
+			row.prop(settings, "node_overwrite") # FILE CURRENT_FILE FILE_REFRESH FILE_HIDDEN FILE_BLANK TRASH
+			row.prop(settings, "node_extend", text='')
 			
 			# Output format
 			layout.prop(settings, "node_format", expand=True)
@@ -345,10 +350,7 @@ class RENDERKIT_PT_render_node_settings(bpy.types.Panel):
 			grid.prop(settings, "node_resolution_y", text='Y')
 			grid.prop(settings, "node_samples")
 			grid.prop(settings, "node_margin")
-			
-			# Mesh format
-#			layout.prop(settings, "node_evaluated")
-			
+		
 		except Exception as exc:
 			print(str(exc) + " | Error in Render Kit — Render Node Settings panel")
 
