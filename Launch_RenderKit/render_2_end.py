@@ -304,7 +304,7 @@ def render_kit_end(scene):
 		# If the file path contains one or fewer characters, replace it with the project path
 		if len(filepath) <= 1:
 			filepath = os.path.join(os.path.dirname(bpy.data.filepath), projectname)
-			
+		
 		# Convert relative path into absolute path for Python compatibility
 		filepath = bpy.path.abspath(filepath)
 		

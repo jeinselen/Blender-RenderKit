@@ -875,10 +875,17 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		name="Overwrite",
 		description="Files with the same name in the same location will be overwritten",
 		default=False)
-	node_extend: bpy.props.EnumProperty(
+	node_colorspace: bpy.props.EnumProperty(
 		name="UV Islands",
-		items=[	('NONE', "Transparent", "Render with UV islands as alpha"),
-				('BLEND', "Edge Blend", "ImageMagick post processing, extending edges with blending"),
+		items=[	('AUTO', "Auto", "Choose color space based on file format"),
+				('sRGB', "sRGB", "Force sRBG color space"),
+				('Non-Color', "Linear", "Force linear color space") ],
+		default='AUTO')
+		# ('ACES2065-1', 'ACEScg', 'AgX Base Display P3', 'AgX Base Rec.1886', 'AgX Base Rec.2020', 'AgX Base sRGB', 'AgX Log', 'Display P3', 'Filmic Log', 'Filmic sRGB', 'Khronos PBR Neutral sRGB', 'Linear CIE-XYZ D65', 'Linear CIE-XYZ E', 'Linear DCI-P3 D65', 'Linear FilmLight E-Gamut', 'Linear Rec.2020', 'Linear Rec.709', 'Non-Color', 'Rec.1886', 'Rec.2020', 'sRGB')
+	node_postprocess: bpy.props.EnumProperty(
+		name="UV Islands",
+		items=[	('NONE', "None", "Render with UV islands as alpha"),
+				('BLEND', "Blend Fill", "ImageMagick post processing, extending edges with blending"),
 				('MIP', "Mip Flood", "ImageMagick post processing, extending edges with mip flooding") ],
 		default='NONE')
 	node_format: bpy.props.EnumProperty(

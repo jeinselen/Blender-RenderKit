@@ -105,10 +105,9 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		image_node.select = True
 		node_tree.nodes.active = image_node
 		
+		# Connect source node output socket to output node input socket, with intermediary nodes as needed
 		emission_node = False
 		diffuse_node = False
-		
-		# Connect source node output socket to output node input socket
 		if output_socket:
 			# For further development of custom types, use these lines in the Blender Console:
 			# C.active_object.active_material.node_tree.nodes.active.outputs[0].name
@@ -179,25 +178,31 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		# Check for existing directory and files
 		file_path = checkExistingAndIncrement(file_path, overwrite=settings.node_overwrite)
 		
+		# Set color space override
+		if settings.node_colorspace != 'AUTO':
+			image.colorspace_settings.name = settings.node_colorspace
+		elif output_type == 'NORMAL' or source_node.label == 'ORM':
+			image.colorspace_settings.name = 'Non-Color'
+		
 		# Save texture file
 		image.filepath_raw = file_path
 		image.file_format = settings.node_format
 		image.save()
 		
 		# Process output file with ImageMagick (mip flooding)
-		if settings.node_extend != "NONE" and prefs.magick_exists:
+		if settings.node_postprocess != "NONE" and prefs.magick_exists:
 			absolute_path = bpy.path.abspath(file_path)
 			# Pyramid scaling reference: https://imagemagick.org/Usage/canvas/#sparse-color
 			# Mip flooding reference: https://www.artstation.com/blogs/secarri/XOBq/the-god-of-war-texture-optimization-algorithm-mip-flooding
 			magick_command = prefs.magick_location + ' "' + absolute_path + '" -channel alpha -threshold 99% +channel'
-			if settings.node_extend == "BLEND":
+			if settings.node_postprocess == "BLEND":
 				magick_command += ' \( +clone -filter Gaussian -resize 50% -channel alpha -threshold 1% +channel \)' * 10
 				magick_command += ' -layers RemoveDups -filter Gaussian'
 			else:
 				magick_command += ' \( +clone -filter Gaussian -resize 50% -channel alpha -threshold 12.5% +channel \)' * 10
 				magick_command += ' -layers RemoveDups -filter Point'
 			magick_command += ' -resize ' + str(settings.node_resolution_x) + 'x' + str(settings.node_resolution_y) + '\! -reverse'
-			if settings.node_extend == "BLEND":
+			if settings.node_postprocess == "BLEND":
 				magick_command += ' -channel alpha -gamma 4 +channel'
 			magick_command += ' -background None -flatten -alpha off "' + absolute_path + '"'
 			
@@ -280,45 +285,24 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 		settings = context.scene.render_kit_settings
 		layout = self.layout
 		
-		# Primary items that might actually need to change
+		# Primary settings
 		layout.prop_search(settings, "node_uvmap", context.active_object.data, "uv_layers")
 		layout.prop_search(settings, "node_output", context.active_node, "outputs")
 		
 		# Render node button
 		button = layout.row()
-#		no_output = False if settings.node_output in [output.name for output in source_node.outputs] else True
-#		no_uvmap = False if context.active_object.data.uv_layers.get(settings.node_uvmap) else True
-#		if no_output or no_uvmap:
 		if settings.node_output not in [output.name for output in context.active_node.outputs] or not context.active_object.data.uv_layers.get(settings.node_uvmap):
 			button.active = False
 			button.enabled = False
 		button.operator(RENDERKIT_OT_render_node.bl_idname)
-
-class RENDERKIT_PT_render_node_settings(bpy.types.Panel):
-	bl_space_type = "NODE_EDITOR"
-	bl_region_type = "UI"
-	bl_category = 'Node'
-	bl_parent_id = "RENDERKIT_PT_render_node"
-	bl_options = {'DEFAULT_CLOSED'}
-	bl_label = "Settings"
-	
-	@classmethod
-	def poll(cls, context):
-		return True
-	
-	def draw_header(self, context):
-		try:
-			layout = self.layout
-		except Exception as exc:
-			print(str(exc) + " | Error in Render Kit — Render Node Settings panel header")
-			
-	def draw(self, context):
-		try:
-			settings = context.scene.render_kit_settings
-			layout = self.layout
-			
+		
+		# Additional settings
+		header, panel = layout.panel("render_node_subpanel", default_closed=True)
+		header.label(text="Settings")
+		if panel:
+			# SETTINGS
 			# Naming variables popup and output serial number
-			row = layout.row(align=False)
+			row = panel.row(align=False)
 			ops = row.operator(OutputVariablePopup.bl_idname, text="Variable List", icon="LINENUMBERS_OFF")
 			ops.postrender = True
 			ops.noderender = True
@@ -333,26 +317,37 @@ class RENDERKIT_PT_render_node_settings(bpy.types.Panel):
 			layout.prop(settings, "node_filepath", text='')
 			# TODO: add file name option in conjunction with Delivery Kit file location
 			
+			# FORMATTING
 			# Output file options
-			row = layout.row(align=False)
-			row.prop(settings, "node_overwrite") # FILE CURRENT_FILE FILE_REFRESH FILE_HIDDEN FILE_BLANK TRASH
-			row.prop(settings, "node_extend", text='')
+			grid = panel.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=False)
+			if hasattr(context.scene, "delivery_kit_settings"):
+				grid.prop(settings, "node_delivery")
+			else:
+				grid.separator()
+			grid.prop(settings, "node_overwrite")
+			grid.prop(settings, "node_format", text='')
+			grid.prop(settings, "node_colorspace", text='')
 			
-			# Output format
-			layout.prop(settings, "node_format", expand=True)
 			
-			# Render device
-			layout.prop(settings, "node_render_device", expand=True)
 			
-			# Render settings
-			grid = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
+			# RENDERING
+			panel.separator(factor=2.0)
+			panel.label(text='Rendering', icon='NODE_TEXTURE') # TOOL_SETTINGS SETTINGS IMAGE_PLANE IMAGE TEXTURE NODE_TEXTURE
+			row = panel.row()
+			row.prop(settings, "node_render_device", expand=True)
+			grid = panel.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
 			grid.prop(settings, "node_resolution_x", text='X')
 			grid.prop(settings, "node_resolution_y", text='Y')
 			grid.prop(settings, "node_samples")
 			grid.prop(settings, "node_margin")
-		
-		except Exception as exc:
-			print(str(exc) + " | Error in Render Kit — Render Node Settings panel")
+			
+			
+			
+			# POST PROCESSING
+			panel.separator(factor=2.0)
+			panel.label(text='Post Processing', icon='IMAGE')
+			row = panel.row()
+			row.prop(settings, "node_postprocess", expand=True)
 
 
 
@@ -361,7 +356,7 @@ class RENDERKIT_PT_render_node_settings(bpy.types.Panel):
 #def menu_func(self, context):
 #	self.layout.operator(RENDERKIT_OT_render_node.bl_idname)
 
-classes = (RENDERKIT_OT_render_node, RENDERKIT_PT_render_node, RENDERKIT_PT_render_node_settings,)
+classes = (RENDERKIT_OT_render_node, RENDERKIT_PT_render_node,)
 
 def register():
 	# Register classes
