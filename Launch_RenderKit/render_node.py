@@ -63,7 +63,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene = context.scene
 		
 		# Get the file path and do the initial variable replacement
-		# TODO: add file name option in conjunction with Delivery Kit file location
+		# Because mesh and texture data are generally organised in different locations, Delivery Kit location wasn't added here
 		file_path = settings.node_filepath + '.' + settings.node_format.replace("OPEN_EXR", "EXR").lower()
 		file_path = replaceVariables(file_path) # Must be completed before the active nodes change
 		
@@ -155,6 +155,12 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		scene.render.bake.use_selected_to_active = False
 		scene.render.bake.use_split_materials = False
 		
+		# Set color space override
+		if settings.node_colorspace != 'AUTO':
+			image.colorspace_settings.name = settings.node_colorspace
+		elif output_type == 'NORMAL' or source_node.label.lower() == 'normal' or source_node.label.lower() == 'orm':
+			image.colorspace_settings.name = 'Non-Color'
+		
 		# Start render time
 		settings.start_date = str(time.time())
 		
@@ -177,12 +183,6 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		
 		# Check for existing directory and files
 		file_path = checkExistingAndIncrement(file_path, overwrite=settings.node_overwrite)
-		
-		# Set color space override
-		if settings.node_colorspace != 'AUTO':
-			image.colorspace_settings.name = settings.node_colorspace
-		elif output_type == 'NORMAL' or source_node.label == 'ORM':
-			image.colorspace_settings.name = 'Non-Color'
 		
 		# Save texture file
 		image.filepath_raw = file_path
@@ -314,25 +314,25 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 			input.prop(settings, 'output_file_serial', text='serial')
 			
 			# Output filepath
-			layout.prop(settings, "node_filepath", text='')
-			# TODO: add file name option in conjunction with Delivery Kit file location
-			
-			# FORMATTING
-			# Output file options
-			grid = panel.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=False)
-			if hasattr(context.scene, "delivery_kit_settings"):
-				grid.prop(settings, "node_delivery")
-			else:
-				grid.separator()
+			panel.prop(settings, "node_filepath", text='')
+			grid = panel.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=False)
+			# Row 1
+#			grid.label(text='Formatting', icon='IMAGE_PLANE') # FILE_IMAGE IMAGE_PLANE FILE CURRENT_FILE
+			grid.separator()
+			grid.separator()
 			grid.prop(settings, "node_overwrite")
-			grid.prop(settings, "node_format", text='')
-			grid.prop(settings, "node_colorspace", text='')
+			# Row 2
+			row = panel.row()
+			row.prop(settings, "node_format", expand=True)
+			# Row 3
+			row = panel.row()
+			row.prop(settings, "node_colorspace", expand=True)
 			
 			
 			
 			# RENDERING
 			panel.separator(factor=2.0)
-			panel.label(text='Rendering', icon='NODE_TEXTURE') # TOOL_SETTINGS SETTINGS IMAGE_PLANE IMAGE TEXTURE NODE_TEXTURE
+			panel.label(text='Rendering', icon='NODE_TEXTURE') # IMAGE TEXTURE NODE_TEXTURE
 			row = panel.row()
 			row.prop(settings, "node_render_device", expand=True)
 			grid = panel.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
@@ -345,7 +345,7 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 			
 			# POST PROCESSING
 			panel.separator(factor=2.0)
-			panel.label(text='Post Processing', icon='IMAGE')
+			panel.label(text='Post Processing', icon='IMAGE') # IMAGE NODE_COMPOSITING
 			row = panel.row()
 			row.prop(settings, "node_postprocess", expand=True)
 

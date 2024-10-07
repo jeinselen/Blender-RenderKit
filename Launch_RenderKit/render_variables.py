@@ -167,22 +167,22 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 				# Set active node tree node
 				node = mat.node_tree.nodes.active
 				
-				# Set node variable to image, map, or group source
-				if node.type == 'TEX_IMAGE' and node.image:
+				# Node label (if set)
+				if len(node.label) > 0:
+					projectNode = node.label
+				# Specific node types
+				elif node.type == 'TEX_IMAGE' and node.image:
 					projectNode = node.image.name
 				elif node.type == 'UVMAP':
 					projectNode = node.uv_map
 				elif node.type == 'GROUP':
 					projectNode = node.node_tree.name
-				# Otherwise use the node label
-				elif len(node.label) > 0:
-					projectNode = node.label
-				# If the label is blank, use the math type or node name
-				# Note that spaces are only replaced with underscores here, because these last two naming options are not user-defined
 				elif node.type == 'MATH' or node.type == 'VECT_MATH':
 					projectNode = node.operation.replace("_", " ").title().replace(" ", "_")
+				# Fallback (node name)
 				else:
 					projectNode = node.name.replace(" ", "_")
+				# Spaces are replaced with underscores only for the two naming options that are not user-defined
 				projectNode = sub(r'[<>:"/\\\|?*]+', "-", projectNode) # Sanitised
 	
 	# Set node name to the Batch Render Target if active and available

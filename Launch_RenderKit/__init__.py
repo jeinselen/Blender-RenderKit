@@ -869,8 +869,9 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		default="Color")
 	node_filepath: bpy.props.StringProperty(
 		name="Output",
-		default="//{project}/{item}-{material}-{node}-{socket}")
-	# TODO: add file name option in conjunction with Delivery Kit file location
+		default="//{project}/{item}-{material}-{node}-{socket}",
+		maxlen=4096,
+		subtype="DIR_PATH")
 	node_overwrite: bpy.props.BoolProperty(
 		name="Overwrite",
 		description="Files with the same name in the same location will be overwritten",
@@ -883,10 +884,10 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		default='AUTO')
 		# ('ACES2065-1', 'ACEScg', 'AgX Base Display P3', 'AgX Base Rec.1886', 'AgX Base Rec.2020', 'AgX Base sRGB', 'AgX Log', 'Display P3', 'Filmic Log', 'Filmic sRGB', 'Khronos PBR Neutral sRGB', 'Linear CIE-XYZ D65', 'Linear CIE-XYZ E', 'Linear DCI-P3 D65', 'Linear FilmLight E-Gamut', 'Linear Rec.2020', 'Linear Rec.709', 'Non-Color', 'Rec.1886', 'Rec.2020', 'sRGB')
 	node_postprocess: bpy.props.EnumProperty(
-		name="UV Islands",
-		items=[	('NONE', "None", "Render with UV islands as alpha"),
-				('BLEND', "Blend Fill", "ImageMagick post processing, extending edges with blending"),
-				('MIP', "Mip Flood", "ImageMagick post processing, extending edges with mip flooding") ],
+		name="Post Processing",
+		items=[	('NONE', "None", "Leave alpha unchanged"),
+				('BLEND', "Blend Fill", "Extend UV edges with blending using ImageMagick"),
+				('MIP', "Mip Flood", "Extend UV edges with mip flooding using ImageMagick") ],
 		default='NONE')
 	node_format: bpy.props.EnumProperty(
 		name="File Format",
