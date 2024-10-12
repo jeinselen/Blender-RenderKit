@@ -633,7 +633,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 # Local project settings
 
 class RenderKitSettings(bpy.types.PropertyGroup):
-	# Autosave images
+	# Variables for autosave images
 	file_location: bpy.props.StringProperty(
 		name="File Location",
 		description="Leave a single forward slash to auto generate folders alongside project files",
@@ -706,6 +706,18 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		name="Serial Number",
 		description="Current serial number, automatically increments with every render")
 	output_file_serial_used: bpy.props.BoolProperty(
+		name="Output Serial Number Used",
+		description="Indicates if any of the output modules use the {serial} variable",
+		default=False)
+	output_marker_direction: bpy.props.EnumProperty(
+		name='Marker Direction',
+		description='Use previous or next marker name for the {marker} variable',
+		items=[
+			('PREV', 'Previous Marker', 'Look behind: the nearest marker before the current frame number'),
+			('NEXT', 'Next Marker', 'Look ahead; the nearest marker after the current frame number'),
+			],
+		default='NEXT')
+	output_marker_direction_used: bpy.props.BoolProperty(
 		name="Output Serial Number Used",
 		description="Indicates if any of the output modules use the {serial} variable",
 		default=False)

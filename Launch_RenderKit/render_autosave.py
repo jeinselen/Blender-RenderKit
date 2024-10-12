@@ -40,18 +40,37 @@ class RENDER_PT_autosave_image(bpy.types.Panel):
 		layout.use_property_decorate = False  # No animation
 		layout.use_property_split = True
 		
+		
+		
+		# VARIABLES BAR
+		bar = layout.row(align=False)
+		
 		# Variable list popup button
-		ops = layout.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
+		ops = bar.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
 		ops.postrender = True
 		
 		# Local project serial number
 		# Global serial number is listed inline with the path or file override, if used
-		input = layout.row()
+		input = bar.column()
 		input.use_property_split = True
 		if not (('{serial}' in settings.file_location and not prefs.file_location_override) or (settings.file_name_type == 'CUSTOM' and '{serial}' in settings.file_name_custom and not prefs.file_name_override)):
 			input.active = False
 			input.enabled = False
-		input.prop(settings, 'file_serial')
+		input.prop(settings, 'file_serial', text='serial')
+		
+		# Local project serial number
+		# Global serial number is listed inline with the path or file override, if used
+		option = bar.column()
+		option.use_property_split = True
+		if not (('{marker}' in settings.file_location and not prefs.file_location_override)
+			or (settings.file_name_type == 'CUSTOM' and '{marker}' in settings.file_name_custom and not prefs.file_name_override)
+			or ('{marker}' in prefs.file_location_global and prefs.file_location_override)
+			or (settings.file_name_type == 'CUSTOM' and '{marker}' in prefs.file_name_custom_global and prefs.file_name_override)):
+			option.active = False
+			option.enabled = False
+		option.prop(settings, 'output_marker_direction', text='')
+		
+		
 		
 		# File location with global override
 		if prefs.file_location_override:
@@ -71,7 +90,7 @@ class RENDER_PT_autosave_image(bpy.types.Panel):
 			override = layout.row()
 			override.active = False
 			override.prop(prefs, 'file_name_type_global', icon='FILE_TEXT')
-			if prefs.file_name_override and prefs.file_name_type_global == 'CUSTOM':
+			if prefs.file_name_type_global == 'CUSTOM':
 				override.prop(prefs, "file_name_custom_global", text='')
 				if '{serial}' in prefs.file_name_custom_global:
 					override.prop(prefs, "file_serial_global", text="")
@@ -128,24 +147,37 @@ class RENDER_PT_autosave_video(bpy.types.Panel):
 			layout.active = False
 			layout.enabled = False
 		
+		
+		
+		# VARIABLES BAR
+		bar = layout.row(align=False)
+		# Combine all used paths for variable checks
+		paths = ''
+		paths += settings.autosave_video_prores_location if settings.autosave_video_prores else ''
+		paths += settings.autosave_video_mp4_location if settings.autosave_video_prores else ''
+		paths += settings.autosave_video_custom_location if settings.autosave_video_prores else ''
+		
 		# Variable list popup button
-		ops = layout.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
+		ops = bar.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
 		ops.postrender = True
 		
-		# Display serial number if used in any enabled FFmpeg output paths
-		paths = ''
-		if settings.autosave_video_prores:
-			paths += settings.autosave_video_prores_location
-		if settings.autosave_video_mp4:
-			paths += settings.autosave_video_mp4_location
-		if settings.autosave_video_custom:
-			paths += settings.autosave_video_custom_location
-		input = layout.row()
-		input.use_property_split = True
+		# Local project serial number
+		input = bar.column()
+#		input.use_property_split = True
 		if not '{serial}' in paths:
 			input.active = False
 			input.enabled = False
-		input.prop(settings, 'output_file_serial')
+		input.prop(settings, 'output_file_serial', text='serial')
+		
+		# Local project serial number
+		option = bar.column()
+#		option.use_property_split = True
+		if not '{marker}' in paths:
+			option.active = False
+			option.enabled = False
+		option.prop(settings, 'output_marker_direction', text='')
+		
+		
 		
 		# ProRes alternate UI
 		layout.separator()

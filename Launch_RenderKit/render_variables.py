@@ -18,7 +18,7 @@ from .utility_time import secondsToStrings
 # Available variables
 # Includes both headers (string starting with "title,") and variables (string with brackets, commas segment multi-variable lines)
 variableArray = ["title,Project,SCENE_DATA",
-					"{project}", "{scene}", "{viewlayer}", "{collection}", "{camera}", "{item}", "{material}", "{node}", "{socket}",
+					"{project}", "{scene}", "{viewlayer}", "{collection}", "{camera}", "{item}", "{material}", "{node}", "{socket}", "{marker}",
 				"title,Image,NODE_COMPOSITING",
 					"{display}", "{colorspace}", "{look}", "{exposure}", "{gamma}", "{curves}", "{compositing}",
 				"title,Render,SCENE",
@@ -37,10 +37,12 @@ variableArray = ["title,Project,SCENE_DATA",
 # 	•Replaces {duration}{rtime}{rH}{rM}{rS} only if valid 0.0+ float is provided
 # 	•Replaces {serial} only if valid 0+ integer is provided
 
-def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
-	scene = bpy.context.scene
-	view_layer = bpy.context.view_layer
+def replaceVariables(string, rendertime=-1.0, serial=-1, socket='', scene_frame=-1):
+	context = bpy.context
+	view_layer = context.view_layer
+	scene = context.scene
 	settings = scene.render_kit_settings
+	scene_frame = scene_frame if scene_frame > -1 else scene.frame_current
 	
 	# Get render engine feature sets
 	if bpy.context.engine == 'BLENDER_WORKBENCH':
@@ -192,7 +194,26 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 	# Remove file extension from image node names (this could be unhelpful when comparing renders with .psd versus .jpg texture sources)
 	projectNode = sub(r'\.\w{3,4}$', '', projectNode)
 	
-	# Using "replace" because "format" fails ungracefully when an exact match isn't found
+	# Get marker names if markers exist
+	markerName = 'none'
+	if len(scene.timeline_markers) > 0:
+		if settings.output_marker_direction == 'PREV':
+			# Find closest marker at or before current frame
+			frame = -100000
+			for marker in scene.timeline_markers:
+				if marker.frame <= scene_frame and marker.frame > frame:
+					frame = marker.frame
+					markerName = marker.name
+		else:
+			# Find closest marker at or following current frame
+			frame = 100000
+			for marker in scene.timeline_markers:
+				if marker.frame >= scene_frame and marker.frame < frame:
+					frame = marker.frame
+					markerName = marker.name
+	
+	
+	
 	# Project variables
 	string = string.replace("{project}", os.path.splitext(os.path.basename(bpy.data.filepath))[0])
 	string = string.replace("{scene}", scene.name)
@@ -204,6 +225,9 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 	string = string.replace("{node}", projectNode)
 	if len(socket) > 0: # Only enabled if a value is supplied
 		string = string.replace("{socket}", str(socket))
+	string = string.replace("{marker}", markerName)
+	
+	
 	
 	# Image variables
 	sceneOverride = scene.render.image_settings if bpy.context.scene.render.image_settings.color_management == "OVERRIDE" else scene
@@ -214,6 +238,8 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 	string = string.replace("{gamma}", str(sceneOverride.view_settings.gamma))
 	string = string.replace("{curves}", "Curves" if sceneOverride.view_settings.use_curve_mapping else "None")
 	string = string.replace("{compositing}", "Compositing" if scene.use_nodes else "None")
+	
+	
 	
 	# Rendering variables
 	string = string.replace("{engine}", renderEngine)
@@ -228,6 +254,8 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 		string = string.replace("{rM}", rM)
 		string = string.replace("{rS}", rS)
 	
+	
+	
 	# System variables
 	string = string.replace("{host}", platform.node().split('.')[0])
 	string = string.replace("{processor}", platform.processor()) # Alternate: platform.machine() provides the same information in many cases
@@ -236,6 +264,8 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket=''):
 	string = string.replace("{release}", platform.mac_ver()[0] if platform.system() == "Darwin" else platform.release()) # Alternate: {system}
 	string = string.replace("{python}", platform.python_version())
 	string = string.replace("{blender}", bpy.app.version_string + '-' + bpy.app.version_cycle)
+	
+	
 	
 	# Identifier variables
 	string = string.replace("{date}", datetime.datetime.now().strftime('%Y-%m-%d'))
@@ -352,17 +382,33 @@ def RENDER_PT_output_path_variable_list(self, context):
 	if not (False) and prefs.render_output_variables:
 		# UI layout for Scene Output
 		layout = self.layout
-		ops = layout.operator(OutputVariablePopup.bl_idname, text="Variable List", icon="LINENUMBERS_OFF") # LINENUMBERS_OFF, THREE_DOTS, SHORTDISPLAY, ALIGN_JUSTIFY
+		
+		# VARIABLES BAR
+		bar = layout.row(align=False)
+
+		# Variable list popup button
+		ops = bar.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
 		ops.postrender = False
 		ops.noderender = False
 		ops.autoclose = True
-		layout.use_property_decorate = False
-		layout.use_property_split = True
-		input = layout.row()
+
+		# Local project serial number
+		input = bar.column()
+#		input.use_property_split = True
 		if not '{serial}' in bpy.context.scene.render.filepath:
 			input.active = False
 			input.enabled = False
-		input.prop(settings, 'output_file_serial')
+		input.prop(settings, 'output_file_serial', text='serial')
+
+		# Local project serial number
+		option = bar.column()
+#		option.use_property_split = True
+		if not '{marker}' in bpy.context.scene.render.filepath:
+			option.active = False
+			option.enabled = False
+		option.prop(settings, 'output_marker_direction', text='')
+
+
 
 # Node output UI
 def NODE_PT_output_path_variable_list(self, context):
@@ -381,15 +427,29 @@ def NODE_PT_output_path_variable_list(self, context):
 			
 			# UI layout for Node Properties
 			layout = self.layout
-			layout.use_property_decorate = False
-			layout.use_property_split = True
-			ops = layout.operator(OutputVariablePopup.bl_idname, text="Variable List", icon="LINENUMBERS_OFF")
+			
+			# VARIABLES BAR
+			bar = layout.row(align=False)
+			
+			# Variable list popup button
+			ops = bar.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
 			ops.postrender = False
 			ops.noderender = False
 			ops.autoclose = True
-			input = layout.row()
+			
+			# Local project serial number
+			input = bar.column()
+#			input.use_property_split = True
 			if not '{serial}' in paths:
 				input.active = False
 				input.enabled = False
-			input.prop(settings, 'output_file_serial')
-			layout.use_property_split = False # Base path interface doesn't specify false, it assumes it, so the UI gets screwed up if we don't reset here
+			input.prop(settings, 'output_file_serial', text='serial')
+			
+			# Local project serial number
+			option = bar.column()
+#			option.use_property_split = True
+			if not '{marker}' in paths:
+				option.active = False
+				option.enabled = False
+			option.prop(settings, 'output_marker_direction', text='')
+			

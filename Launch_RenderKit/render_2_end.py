@@ -238,6 +238,7 @@ def render_kit_end(scene):
 	# Increment the output serial number if it was used in any output path
 	if settings.output_file_serial_used:
 		settings.output_file_serial += 1
+		settings.output_file_serial_used = False
 	
 	# Set video sequence status to false
 	settings.autosave_video_sequence = False

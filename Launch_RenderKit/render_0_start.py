@@ -36,12 +36,10 @@ def render_kit_start(scene):
 		settings.output_file_path = filepath = scene.render.filepath
 		
 		# Check if the serial variable is used
-		if '{serial}' in filepath:
-			filepath = filepath.replace("{serial}", format(settings.output_file_serial, '04'))
-			settings.output_file_serial_used = True
+		settings.output_file_serial_used = True if '{serial}' in filepath else False
 		
 		# Replace scene filepath output with the processed version
-		scene.render.filepath = replaceVariables(filepath)
+		scene.render.filepath = replaceVariables(filepath, serial=settings.output_file_serial)
 	
 	# Filter compositing node file path if turned on in the plugin settings and compositing is enabled
 	if prefs.render_output_variables and bpy.context.scene.use_nodes:
@@ -56,8 +54,7 @@ def render_kit_start(scene):
 					"file_slots": {}
 				}
 				# Replace dynamic variables
-				if '{serial}' in node.base_path:
-					settings.output_file_serial_used = True
+				settings.output_file_serial_used = True if '{serial}' in node.base_path else False
 				node.base_path = replaceVariables(node.base_path, serial=settings.output_file_serial)
 				
 				# Save and then process the sub-path property of each file slot
@@ -66,8 +63,7 @@ def render_kit_start(scene):
 						"path": slot.path
 					}
 					# Replace dynamic variables
-					if '{serial}' in slot.path:
-						settings.output_file_serial_used = True
+					settings.output_file_serial_used = True if '{serial}' in slot.path else False
 					slot.path = replaceVariables(slot.path, serial=settings.output_file_serial)
 		
 		# Convert the dictionary to JSON format and save to the plugin preferences for safekeeping while rendering

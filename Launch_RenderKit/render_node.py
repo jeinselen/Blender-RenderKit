@@ -300,18 +300,33 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 		header, panel = layout.panel("render_node_subpanel", default_closed=True)
 		header.label(text="Settings")
 		if panel:
-			# SETTINGS
-			# Naming variables popup and output serial number
-			row = panel.row(align=False)
-			ops = row.operator(OutputVariablePopup.bl_idname, text="Variable List", icon="LINENUMBERS_OFF")
+			# VARIABLES BAR
+			bar = layout.row(align=False)
+			# Combine all used paths for variable checks
+			
+			# Variable list popup button
+			ops = bar.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
 			ops.postrender = True
 			ops.noderender = True
 			ops.autoclose = True
-			input = row.column()
+			
+			# Local project serial number
+			input = bar.column()
+#			input.use_property_split = True
 			if not '{serial}' in settings.node_filepath:
 				input.active = False
 				input.enabled = False
 			input.prop(settings, 'output_file_serial', text='serial')
+			
+			# Local project serial number
+			option = bar.column()
+#			option.use_property_split = True
+			if not '{marker}' in settings.node_filepath:
+				option.active = False
+				option.enabled = False
+			option.prop(settings, 'output_marker_direction', text='')
+			
+			
 			
 			# Output filepath
 			panel.prop(settings, "node_filepath", text='')
