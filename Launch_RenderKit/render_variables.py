@@ -37,7 +37,7 @@ variableArray = ["title,Project,SCENE_DATA",
 # 	•Replaces {duration}{rtime}{rH}{rM}{rS} only if valid 0.0+ float is provided
 # 	•Replaces {serial} only if valid 0+ integer is provided
 
-def replaceVariables(string, rendertime=-1.0, serial=-1, socket='', scene_frame=-1):
+def replaceVariables(string, render_time=-1.0, serial=-1, socket='', scene_frame=-1):
 	context = bpy.context
 	view_layer = context.view_layer
 	scene = context.scene
@@ -246,9 +246,9 @@ def replaceVariables(string, rendertime=-1.0, serial=-1, socket='', scene_frame=
 	string = string.replace("{device}", renderDevice)
 	string = string.replace("{samples}", renderSamples)
 	string = string.replace("{features}", renderFeatures)
-	if float(rendertime) >= 0.0: # Only enabled if a value is supplied
-		string = string.replace("{duration}", str(rendertime) + 's')
-		rH, rM, rS = secondsToStrings(rendertime)
+	if float(render_time) >= 0.0: # Only enabled if a zero or positive value is supplied
+		string = string.replace("{duration}", str(render_time) + 's')
+		rH, rM, rS = secondsToStrings(render_time)
 		string = string.replace("{rtime}", rH + '-' + rM + '-' + rS)
 		string = string.replace("{rH}", rH)
 		string = string.replace("{rM}", rM)

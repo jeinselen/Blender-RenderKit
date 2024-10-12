@@ -26,7 +26,3 @@ def image_viewer_feedback_display(self, context):
 		self.layout.separator()
 		box = self.layout.box()
 		box.label(text="  Estimated Time Remaining: " + settings.estimated_render_time_value + " ")
-	if settings.autosave_video_sequence_processing:
-		self.layout.separator()
-		box = self.layout.box()
-		box.label(text="  FFmpeg Image Sequence Processing... ")

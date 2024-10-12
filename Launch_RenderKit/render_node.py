@@ -174,7 +174,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		render_time = round(time.time() - float(settings.start_date), 2)
 		
 		# Replace variables (part two, this time with all of the custom elements)
-		file_path = replaceVariables(file_path, rendertime=render_time, serial=settings.output_file_serial, socket=settings.node_output)
+		file_path = replaceVariables(file_path, render_time=render_time, serial=settings.output_file_serial, socket=settings.node_output)
 		
 		# Increment the output serial number if it was used in the output path
 		if settings.output_file_serial_used:
@@ -258,10 +258,10 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		
 		return {'FINISHED'}
 	
-	def show_completion_popup(self, context, filepath, rendertime):
+	def show_completion_popup(self, context, filepath, render_time):
 		def draw(self, context):
 			self.layout.label(text=filepath)
-		context.window_manager.popup_menu(draw, title="Render Node Completed " + secondsToReadable(rendertime), icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
+		context.window_manager.popup_menu(draw, title="Render Node Completed " + secondsToReadable(render_time), icon='NODE_TEXTURE') # NODE NODE_SEL NODETREE NODE_TEXTURE SHADING_RENDERED SHADING_TEXTURE
 
 
 

@@ -16,7 +16,7 @@ from .render_variables import replaceVariables
 @persistent
 def render_kit_start(scene):
 	prefs = bpy.context.preferences.addons[__package__].preferences
-	settings = bpy.context.scene.render_kit_settings
+	settings = scene.render_kit_settings
 	
 	# Save start time in seconds as a string to the addon settings
 	settings.start_date = str(time.time())
@@ -24,7 +24,6 @@ def render_kit_start(scene):
 	settings.estimated_render_time_active = False
 	# Set video sequence tracking (separate from render active above)
 	settings.autosave_video_sequence = False
-	settings.autosave_video_sequence_processing = False
 	
 	# Track usage of the output serial usage globally to ensure it can be accessed before/after rendering
 	# Set it to false ahead of processing to ensure no errors occur (usually only if there's a crash of some sort)
@@ -41,11 +40,14 @@ def render_kit_start(scene):
 		# Replace scene filepath output with the processed version
 		scene.render.filepath = replaceVariables(filepath, serial=settings.output_file_serial)
 	
+	# Reset autosave video output path tracking
+	settings.autosave_video_render_path = ''
+	
 	# Filter compositing node file path if turned on in the plugin settings and compositing is enabled
-	if prefs.render_output_variables and bpy.context.scene.use_nodes:
+	if prefs.render_output_variables and scene.use_nodes:
 		# Iterate through Compositor nodes, adding all file output node path and sub-path variables to a dictionary
 		node_settings = {}
-		for node in bpy.context.scene.node_tree.nodes:
+		for node in scene.node_tree.nodes:
 			# Check if the node is a File Output node
 			if isinstance(node, bpy.types.CompositorNodeOutputFile):
 				# Save the base_path property and the file_slots dictionary entry

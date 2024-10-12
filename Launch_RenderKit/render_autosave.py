@@ -128,7 +128,7 @@ class RENDER_PT_autosave_video(bpy.types.Panel):
 		return (
 			# Check if FFmpeg processing is enabled
 			prefs.ffmpeg_processing
-			# Check if the FFmpeg appears to be valid
+			# Check if the FFmpeg location appears to be valid
 			and prefs.ffmpeg_exists
 		)
 	

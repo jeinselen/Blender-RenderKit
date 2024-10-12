@@ -31,13 +31,13 @@ def render_notifications(render_time=-1.0):
 			# Subject line variable replacement
 			subject = replaceVariables(
 				prefs.email_subject,
-				rendertime=render_time,
+				render_time=render_time,
 				serial=settings.output_file_serial
 			)
 			# Body text variable replacement
 			message = replaceVariables(
 				prefs.email_message,
-				rendertime=render_time,
+				render_time=render_time,
 				serial=settings.output_file_serial
 			)
 			send_email(subject, message)
@@ -46,12 +46,12 @@ def render_notifications(render_time=-1.0):
 		if bpy.app.online_access and prefs.pushover_enable and len(prefs.pushover_key) == 30 and len(prefs.pushover_app) == 30:
 			subject = replaceVariables(
 				prefs.pushover_subject,
-				rendertime=render_time,
+				render_time=render_time,
 				serial=settings.output_file_serial
 			)
 			message = replaceVariables(
 				prefs.pushover_message,
-				rendertime=render_time,
+				render_time=render_time,
 				serial=settings.output_file_serial
 			)
 			send_pushover(subject, message)
@@ -62,7 +62,7 @@ def render_notifications(render_time=-1.0):
 		if prefs.voice_exists and prefs.voice_enable:
 			message = replaceVariables(
 				prefs.voice_message,
-				rendertime=render_time,
+				render_time=render_time,
 				serial=settings.output_file_serial
 			)
 			voice_say(message)

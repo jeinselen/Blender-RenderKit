@@ -8,10 +8,7 @@ import json
 import os
 
 # Variable data
-from re import findall, sub, M as multiline
-
-# FFmpeg system access
-import subprocess
+from re import findall, M as multiline
 
 # Local imports
 from .render_variables import replaceVariables
@@ -47,19 +44,10 @@ IMAGE_EXTENSIONS = (
 	'hdr',
 	'tif')
 
-FFMPEG_FORMATS = (
-	'BMP',
-	'PNG',
-	'JPEG',
-	'DPX',
-	'OPEN_EXR',
-	'TIFF')
-
 
 
 ###########################################################################
 # Post-render function
-# •Compile output video using FFmpeg
 # •Autosave final rendered image
 # •Reset render status variables
 # •Reset output paths with original keywords
@@ -69,7 +57,7 @@ FFMPEG_FORMATS = (
 @persistent
 def render_kit_end(scene):
 	prefs = bpy.context.preferences.addons[__package__].preferences
-	settings = bpy.context.scene.render_kit_settings
+	settings = scene.render_kit_settings
 	
 	# Set estimated render time active to false (render is complete or canceled, estimate display and FFmpeg check is no longer needed)
 	settings.estimated_render_time_active = False
@@ -80,176 +68,22 @@ def render_kit_end(scene):
 	# Update total render time
 	settings.total_render_time = settings.total_render_time + render_time
 	
-	# Output video files if FFmpeg processing is enabled, the command appears to exist, and the image format output is supported
-	if prefs.ffmpeg_processing and prefs.ffmpeg_exists and bpy.context.scene.render.image_settings.file_format in FFMPEG_FORMATS and settings.autosave_video_sequence:
-		# Create initial command base
-		ffmpeg_location = prefs.ffmpeg_location
-		# Create absolute path and strip trailing spaces
-		absolute_path = bpy.path.abspath(scene.render.filepath).rstrip()
-		# Replace frame number placeholder with asterisk or add trailing asterisk
-		if "#" in absolute_path:
-			absolute_path = sub(r'#+(?!.*#)', "*", absolute_path)
-		else:
-			absolute_path += "*"
-		# Create input image glob pattern
-		glob_pattern = '-pattern_type glob -i "' + absolute_path + scene.render.file_extension + '"'
-		# Create floating point FPS value
-		fps_float = '-r ' + str(scene.render.fps / scene.render.fps_base)
-		
-		# ProRes output
-		if settings.autosave_video_prores:
-			# Set FFmpeg processing to true so the Image View window can display status
-			settings.autosave_video_sequence_processing = True
-			if len(settings.autosave_video_prores_location) > 1:
-				# Replace with custom string
-				output_path = settings.autosave_video_prores_location
-				# Replace dynamic variables
-				if '{serial}' in output_path:
-					settings.output_file_serial_used = True
-				output_path = replaceVariables(output_path, rendertime=render_time, serial=settings.output_file_serial)
-				# Convert relative path into absolute path for Python and CLI compatibility
-				output_path = bpy.path.abspath(output_path)
-				# Create the project subfolder if it doesn't already exist
-				output_dir = sub(r'[^/]*$', "", output_path)
-				if not os.path.exists(output_dir):
-					os.makedirs(output_dir)
-				# Wrap with FFmpeg settings
-				output_path = '-y "' + output_path + '"'
-			
-			# FFmpeg location
-			ffmpeg_command = ffmpeg_location
-			# Frame rate
-			ffmpeg_command += ' ' + fps_float
-			# Image sequence pattern
-			ffmpeg_command += ' ' + glob_pattern
-			# ProRes format
-			ffmpeg_command += ' -c:v prores -pix_fmt yuv422p10le'
-			# ProRes profile (Proxy, LT, 422 HQ)
-			ffmpeg_command += ' -profile:v ' + str(settings.autosave_video_prores_quality)
-			# Final output settings
-			ffmpeg_command += ' -vendor apl0 -an -sn'
-			# Output file path
-			ffmpeg_command += ' ' + output_path + '.mov'
-			# Remove any accidental double spaces
-			ffmpeg_command = sub(r'\s{2,}', " ", ffmpeg_command)
-			
-			# Print command to the terminal
-			print('FFmpeg ProRes command:')
-			print(ffmpeg_command)
-			print('')
-			
-			# Run FFmpeg command
-			try:
-				subprocess.call(ffmpeg_command, shell=True)
-				print('')
-			except Exception as exc:
-				print(str(exc) + " | Error in Render Kit: failed to process FFmpeg ProRes command")
-		
-		# MP4 output
-		if settings.autosave_video_mp4:
-			# Set FFmpeg processing to true so the Image View window can display status
-			settings.autosave_video_sequence_processing = True
-			if len(settings.autosave_video_mp4_location) > 1:
-				# Replace with custom string
-				output_path = settings.autosave_video_mp4_location
-				# Replace dynamic variables
-				if '{serial}' in output_path:
-					settings.output_file_serial_used = True
-				output_path = replaceVariables(output_path, rendertime=render_time, serial=settings.output_file_serial)
-				# Convert relative path into absolute path for Python and CLI compatibility
-				output_path = bpy.path.abspath(output_path)
-				# Create the project subfolder if it doesn't already exist
-				output_dir = sub(r'[^/]*$', "", output_path)
-				if not os.path.exists(output_dir):
-					os.makedirs(output_dir)
-				# Wrap with FFmpeg settings
-				output_path = '-y "' + output_path + '"'
-			
-			# FFmpeg location
-			ffmpeg_command = ffmpeg_location
-			# Frame rate
-			ffmpeg_command += ' ' + fps_float
-			# Image sequence pattern
-			ffmpeg_command += ' ' + glob_pattern
-			# MP4 format
-			ffmpeg_command += ' -c:v libx264 -preset slow'
-			# MP4 quality (0-51 from highest to lowest quality)
-			ffmpeg_command += ' -crf ' + str(settings.autosave_video_mp4_quality)
-			# Final output settings
-			ffmpeg_command += ' -pix_fmt yuv420p -movflags rtphint'
-			# Output file path
-			ffmpeg_command += ' ' + output_path + '.mp4'
-			# Remove any accidental double or more spaces
-			ffmpeg_command = sub(r'\s{2,}', " ", ffmpeg_command)
-			
-			# Print command to the terminal
-			print('FFmpeg MP4 command:')
-			print(ffmpeg_command)
-			print('')
-			
-			# Run FFmpeg command
-			try:
-				subprocess.call(ffmpeg_command, shell=True)
-				print('')
-			except Exception as exc:
-				print(str(exc) + " | Error in Render Kit: failed to process FFmpeg MP4 command")
-		
-		# Custom output
-		if settings.autosave_video_custom:
-			# Set FFmpeg processing to true so the Image View window can display status
-			settings.autosave_video_sequence_processing = True
-			if len(settings.autosave_video_custom_location) > 1:
-				# Replace with custom string
-				output_path = settings.autosave_video_custom_location
-				# Replace dynamic variables
-				if '{serial}' in output_path:
-					settings.output_file_serial_used = True
-				output_path = replaceVariables(output_path, rendertime=render_time, serial=settings.output_file_serial)
-				# Convert relative path into absolute path for Python and CLI compatibility
-				output_path = bpy.path.abspath(output_path)
-				# Create the project subfolder if it doesn't already exist
-				output_dir = sub(r'[^/]*$', "", output_path)
-				if not os.path.exists(output_dir):
-					os.makedirs(output_dir)
-				# Wrap with FFmpeg settings
-				output_path = '-y "' + output_path + '"'
-			
-			# FFmpeg location
-			ffmpeg_command = ffmpeg_location + ' ' + settings.autosave_video_custom_command
-			# Replace variables
-			ffmpeg_command = ffmpeg_command.replace("{fps}", fps_float)
-			ffmpeg_command = ffmpeg_command.replace("{input}", glob_pattern)
-			ffmpeg_command = ffmpeg_command.replace("{output}", output_path)
-			# Remove any accidental double spaces
-			ffmpeg_command = sub(r'\s{2,}', " ", ffmpeg_command)
-			
-			# Print command to the terminal
-			print('FFmpeg custom command:')
-			print(ffmpeg_command)
-			print('')
-			
-			# Run FFmpeg command
-			try:
-				subprocess.call(ffmpeg_command, shell=True)
-				print('')
-			except Exception as exc:
-				print(str(exc) + " | Error in Render Kit: failed to process FFmpeg custom command")
+	# FFmpeg processing is now handled in the render_kit_frame function (render_1_frame.py) in order to support segmentation
 	
 	# Increment the output serial number if it was used in any output path
 	if settings.output_file_serial_used:
 		settings.output_file_serial += 1
 		settings.output_file_serial_used = False
 	
-	# Set video sequence status to false
+	# Set video sequence status to false (we're no longer rendering)
 	settings.autosave_video_sequence = False
-	settings.autosave_video_sequence_processing = False
 	
 	# Restore unprocessed file path if processing is enabled
 	if prefs.render_output_variables and settings.output_file_path:
 		scene.render.filepath = settings.output_file_path
 	
 	# Restore unprocessed node output file path if processing is enabled, compositing is enabled, and a file output node exists with the default node name
-	if prefs.render_output_variables and bpy.context.scene.use_nodes and len(settings.output_file_nodes) > 2:
+	if prefs.render_output_variables and scene.use_nodes and len(settings.output_file_nodes) > 2:
 		
 		# Get the JSON data from the preferences string where it was stashed
 		json_data = settings.output_file_nodes
@@ -258,7 +92,7 @@ def render_kit_end(scene):
 		if json_data:
 			node_settings = json.loads(json_data)
 			for node_name, node_data in node_settings.items():
-				node = bpy.context.scene.node_tree.nodes.get(node_name)
+				node = scene.node_tree.nodes.get(node_name)
 				if isinstance(node, bpy.types.CompositorNodeOutputFile):
 					node.base_path = node_data.get("base_path", node.base_path)
 					file_slots_data = node_data.get("file_slots", {})
@@ -323,7 +157,7 @@ def render_kit_end(scene):
 				serialUsed = True
 		
 		# Replace global variables in the output path string
-		filepath = replaceVariables(filepath, rendertime=render_time, serial=serialNumber)
+		filepath = replaceVariables(filepath, render_time=render_time, serial=serialNumber)
 		
 		# Create the project subfolder if it doesn't already exist (otherwise subsequent operations will fail)
 		if not os.path.exists(filepath):
@@ -375,7 +209,7 @@ def render_kit_end(scene):
 				serialUsed = True
 		
 		# Replace global variables in the output name string
-		filename = replaceVariables(filename, rendertime=render_time, serial=serialNumber)
+		filename = replaceVariables(filename, render_time=render_time, serial=serialNumber)
 		
 		# Finish local and global serial number updates
 		if serialUsedGlobal:

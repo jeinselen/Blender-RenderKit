@@ -717,20 +717,16 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 			('NEXT', 'Next Marker', 'Look ahead; the nearest marker after the current frame number'),
 			],
 		default='NEXT')
-	output_marker_direction_used: bpy.props.BoolProperty(
-		name="Output Serial Number Used",
-		description="Indicates if any of the output modules use the {serial} variable",
-		default=False)
 	
 	# FFmpeg image sequence compilation
 	autosave_video_sequence: bpy.props.BoolProperty(
 		name="Sequence Active",
 		description="Indicates if a sequence is being rendering to ensure FFmpeg is enabled only when more than one frame has been rendered",
 		default=False)
-	autosave_video_sequence_processing: bpy.props.BoolProperty(
-		name="Sequence Processing",
-		description="Indicates if sequence processing is currently active",
-		default=False)
+	autosave_video_render_path: bpy.props.StringProperty(
+		name="Output Path",
+		description="Track the output path during rendering in order to support multi-segment timelines",
+		default="")
 	
 	# ProRes
 	autosave_video_prores: bpy.props.BoolProperty(
