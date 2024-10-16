@@ -6,7 +6,7 @@ from shutil import which
 
 # Local imports
 from .render_0_start import render_kit_start
-from .render_1_frame import render_kit_frame
+from .render_1_frame import render_kit_frame_pre, render_kit_frame_post
 from .render_2_end import render_kit_end
 from .render_autosave import RENDER_PT_autosave_video, RENDER_PT_autosave_image
 from .render_batch import batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render, render_batch_menu_item
@@ -718,13 +718,27 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 			],
 		default='NEXT')
 	
-	# FFmpeg image sequence compilation
-	autosave_video_sequence: bpy.props.BoolProperty(
+	# Sequence rendering status (used by FFmpeg compilation and estimated time remaining)
+	sequence_rendering_status: bpy.props.BoolProperty(
 		name="Sequence Active",
 		description="Indicates if a sequence is being rendering to ensure FFmpeg is enabled only when more than one frame has been rendered",
 		default=False)
+	
+	# FFmpeg image sequence compilation
 	autosave_video_render_path: bpy.props.StringProperty(
 		name="Output Path",
+		description="Track the output path during rendering in order to support multi-segment timelines",
+		default="")
+	autosave_video_prores_path: bpy.props.StringProperty(
+		name="ProRes Path",
+		description="Track the output path during rendering in order to support multi-segment timelines",
+		default="")
+	autosave_video_mp4_path: bpy.props.StringProperty(
+		name="MP4 Path",
+		description="Track the output path during rendering in order to support multi-segment timelines",
+		default="")
+	autosave_video_custom_path: bpy.props.StringProperty(
+		name="Custom Path",
 		description="Track the output path during rendering in order to support multi-segment timelines",
 		default="")
 	
@@ -788,7 +802,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	autosave_video_custom_location: bpy.props.StringProperty(
 		name="Custom File Location",
 		description="Set custom command file output location and name, use single forward slash to save alongside image sequence",
-		default="/",
+		default="//../Outputs/{project}",
 		maxlen=4096,
 		subtype="DIR_PATH")
 	
@@ -957,7 +971,8 @@ def register():
 	
 	# Attach render event handlers
 	bpy.app.handlers.render_init.append(render_kit_start)
-	bpy.app.handlers.render_post.append(render_kit_frame)
+	bpy.app.handlers.render_pre.append(render_kit_frame_pre)
+	bpy.app.handlers.render_post.append(render_kit_frame_post)
 	bpy.app.handlers.render_cancel.append(render_kit_end)
 	bpy.app.handlers.render_complete.append(render_kit_end)
 	
@@ -1009,7 +1024,8 @@ def unregister():
 	
 	# Remove render event handlers
 	bpy.app.handlers.render_init.remove(render_kit_start)
-	bpy.app.handlers.render_post.remove(render_kit_frame)
+	bpy.app.handlers.render_pre.remove(render_kit_frame_pre)
+	bpy.app.handlers.render_post.remove(render_kit_frame_post)
 	bpy.app.handlers.render_cancel.remove(render_kit_end)
 	bpy.app.handlers.render_complete.remove(render_kit_end)
 	

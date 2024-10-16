@@ -37,12 +37,11 @@ variableArray = ["title,Project,SCENE_DATA",
 # 	•Replaces {duration}{rtime}{rH}{rM}{rS} only if valid 0.0+ float is provided
 # 	•Replaces {serial} only if valid 0+ integer is provided
 
-def replaceVariables(string, render_time=-1.0, serial=-1, socket='', scene_frame=-1):
+def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 	context = bpy.context
 	view_layer = context.view_layer
 	scene = context.scene
 	settings = scene.render_kit_settings
-	scene_frame = scene_frame if scene_frame > -1 else scene.frame_current
 	
 	# Get render engine feature sets
 	if bpy.context.engine == 'BLENDER_WORKBENCH':
@@ -194,6 +193,9 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket='', scene_frame
 	# Remove file extension from image node names (this could be unhelpful when comparing renders with .psd versus .jpg texture sources)
 	projectNode = sub(r'\.\w{3,4}$', '', projectNode)
 	
+	# Get current frame
+	scene_frame = scene.frame_current
+	
 	# Get marker names if markers exist
 	markerName = 'none'
 	if len(scene.timeline_markers) > 0:
@@ -211,6 +213,10 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket='', scene_frame
 				if marker.frame >= scene_frame and marker.frame < frame:
 					frame = marker.frame
 					markerName = marker.name
+	
+	# Get output serial number if not provided
+	if serial < 0:
+		serial = settings.output_file_serial
 	
 	
 	
@@ -284,7 +290,7 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket='', scene_frame
 	string = string.replace("{S}", datetime.datetime.now().strftime('%S'))
 	if serial >= 0: # Only enabled if a value is supplied
 		string = string.replace("{serial}", format(serial, '04'))
-	string = string.replace("{frame}", format(scene.frame_current, '04'))
+	string = string.replace("{frame}", format(scene_frame, '04'))
 	# Consider adding hash-mark support for inserting frames: sub(r'#+(?!.*#)', "", absolute_path)
 	# Batch variables
 	string = string.replace("{batch}", format(settings.batch_index, '04'))
