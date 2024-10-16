@@ -174,7 +174,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		render_time = round(time.time() - float(settings.start_date), 2)
 		
 		# Replace variables (part two, this time with all of the custom elements)
-		file_path = replaceVariables(file_path, render_time=render_time, serial=settings.output_file_serial, socket=settings.node_output)
+		file_path = replaceVariables(file_path, render_time=render_time, socket=settings.node_output)
 		
 		# Increment the output serial number if it was used in the output path
 		if settings.output_file_serial_used:

@@ -47,13 +47,9 @@ def processFFmpeg(render_path='', render_time=-1):
 		# ProRes output
 		if settings.autosave_video_prores:
 			# Set FFmpeg processing to true so the Image View window can display status
-#			settings.autosave_video_sequence_processing = True
-			if len(settings.autosave_video_prores_location) > 1:
-				# Replace with custom string
-				output_path = settings.autosave_video_prores_location
+			if len(settings.autosave_video_prores_path) > 1:
 				# Replace dynamic variables
-				settings.output_file_serial_used = True if '{serial}' in output_path else False
-				output_path = replaceVariables(output_path, render_time=render_time, serial=settings.output_file_serial)
+				output_path = replaceVariables(settings.autosave_video_prores_path, render_time=render_time)
 				# Convert relative path into absolute path for Python and CLI compatibility
 				output_path = bpy.path.abspath(output_path)
 				# Create the project subfolder if it doesn't already exist
@@ -95,13 +91,9 @@ def processFFmpeg(render_path='', render_time=-1):
 		# MP4 output
 		if settings.autosave_video_mp4:
 			# Set FFmpeg processing to true so the Image View window can display status
-#			settings.autosave_video_sequence_processing = True
-			if len(settings.autosave_video_mp4_location) > 1:
-				# Replace with custom string
-				output_path = settings.autosave_video_mp4_location
+			if len(settings.autosave_video_mp4_path) > 1:
 				# Replace dynamic variables
-				settings.output_file_serial_used = True if '{serial}' in output_path else False
-				output_path = replaceVariables(output_path, render_time=render_time, serial=settings.output_file_serial)
+				output_path = replaceVariables(settings.autosave_video_mp4_path, render_time=render_time)
 				# Convert relative path into absolute path for Python and CLI compatibility
 				output_path = bpy.path.abspath(output_path)
 				# Create the project subfolder if it doesn't already exist
@@ -143,13 +135,9 @@ def processFFmpeg(render_path='', render_time=-1):
 		# Custom output
 		if settings.autosave_video_custom:
 			# Set FFmpeg processing to true so the Image View window can display status
-#			settings.autosave_video_sequence_processing = True
-			if len(settings.autosave_video_custom_location) > 1:
-				# Replace with custom string
-				output_path = settings.autosave_video_custom_location
+			if len(settings.autosave_video_custom_path) > 1:
 				# Replace dynamic variables
-				settings.output_file_serial_used = True if '{serial}' in output_path else False
-				output_path = replaceVariables(output_path, render_time=render_time, serial=settings.output_file_serial)
+				output_path = replaceVariables(settings.autosave_video_custom_path, render_time=render_time)
 				# Convert relative path into absolute path for Python and CLI compatibility
 				output_path = bpy.path.abspath(output_path)
 				# Create the project subfolder if it doesn't already exist

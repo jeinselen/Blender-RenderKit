@@ -68,19 +68,16 @@ def render_kit_end(scene):
 	# Update total render time
 	settings.total_render_time = settings.total_render_time + render_time
 	
-	# FFmpeg processing is now handled in the render_kit_frame function (render_1_frame.py) in order to support segmentation
-	
-	# Increment the output serial number if it was used in any output path
-	if settings.output_file_serial_used:
-		settings.output_file_serial += 1
-		settings.output_file_serial_used = False
+	# FFmpeg processing is now handled in the render_kit_frame_pre function (render_1_frame.py) in order to properly support timeline segmentation
 	
 	# Set video sequence status to false (we're no longer rendering)
-	settings.autosave_video_sequence = False
+	settings.sequence_rendering_status = False
 	
 	# Restore unprocessed file path if processing is enabled
 	if prefs.render_output_variables and settings.output_file_path:
 		scene.render.filepath = settings.output_file_path
+		# Clear output file path storage
+		settings.output_file_path = ""
 	
 	# Restore unprocessed node output file path if processing is enabled, compositing is enabled, and a file output node exists with the default node name
 	if prefs.render_output_variables and scene.use_nodes and len(settings.output_file_nodes) > 2:
@@ -94,12 +91,19 @@ def render_kit_end(scene):
 			for node_name, node_data in node_settings.items():
 				node = scene.node_tree.nodes.get(node_name)
 				if isinstance(node, bpy.types.CompositorNodeOutputFile):
+					# Reset base path
 					node.base_path = node_data.get("base_path", node.base_path)
+					
+					# Get slot data
 					file_slots_data = node_data.get("file_slots", {})
 					for i, slot_data in file_slots_data.items():
 						slot = node.file_slots[int(i)]
 						if slot:
+							# Reset slot path
 							slot.path = slot_data.get("path", slot.path)
+		
+		# Clear output node storage
+		settings.output_file_nodes = ""
 	
 	# Get project name (used by both autosave render and the external log file)
 	projectname = os.path.splitext(os.path.basename(bpy.data.filepath))[0]
@@ -264,5 +268,10 @@ def render_kit_end(scene):
 		# Write log file
 		with open(logpath, 'w') as fileout:
 			fileout.write(logtitle + logtime)
+	
+	# Increment the output serial number if it was used in any output path
+	if settings.output_file_serial_used:
+		settings.output_file_serial += 1
+		settings.output_file_serial_used = False
 	
 	return {'FINISHED'}
