@@ -225,7 +225,7 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 	string = string.replace("{scene}", scene.name)
 	string = string.replace("{viewlayer}", view_layer.name)
 	string = string.replace("{collection}", settings.batch_collection_name if len(settings.batch_collection_name) > 0 else bpy.context.collection.name)
-	string = string.replace("{camera}", scene.camera.name)
+	string = string.replace("{camera}", scene.camera.name if scene.camera else 'None')
 	string = string.replace("{item}", projectItem)
 	string = string.replace("{material}", projectMaterial)
 	string = string.replace("{node}", projectNode)

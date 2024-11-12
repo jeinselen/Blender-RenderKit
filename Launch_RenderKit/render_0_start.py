@@ -78,3 +78,42 @@ def render_kit_start(scene):
 					
 		# Convert the dictionary to JSON format and save to the plugin preferences for safekeeping while rendering
 		settings.output_file_nodes = json.dumps(node_settings)
+	
+	
+	
+	# If file name processing is enabled and a sequence is underway, re-process output variables
+	# Note: {serial} usage is not checked here as it should have already been completed by the render_kit_start function
+	if prefs.render_output_variables:
+		
+		# Filter render output file path
+		if settings.output_file_path:
+			# Replace scene filepath output with the processed version from the original saved version
+			scene.render.filepath = replaceVariables(settings.output_file_path)
+			
+		# Filter compositing node file paths
+		if scene.use_nodes and settings.output_file_nodes:
+			# Get the JSON data from the preferences string where it was stashed
+			json_data = settings.output_file_nodes
+			
+			# If the JSON data is not empty, deserialize it and update the string values with new variables
+			if json_data:
+				node_settings = json.loads(json_data)
+				
+				# Get node data
+				for node_name, node_data in node_settings.items():
+					node = scene.node_tree.nodes.get(node_name)
+					if isinstance(node, bpy.types.CompositorNodeOutputFile):
+						# Reset base path
+						node.base_path = node_data.get("base_path", node.base_path)
+						# Replace dynamic variables in the base path
+						node.base_path = replaceVariables(node.base_path)
+						
+						# Get slot data
+						file_slots_data = node_data.get("file_slots", {})
+						for i, slot_data in file_slots_data.items():
+							slot = node.file_slots[int(i)]
+							if slot:
+								# Reset slot path
+								slot.path = slot_data.get("path", slot.path)
+								# Replace dynamic variables in the slot path
+								slot.path = replaceVariables(slot.path)

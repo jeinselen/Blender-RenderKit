@@ -2,6 +2,7 @@
 import bpy
 from bpy.app.handlers import persistent
 import time
+import json
 
 # Local imports
 from .render_variables import replaceVariables
@@ -62,7 +63,6 @@ def render_kit_frame_pre(scene):
 								slot.path = slot_data.get("path", slot.path)
 								# Replace dynamic variables in the slot path
 								slot.path = replaceVariables(slot.path)
-							
 
 
 

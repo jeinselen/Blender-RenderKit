@@ -32,8 +32,8 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		
 		# Check for active mesh object
 		obj = context.active_object
-		if not obj or obj.type != 'MESH':
-			self.report({'ERROR'}, "Render Kit — Render Node no active mesh object selected")
+		if not obj or obj.type != 'MESH' or obj.hide_select or obj.hide_get() or obj.hide_viewport or obj.hide_render:
+			self.report({'ERROR'}, "Render Kit — Render Node no active mesh object selected or is hidden")
 			return {'CANCELLED'}
 		
 		# Ensure the active object is selected in layout
@@ -291,7 +291,20 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 		
 		# Render node button
 		button = layout.row()
-		if settings.node_output not in [output.name for output in context.active_node.outputs] or not context.active_object.data.uv_layers.get(settings.node_uvmap):
+		obj = context.active_object
+		obj_valid = True if obj else False
+		if obj_valid:
+			if obj.type != 'MESH':
+				obj_valid = False
+			if obj.hide_select:
+				obj_valid = False
+			if obj.hide_get():
+				obj_valid = False
+			if obj.hide_viewport:
+				obj_valid = False
+			if obj.hide_render:
+				obj_valid = False
+		if settings.node_output not in [output.name for output in context.active_node.outputs] or not obj_valid or not context.active_object.data.uv_layers.get(settings.node_uvmap):
 			button.active = False
 			button.enabled = False
 		button.operator(RENDERKIT_OT_render_node.bl_idname)
@@ -330,12 +343,12 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 			
 			# Output filepath
 			panel.prop(settings, "node_filepath", text='')
-			grid = panel.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=False)
+#			grid = panel.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=False)
 			# Row 1
 #			grid.label(text='Formatting', icon='IMAGE_PLANE') # FILE_IMAGE IMAGE_PLANE FILE CURRENT_FILE
-			grid.separator()
-			grid.separator()
-			grid.prop(settings, "node_overwrite")
+#			grid.separator()
+#			grid.separator()
+			panel.prop(settings, "node_overwrite")
 			# Row 2
 			row = panel.row()
 			row.prop(settings, "node_format", expand=True)

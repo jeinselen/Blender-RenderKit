@@ -895,7 +895,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		maxlen=4096,
 		subtype="DIR_PATH")
 	node_overwrite: bpy.props.BoolProperty(
-		name="Overwrite",
+		name="Allow Overwrite",
 		description="Files with the same name in the same location will be overwritten",
 		default=False)
 	node_colorspace: bpy.props.EnumProperty(

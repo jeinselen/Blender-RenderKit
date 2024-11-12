@@ -242,7 +242,7 @@ def render_kit_end(scene):
 	render_notifications(render_time)
 	
 	# Save external log file
-	if prefs.external_render_time:
+	if prefs.external_render_time and bpy.data.filepath:
 		# Log file settings
 		logname = prefs.external_log_name
 		logname = logname.replace("{project}", projectname)
