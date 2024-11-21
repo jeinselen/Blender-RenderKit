@@ -26,8 +26,24 @@ variableArray = ["title,Project,SCENE_DATA",
 				"title,System,DESKTOP",
 					"{host}", "{processor}", "{platform}", "{system}", "{release}", "{python}", "{blender}",
 				"title,Identifier,COPY_ID",
-					"{date}", "{y},{m},{d}", "{time}", "{H},{M},{S}", "{serial}", "{frame}", "{batch}"]
+					"{date}", "{y},{m},{d}", "{time}", "{H},{M},{S}", "{serial}", "{frame}", "{batch}",
+				]
 
+
+
+# Available values
+# Includes both headers (string starting with "title,") and value properties (string with brackets)
+valueArray =   ["title,Scene,SCENE_DATA",
+					"{s0}", "{s1}", "{s2}", "{s3}", "{s4}", "{s5}", "{s6}", "{s7}", "{s8}", "{s9}",
+				"title,View Layer,RENDERLAYERS",
+					"{v0}", "{v1}", "{v2}", "{v3}", "{v4}", "{v5}", "{v6}", "{v7}", "{v8}", "{v9}",
+				"title,Active Item,OBJECT_DATA",
+					"{i0}", "{i1}", "{i2}", "{i3}", "{i4}", "{i5}", "{i6}", "{i7}", "{i8}", "{i9}",
+#				"title,Active Material,MATERIAL",
+#					"{m0}", "{m1}", "{m2}", "{m3}", "{m4}", "{m5}", "{m6}", "{m7}", "{m8}", "{m9}",
+				]
+
+valueName = "RenderKit_Value_"
 
 
 ###########################################################################
@@ -296,6 +312,33 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 	# Batch variables
 	string = string.replace("{batch}", format(settings.batch_index, '04'))
 	
+	
+	
+	# Value properties
+	property_pattern = r"\{([a-z])(\d)\}"
+	def get_property_value(match):
+		type = f"{match.group(1)}"
+		property = f"{valueName}{match.group(2)}"
+		value = ""
+		if type == 's' and property in context.scene:
+			value = context.scene[property]
+		elif type == 'v' and property in context.view_layer:
+			value = context.view_layer[property]
+		elif (type == 'i' or type == 'o') and context.view_layer.objects.active and property in context.view_layer.objects.active:
+			value = context.view_layer.objects.active[property]
+		elif type == 'm' and context.view_layer.objects.active and context.view_layer.objects.active.active_material and property in context.view_layer.objects.active.active_material:
+			value = context.view_layer.objects.active.active_material[property]
+		else:
+			value = 'none'
+#		value = str(value)
+		value = f"{value}"
+		value = sub(r'[<>:"/\\\|?*]+', "-", value) # Rudimentary sanitisation, this feature is pretty insecure
+		return value
+	string = sub(property_pattern, get_property_value, string)
+	
+	
+	
+	# And done!
 	return string
 
 
@@ -380,6 +423,240 @@ class VariablePopup(bpy.types.Operator):
 					ops.string = item
 					ops.close = self.autoclose
 		layout.label(text='Click a variable to copy it to the clipboard', icon="COPYDOWN") # COPYDOWN PASTEDOWN
+
+
+
+class RenderKit_Property_Add(bpy.types.Operator):
+	"""Add custom property to the specified target"""
+	bl_label = "Add Property"
+	bl_idname = "ed.renderkit_property_add"
+	bl_options = {'REGISTER', 'INTERNAL'}
+	
+	target_type: bpy.props.StringProperty()
+	target_name: bpy.props.StringProperty()
+	prop_name: bpy.props.StringProperty()
+#	value: bpy.props.FloatProperty(default=0.0)
+	
+	def invoke(self, context, event):
+		target = None
+		if self.target_type == 'SCENE':
+			target = context.scene
+		elif self.target_type == 'VIEW_LAYER':
+			target = context.view_layer
+		elif self.target_type == 'OBJECT' and context.view_layer.objects.active:
+			target = context.view_layer.objects.active
+		elif self.target_type == 'MATERIAL' and context.view_layer.objects.active and context.view_layer.objects.active.active_material:
+			target = context.view_layer.objects.active.active_material
+		else:
+			self.report({'ERROR'}, "Invalid target")
+			return {'CANCELLED'}
+		
+		# Create and set the property
+#		set_renderkit_property(target, self.index, self.value)
+		target[self.prop_name] = 0.0
+		return {'FINISHED'}
+
+
+
+# Value popup panel UI
+class ValuePopup(bpy.types.Operator):
+	"""List of the available value properties"""
+	bl_label = "Values"
+	bl_idname = "ed.renderkit_values_popup"
+	bl_options = {'REGISTER', 'INTERNAL'}
+	
+	autoclose: bpy.props.BoolProperty(default=True)
+	
+	@classmethod
+	def poll(cls, context):
+		return True
+	
+	def execute(self, context):
+		self.report({'INFO'}, "YES")
+		return {'FINISHED'}
+	
+	def invoke(self, context, event):
+		return context.window_manager.invoke_popup(self, width=520)
+	
+	def draw(self, context):
+		layout = self.layout
+		grid = self.layout.grid_flow(row_major=True, columns = 5, even_columns = True, even_rows = True)
+		
+		# Set first-property tracker to ensure just one "add property" button is added to each column
+		property_first = False
+		
+		for item in valueArray:
+			
+			# Display headers
+			if item.startswith('title,'):
+				x = item.split(',')
+				col = grid.column()
+				col.label(text = x[1], icon = x[2])
+				# Reset the property button tracking
+				property_first = False
+			
+			# Display list elements
+			else:
+				# Define target element
+				target = None
+				target_name = None
+				target_type = None
+				
+				if item.startswith('{s') and context.scene:
+					target = context.scene
+					target_type = 'SCENE'
+					target_path = 'scene'
+				elif item.startswith('{v') and context.view_layer:
+					target = context.view_layer
+					target_type = 'VIEW_LAYER'
+					target_path = 'view_layer'
+				elif item.startswith('{i') and context.view_layer.objects.active:
+					target = context.view_layer.objects.active
+					target_type = 'OBJECT'
+					target_path = 'view_layer.objects.active'
+				elif item.startswith('{m') and bpy.context.view_layer.objects.active.active_material:
+					target = context.view_layer.objects.active.active_material
+					target_type = 'MATERIAL'
+					target_path = 'view_layer.objects.active.active_material'
+				
+				if target != None:
+					target_name = target.name
+				
+				# Get the property number
+				number = sub("\\D", "", item)
+				
+				# Define the property name
+				property_name = f"{valueName}{number}"
+				
+				# Check for existing property
+				if property_name in target:
+					# Start a new row in the column
+					row = col.row()
+					
+					# Left side
+					split = col.split(factor=0.25, align=True)
+					label_row = split.row()
+					label_row.alignment = 'RIGHT'
+					
+					# Copy variable name button
+					ops = label_row.operator(CopyVariableToClipboard.bl_idname, text=item, emboss=False)
+					ops.string = item
+					ops.close = self.autoclose
+					
+					# Right side
+					value_row = split.row(align=True)
+					value_column = value_row.column(align=True)
+					
+					# Display property value field
+					value_column.prop(target, f'["{property_name}"]', text="")
+					
+					# Create sub-row
+					operator_row = value_row.row(align=True)
+					operator_row.alignment = 'RIGHT'
+					
+					# Edit property button
+#					bpy.ops.wm.properties_edit(data_path="scene", property_name="RenderKit_Value_0")
+#					bpy.ops.wm.properties_edit(data_path="view_layer", property_name="RenderKit_Value_0")
+#					bpy.ops.wm.properties_edit(data_path="object", property_name="RenderKit_Value_0")
+#					bpy.ops.wm.properties_edit(data_path="material", property_name="RenderKit_Value_0")
+					props = operator_row.operator("wm.properties_edit", text="", icon='PREFERENCES', emboss=False)
+					props.data_path = target_path
+					props.property_name = property_name
+					
+					# Remove property button
+					props = operator_row.operator("wm.properties_remove", text="", icon='X', emboss=False)
+					props.data_path = target_path
+					props.property_name = property_name
+					
+					
+					
+					# Start a new row in the column
+#					row = col.row(align=False)
+#					row.alignment = 'LEFT'
+					
+					# Copy variable name button
+#					ops = row.operator(CopyVariableToClipboard.bl_idname, text=item, emboss=False)
+#					ops.string = item
+					
+					# Display property value field
+#					row.prop(target, f'["{property_name}"]', text="")
+					
+					# Sub row
+#					subrow = row.row(align=True)
+#					subrow.alignment = 'RIGHT'
+					
+					# Edit property button
+#					props = subrow.operator("wm.properties_edit", text="", icon='PREFERENCES', emboss=False)
+#					props.data_path = target_type.lower()
+#					props.property_name = property_name
+					
+					# Remove property button
+#					props = subrow.operator("wm.properties_remove", text="", icon='X', emboss=False)
+#					props.data_path = target_type.lower()
+#					props.property_name = property_name
+					
+					
+				
+				# If no property exists, and no button exists yet, add a button
+				elif not property_first:
+					row = col.row()
+					
+					# Add property button
+					prop = row.operator(RenderKit_Property_Add.bl_idname, text="Add property variable", icon='ADD', emboss=True)
+					prop.target_name = target_name
+					prop.target_type = target_type
+					prop.prop_name = property_name
+					
+#					bpy.ops.wm.properties_add(*, data_path='')
+					
+					# Update property status
+					property_first = True
+		
+		layout.label(text='Click a variable to copy it to the clipboard', icon="COPYDOWN") # COPYDOWN PASTEDOWN
+
+
+
+# Global variable editing UI
+def renderkit_variable_ui(layout, context, paths="", postrender=True, noderender=True, autoclose=True, customserial=False):
+	prefs = context.preferences.addons[__package__].preferences
+	settings = context.scene.render_kit_settings
+	
+	# UI layout for Node Properties
+#	layout = self.layout
+	
+	# VARIABLES BAR
+	bar = layout.row(align=False)
+	
+	# Variable list popup button
+	ops = bar.operator(VariablePopup.bl_idname, text = "Variables", icon = "LINENUMBERS_OFF")
+	ops.postrender = postrender
+	ops.noderender = noderender
+	ops.autoclose = autoclose
+	
+	# Value list popup button
+	ops = bar.operator(ValuePopup.bl_idname, text = "Values", icon = "PROPERTIES") # PROPERTIES LINENUMBERS_ON
+	
+	# Local project serial number
+	input = bar.column()
+	if not '{serial}' in paths:
+		input.active = False
+		input.enabled = False
+	if customserial:
+		if prefs.override_autosave_render:
+			input.prop(prefs, 'file_serial_global', text='serial')
+		else:
+			input.prop(settings, 'file_serial', text='serial')
+	else:
+		input.prop(settings, 'output_file_serial', text='serial')
+	
+	# Local project marker direction
+	option = bar.column()
+	if not '{marker}' in paths:
+		option.active = False
+		option.enabled = False
+	option.prop(settings, 'output_marker_direction', text='')
+
+
 
 # Render output UI
 def RENDER_PT_output_path_variable_list(self, context):
