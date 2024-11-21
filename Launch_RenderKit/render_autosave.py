@@ -1,5 +1,5 @@
 import bpy
-from .render_variables import OutputVariablePopup
+from .render_variables import renderkit_variable_ui
 
 # Format validation list
 FFMPEG_FORMATS = (
@@ -38,42 +38,25 @@ class RENDER_PT_autosave_image(bpy.types.Panel):
 		
 		layout = self.layout
 		layout.use_property_decorate = False  # No animation
+		
+		# Combine all used paths for variable checks
+		paths = ''
+		if prefs.override_autosave_render:
+			paths += prefs.file_location_global
+			if prefs.file_name_type_global == 'CUSTOM':
+				paths += prefs.file_name_custom_global
+		else:
+			paths += settings.file_location
+			if settings.file_name_type == 'CUSTOM':
+				paths += settings.file_name_custom
+		
+		# Variable list UI
+		renderkit_variable_ui(layout, context, paths=paths, postrender=True, noderender=False, autoclose=True, customserial=True)
+		
 		layout.use_property_split = True
 		
-		
-		
-		# VARIABLES BAR
-		bar = layout.row(align=False)
-		
-		# Variable list popup button
-		ops = bar.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
-		ops.postrender = True
-		
-		# Local project serial number
-		# Global serial number is listed inline with the path or file override, if used
-		input = bar.column()
-		input.use_property_split = True
-		if not (('{serial}' in settings.file_location and not prefs.file_location_override) or (settings.file_name_type == 'CUSTOM' and '{serial}' in settings.file_name_custom and not prefs.file_name_override)):
-			input.active = False
-			input.enabled = False
-		input.prop(settings, 'file_serial', text='serial')
-		
-		# Local project serial number
-		# Global serial number is listed inline with the path or file override, if used
-		option = bar.column()
-		option.use_property_split = True
-		if not (('{marker}' in settings.file_location and not prefs.file_location_override)
-			or (settings.file_name_type == 'CUSTOM' and '{marker}' in settings.file_name_custom and not prefs.file_name_override)
-			or ('{marker}' in prefs.file_location_global and prefs.file_location_override)
-			or (settings.file_name_type == 'CUSTOM' and '{marker}' in prefs.file_name_custom_global and prefs.file_name_override)):
-			option.active = False
-			option.enabled = False
-		option.prop(settings, 'output_marker_direction', text='')
-		
-		
-		
 		# File location with global override
-		if prefs.file_location_override:
+		if prefs.override_autosave_render:
 			override = layout.row()
 			override.use_property_split = True
 			override.active = False
@@ -86,7 +69,7 @@ class RENDER_PT_autosave_image(bpy.types.Panel):
 			layout.use_property_split = True
 			
 		# File name with global override
-		if prefs.file_name_override:
+		if prefs.override_autosave_render:
 			override = layout.row()
 			override.active = False
 			override.prop(prefs, 'file_name_type_global', icon='FILE_TEXT')
@@ -100,7 +83,7 @@ class RENDER_PT_autosave_image(bpy.types.Panel):
 				layout.prop(settings, 'file_name_custom')
 				
 		# File format with global override
-		if prefs.file_format_override:
+		if prefs.override_autosave_render:
 			override = layout.row()
 			override.active = False
 			override.prop(prefs, 'file_format_global', icon='FILE_IMAGE')
@@ -108,7 +91,7 @@ class RENDER_PT_autosave_image(bpy.types.Panel):
 			layout.prop(settings, 'file_format', icon='FILE_IMAGE')
 			
 		# Multilayer EXR warning
-		if context.scene.render.image_settings.file_format == 'OPEN_EXR_MULTILAYER' and (prefs.file_format_global == 'SCENE' and prefs.file_format_override or settings.file_format == 'SCENE' and not prefs.file_format_override):
+		if context.scene.render.image_settings.file_format == 'OPEN_EXR_MULTILAYER' and (prefs.file_format_global == 'SCENE' and prefs.override_autosave_render or settings.file_format == 'SCENE' and not prefs.override_autosave_render):
 			error = layout.box()
 			error.label(text="Python API can only save single layer EXR files")
 			error.label(text="Report: https://developer.blender.org/T71087")
@@ -147,35 +130,14 @@ class RENDER_PT_autosave_video(bpy.types.Panel):
 			layout.active = False
 			layout.enabled = False
 		
-		
-		
-		# VARIABLES BAR
-		bar = layout.row(align=False)
 		# Combine all used paths for variable checks
 		paths = ''
 		paths += settings.autosave_video_prores_location if settings.autosave_video_prores else ''
 		paths += settings.autosave_video_mp4_location if settings.autosave_video_prores else ''
 		paths += settings.autosave_video_custom_location if settings.autosave_video_prores else ''
 		
-		# Variable list popup button
-		ops = bar.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
-		ops.postrender = True
-		
-		# Local project serial number
-		input = bar.column()
-#		input.use_property_split = True
-		if not '{serial}' in paths:
-			input.active = False
-			input.enabled = False
-		input.prop(settings, 'output_file_serial', text='serial')
-		
-		# Local project serial number
-		option = bar.column()
-#		option.use_property_split = True
-		if not '{marker}' in paths:
-			option.active = False
-			option.enabled = False
-		option.prop(settings, 'output_marker_direction', text='')
+		# Variable list UI
+		renderkit_variable_ui(layout, context, paths=paths, postrender=True, noderender=False, autoclose=True)
 		
 		
 		

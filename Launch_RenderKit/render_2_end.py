@@ -117,7 +117,7 @@ def render_kit_end(scene):
 		original_colordepth = scene.render.image_settings.color_depth
 		
 		# Set up render output formatting with override
-		if prefs.file_format_override:
+		if prefs.override_autosave_render:
 			file_format = prefs.file_format_global
 		else:
 			file_format = settings.file_format
@@ -135,7 +135,7 @@ def render_kit_end(scene):
 		extension = scene.render.file_extension
 		
 		# Get location variable with override and project path replacement
-		if prefs.file_location_override:
+		if prefs.override_autosave_render:
 			filepath = prefs.file_location_global
 		else:
 			filepath = settings.file_location
@@ -153,7 +153,7 @@ def render_kit_end(scene):
 		serialUsed = False
 		serialNumber = -1
 		if '{serial}' in filepath:
-			if prefs.file_location_override:
+			if prefs.override_autosave_render:
 				serialNumber = prefs.file_serial_global
 				serialUsedGlobal = True
 			else:
@@ -168,7 +168,7 @@ def render_kit_end(scene):
 			os.makedirs(filepath)
 		
 		# Get file name type with override
-		if prefs.file_name_override:
+		if prefs.override_autosave_render:
 			file_name_type = prefs.file_name_type_global
 		else:
 			file_name_type = settings.file_name_type
@@ -199,13 +199,13 @@ def render_kit_end(scene):
 			filename = '{project} {engine} {duration}'
 		else:
 			# Load custom file name with override
-			if prefs.file_name_override:
+			if prefs.override_autosave_render:
 				filename = prefs.file_name_custom_global
 			else:
 				filename = settings.file_name_custom
 		
 		if '{serial}' in filename:
-			if prefs.file_location_override:
+			if prefs.override_autosave_render:
 				serialNumber = prefs.file_serial_global
 				serialUsedGlobal = True
 			else:

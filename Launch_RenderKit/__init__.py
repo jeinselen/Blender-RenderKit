@@ -14,7 +14,7 @@ from .render_display import RENDER_PT_total_render_time_display, image_viewer_fe
 from . import render_node
 from .render_proxy import render_proxy_start, render_proxy_menu_item
 from .render_region import RENDER_PT_render_region
-from .render_variables import CopyVariableToClipboard, OutputVariablePopup, RENDER_PT_output_path_variable_list, NODE_PT_output_path_variable_list
+from .render_variables import CopyVariableToClipboard, VariablePopup, RenderKit_Property_Add, ValuePopup, RENDER_PT_output_path_variable_list, NODE_PT_output_path_variable_list
 
 
 
@@ -170,15 +170,11 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		name="Autosave Images",
 		description="Automatically saves numbered or dated images in a directory alongside the project file or in a custom location",
 		default=True)
-	show_autosave_render_overrides: bpy.props.BoolProperty(
-		name="Global Overrides",
-		description="Show available global overrides, replacing local project settings",
-		default=False)
 	
 	# Override individual project autosave location and file name settings
-	file_location_override: bpy.props.BoolProperty(
-		name="Override File Location",
-		description='Global override for the per-project directory setting',
+	override_autosave_render: bpy.props.BoolProperty(
+		name="Global Overrides",
+		description="Show available global overrides, replacing local project settings",
 		default=False)
 	file_location_global: bpy.props.StringProperty(
 		name="Global File Location",
@@ -186,11 +182,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		default="/",
 		maxlen=4096,
 		subtype="DIR_PATH")
-	
-	file_name_override: bpy.props.BoolProperty(
-		name="Override File Name",
-		description='Global override for the per-project autosave file name setting',
-		default=False)
 	file_name_type_global: bpy.props.EnumProperty(
 		name='Global File Name',
 		description='Autosaves files with the project name and serial number, project name and date, or custom naming pattern',
@@ -209,11 +200,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	file_serial_global: bpy.props.IntProperty(
 		name="Global Serial Number",
 		description="Current serial number, automatically increments with every render (must be manually updated when installing a plugin update)")
-	
-	file_format_override: bpy.props.BoolProperty(
-		name="Override File Format",
-		description='Global override for the per-project autosave file format setting',
-		default=False)
 	file_format_global: bpy.props.EnumProperty(
 		name='Global File Format',
 		description='Image format used for the automatically saved render files',
@@ -419,13 +405,13 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		
 		grid1.prop(self, "render_output_variables")
 		input = grid1.grid_flow(row_major=True, columns=1, even_columns=True, even_rows=False, align=False)
-		if not self.render_output_variables:
-			input.active = False
-			input.enabled = False
-		ops = input.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
-		ops.postrender = True
-		ops.noderender = True
-		ops.autoclose = False
+#		if not self.render_output_variables:
+#			input.active = False
+#			input.enabled = False
+#		ops = input.operator(VariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
+#		ops.postrender = True
+#		ops.noderender = True
+#		ops.autoclose = False
 		
 		########## Autosave Videos ##########
 		
@@ -444,19 +430,10 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		########## Autosave Images ##########
 		
 		grid1.prop(self, "enable_autosave_render")
-		input = grid1.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-		if self.file_location_override or self.file_name_override or self.file_format_override or not self.enable_autosave_render:
-			input.active = False
-			input.enabled = False
-			input.prop(self, "show_autosave_render_overrides", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
-		elif self.show_autosave_render_overrides:
-			input.prop(self, "show_autosave_render_overrides", icon = "DISCLOSURE_TRI_DOWN", emboss = False)
-		else:
-			input.prop(self, "show_autosave_render_overrides", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
-		input.separator()
+		grid1.prop(self, "override_autosave_render")
 		
 		# Global Overrides
-		if (self.show_autosave_render_overrides or self.file_location_override or self.file_name_override or self.file_format_override) and self.enable_autosave_render:
+		if self.enable_autosave_render and self.override_autosave_render:
 			# Subgrid Layout
 			margin = layout.row()
 			margin.separator(factor=2.0)
@@ -464,38 +441,29 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			margin.separator(factor=2.0)
 			
 			# File location
-			subgrid.prop(self, "file_location_override")
+			subgrid.separator_spacer()
 			input = subgrid.column(align=True)
-			if not self.file_location_override:
-				input.active = False
-				input.enabled = False
 			input.prop(self, "file_location_global", text='')
 			# Display global serial number if used
-			if self.file_location_override and '{serial}' in self.file_location_global:
+			if '{serial}' in self.file_location_global:
 				input.prop(self, "file_serial_global")
 				input.separator()
 			
 			# File name
-			subgrid.prop(self, "file_name_override")
+			subgrid.separator_spacer()
 			input = subgrid.column(align=True)
-			if not self.file_name_override:
-				input.active = False
-				input.enabled = False
 			input.prop(self, "file_name_type_global", text='', icon='FILE_TEXT')
 			if (self.file_name_type_global == 'CUSTOM'):
 				input.prop(self, "file_name_custom_global", text='')
-				if self.file_name_override and self.file_name_type_global == 'CUSTOM' and '{serial}' in self.file_name_custom_global:
+				if self.file_name_type_global == 'CUSTOM' and '{serial}' in self.file_name_custom_global:
 					input.prop(self, "file_serial_global")
 				input.separator()
 			
 			# File format
-			subgrid.prop(self, "file_format_override")
+			subgrid.separator_spacer()
 			input = subgrid.column()
-			if not self.file_format_override:
-				input.active = False
-				input.enabled = False
 			input.prop(self, "file_format_global", text='', icon='FILE_IMAGE')
-			if self.file_format_override and self.file_format_global == 'SCENE' and context.scene.render.image_settings.file_format == 'OPEN_EXR_MULTILAYER':
+			if self.file_format_global == 'SCENE' and context.scene.render.image_settings.file_format == 'OPEN_EXR_MULTILAYER':
 				error = input.box()
 				error.label(text="Python API can only save single layer EXR files")
 				error.label(text="Report: https://developer.blender.org/T71087")
@@ -890,10 +858,14 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		name="Socket",
 		default="Color")
 	node_filepath: bpy.props.StringProperty(
-		name="Output",
-		default="//{project}/{item}-{material}-{node}-{socket}",
+		name="File Path",
+		default="//{project}",
 		maxlen=4096,
 		subtype="DIR_PATH")
+	node_filename: bpy.props.StringProperty(
+		name="File Name",
+		default="{item}-{material}-{node}-{socket}",
+		maxlen=4096)
 	node_overwrite: bpy.props.BoolProperty(
 		name="Allow Overwrite",
 		description="Files with the same name in the same location will be overwritten",
@@ -946,7 +918,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 # •Registration function
 # •Unregistration function
 
-classes = (RenderKitPreferences, RenderKitSettings, RENDER_PT_autosave_video, RENDER_PT_autosave_image, batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render, render_proxy_start, RENDER_PT_render_region, CopyVariableToClipboard, OutputVariablePopup)
+classes = (RenderKitPreferences, RenderKitSettings, RENDER_PT_autosave_video, RENDER_PT_autosave_image, batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render, render_proxy_start, RENDER_PT_render_region, CopyVariableToClipboard, RenderKit_Property_Add, VariablePopup, ValuePopup)
 
 keymaps = []
 

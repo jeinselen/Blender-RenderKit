@@ -69,7 +69,7 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 			renderFeaturesArray.append('SSR')
 		if scene.eevee.use_motion_blur:
 			renderFeaturesArray.append('MB' + str(scene.eevee.motion_blur_steps))
-		renderFeatures = 'None' if len(renderFeaturesArray) == 0 else '+'.join(renderFeaturesArray)
+		renderFeatures = 'none' if len(renderFeaturesArray) == 0 else '+'.join(renderFeaturesArray)
 	
 	elif bpy.context.engine == 'BLENDER_EEVEE':
 		renderEngine = 'Eevee'
@@ -84,7 +84,7 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 			renderFeaturesArray.append('SSR')
 		if scene.eevee.use_motion_blur:
 			renderFeaturesArray.append('MB' + str(scene.eevee.motion_blur_steps))
-		renderFeatures = 'None' if len(renderFeaturesArray) == 0 else '+'.join(renderFeaturesArray)
+		renderFeatures = 'none' if len(renderFeaturesArray) == 0 else '+'.join(renderFeaturesArray)
 	
 	elif bpy.context.engine == 'BLENDER_EEVEE_NEXT':
 		renderEngine = 'EeveeNext'
@@ -113,7 +113,7 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 		for gpu in bpy.context.preferences.addons["rprblender"].preferences.settings.final_devices.available_gpu_states:
 			if gpu:
 				renderDevicesArray.append('GPU')
-		renderDevice = 'None' if len(renderDevicesArray) == 0 else '+'.join(renderDevicesArray)
+		renderDevice = 'none' if len(renderDevicesArray) == 0 else '+'.join(renderDevicesArray)
 		renderSamples = str(scene.rpr.limits.min_samples) + '+' + str(scene.rpr.limits.max_samples) + '+' + str(round(scene.rpr.limits.noise_threshold, 4))
 		renderFeatures = str(scene.rpr.max_ray_depth) + '+' + str(scene.rpr.diffuse_depth) + '+' + str(scene.rpr.glossy_depth) + '+' + str(scene.rpr.refraction_depth) + '+' + str(scene.rpr.glossy_refraction_depth) + '+' + str(scene.rpr.shadow_depth)
 	
@@ -149,7 +149,7 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 		renderFeatures = 'unknown'
 	
 	# Get conditional project variables Item > Material > Node
-	projectItem = projectMaterial = projectNode = 'None'
+	projectItem = projectMaterial = projectNode = 'none'
 	if view_layer.objects.active:
 		# Set active object
 		obj = view_layer.objects.active
@@ -225,7 +225,8 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 	string = string.replace("{scene}", scene.name)
 	string = string.replace("{viewlayer}", view_layer.name)
 	string = string.replace("{collection}", settings.batch_collection_name if len(settings.batch_collection_name) > 0 else bpy.context.collection.name)
-	string = string.replace("{camera}", scene.camera.name if scene.camera else 'None')
+	string = string.replace("{camera}", scene.camera.name if scene.camera else 'none')
+	string = string.replace("{object}", "{item}") # Alternate variable naming convention
 	string = string.replace("{item}", projectItem)
 	string = string.replace("{material}", projectMaterial)
 	string = string.replace("{node}", projectNode)
@@ -242,8 +243,8 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 	string = string.replace("{look}", sceneOverride.view_settings.look.replace(" ", "").replace("AgX-", "").replace("FalseColor-", ""))
 	string = string.replace("{exposure}", str(sceneOverride.view_settings.exposure))
 	string = string.replace("{gamma}", str(sceneOverride.view_settings.gamma))
-	string = string.replace("{curves}", "Curves" if sceneOverride.view_settings.use_curve_mapping else "None")
-	string = string.replace("{compositing}", "Compositing" if scene.use_nodes else "None")
+	string = string.replace("{curves}", "Curves" if sceneOverride.view_settings.use_curve_mapping else "none")
+	string = string.replace("{compositing}", "Compositing" if scene.use_nodes else "none")
 	
 	
 	
@@ -335,11 +336,11 @@ class CopyVariableToClipboard(bpy.types.Operator):
 # •Add variable list button and serial input at the top of the Render tab > Output panel
 # •Add variable list button and serial input at the top of the Compositing workspace > Node tab > Properties panel
 
-# Popup panel UI
-class OutputVariablePopup(bpy.types.Operator):
+# Variable popup panel UI
+class VariablePopup(bpy.types.Operator):
 	"""List of the available variables"""
-	bl_label = "Variable List"
-	bl_idname = "ed.output_variable_popup"
+	bl_label = "Variables"
+	bl_idname = "ed.render_kit_variables_popup"
 	bl_options = {'REGISTER', 'INTERNAL'}
 	
 	postrender: bpy.props.BoolProperty(default=False)
@@ -367,7 +368,7 @@ class OutputVariablePopup(bpy.types.Operator):
 				col = grid.column()
 				col.label(text = x[1], icon = x[2])
 			# Display list elements (filtering out time and node socket variables unless specifically enabled)
-			elif (item not in ["{duration}", "{rtime}", "{rH},{rM},{rS}", "{frame}"] or self.postrender) and (item not in ["{socket}"] or self.noderender):
+			elif (item not in ["{duration}", "{rtime}", "{rH},{rM},{rS}"] or self.postrender) and (item not in ["{socket}"] or self.noderender):
 				if ',' in item:
 					subrow = col.row(align = True)
 					for subitem in item.split(','):
@@ -386,33 +387,8 @@ def RENDER_PT_output_path_variable_list(self, context):
 	settings = context.scene.render_kit_settings
 	
 	if not (False) and prefs.render_output_variables:
-		# UI layout for Scene Output
-		layout = self.layout
-		
-		# VARIABLES BAR
-		bar = layout.row(align=False)
-
-		# Variable list popup button
-		ops = bar.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
-		ops.postrender = False
-		ops.noderender = False
-		ops.autoclose = True
-
-		# Local project serial number
-		input = bar.column()
-#		input.use_property_split = True
-		if not '{serial}' in bpy.context.scene.render.filepath:
-			input.active = False
-			input.enabled = False
-		input.prop(settings, 'output_file_serial', text='serial')
-
-		# Local project serial number
-		option = bar.column()
-#		option.use_property_split = True
-		if not '{marker}' in bpy.context.scene.render.filepath:
-			option.active = False
-			option.enabled = False
-		option.prop(settings, 'output_marker_direction', text='')
+		# Variable list UI
+		renderkit_variable_ui(self.layout, context, paths=bpy.context.scene.render.filepath, postrender=False, noderender=False, autoclose=True)
 
 
 
@@ -431,31 +407,6 @@ def NODE_PT_output_path_variable_list(self, context):
 				paths.append(slot.path)
 			paths = ''.join(paths)
 			
-			# UI layout for Node Properties
-			layout = self.layout
-			
-			# VARIABLES BAR
-			bar = layout.row(align=False)
-			
-			# Variable list popup button
-			ops = bar.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
-			ops.postrender = False
-			ops.noderender = False
-			ops.autoclose = True
-			
-			# Local project serial number
-			input = bar.column()
-#			input.use_property_split = True
-			if not '{serial}' in paths:
-				input.active = False
-				input.enabled = False
-			input.prop(settings, 'output_file_serial', text='serial')
-			
-			# Local project serial number
-			option = bar.column()
-#			option.use_property_split = True
-			if not '{marker}' in paths:
-				option.active = False
-				option.enabled = False
-			option.prop(settings, 'output_marker_direction', text='')
+			# Variable list UI
+			renderkit_variable_ui(self.layout, context, paths=paths, postrender=False, noderender=False, autoclose=True)
 			

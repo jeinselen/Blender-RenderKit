@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 id = "Launch_Render_Kit"
 name = "Launch Render Kit"
-version = "0.0.9"
+version = "0.1.0"
 tagline = "Render variables, video compression, autosaving, proxy, and render region controls"
 maintainer = "John Einselen <jeinselen@gmail.com>"
 website = "https://github.com/jeinselen/Blender-RenderKit"

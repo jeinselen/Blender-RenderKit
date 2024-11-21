@@ -1,10 +1,10 @@
 import bpy
 import os
 import time
-from .render_variables import replaceVariables, OutputVariablePopup
+from .render_variables import replaceVariables, renderkit_variable_ui
 from .utility_filecheck import checkExistingAndIncrement
 from .utility_notifications import render_notifications
-from .utility_time import secondsToStrings, secondsToReadable, readableToSeconds
+from .utility_time import secondsToReadable
 
 # ImageMagick processing
 from re import sub
@@ -64,7 +64,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		
 		# Get the file path and do the initial variable replacement
 		# Because mesh and texture data are generally organised in different locations, Delivery Kit location wasn't added here
-		file_path = settings.node_filepath + '.' + settings.node_format.replace("OPEN_EXR", "EXR").lower()
+		file_path = os.path.join(settings.node_filepath, settings.node_filename) + '.' + settings.node_format.replace("OPEN_EXR", "EXR").lower()
 		file_path = replaceVariables(file_path) # Must be completed before the active nodes change
 		
 		# Get the output socket by name
@@ -272,13 +272,13 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 	bl_space_type = 'NODE_EDITOR'
 	bl_region_type = 'UI'
 	bl_category = 'Node'
-	bl_label = "Render Node to Image"
+	bl_label = "Render Node"
 	
 	@classmethod
 	def poll(cls, context):
 		prefs = context.preferences.addons[__package__].preferences
-		obj = context.active_object
-		return (prefs.rendernode_enable and context.space_data.tree_type == 'ShaderNodeTree' and context.object.active_material is not None and obj and obj.type == 'MESH' and context.active_node)
+#		obj = context.active_object
+		return (prefs.rendernode_enable and context.space_data.tree_type == 'ShaderNodeTree' and context.object.active_material is not None and context.active_object and context.active_object.data and context.active_object.type == 'MESH' and context.active_node)
 		# context.scene.node_tree.type ?
 	
 	def draw(self, context):
@@ -313,36 +313,13 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 		header, panel = layout.panel("render_node_subpanel", default_closed=True)
 		header.label(text="Settings")
 		if panel:
-			# VARIABLES BAR
-			bar = layout.row(align=False)
-			# Combine all used paths for variable checks
-			
-			# Variable list popup button
-			ops = bar.operator(OutputVariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
-			ops.postrender = True
-			ops.noderender = True
-			ops.autoclose = True
-			
-			# Local project serial number
-			input = bar.column()
-#			input.use_property_split = True
-			if not '{serial}' in settings.node_filepath:
-				input.active = False
-				input.enabled = False
-			input.prop(settings, 'output_file_serial', text='serial')
-			
-			# Local project serial number
-			option = bar.column()
-#			option.use_property_split = True
-			if not '{marker}' in settings.node_filepath:
-				option.active = False
-				option.enabled = False
-			option.prop(settings, 'output_marker_direction', text='')
-			
-			
+			# Variable list UI
+			filepath = settings.node_filepath + settings.node_filename
+			renderkit_variable_ui(panel, context, paths=filepath, postrender=False, noderender=True, autoclose=True)
 			
 			# Output filepath
 			panel.prop(settings, "node_filepath", text='')
+			panel.prop(settings, "node_filename", text='')
 #			grid = panel.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=False)
 			# Row 1
 #			grid.label(text='Formatting', icon='IMAGE_PLANE') # FILE_IMAGE IMAGE_PLANE FILE CURRENT_FILE
