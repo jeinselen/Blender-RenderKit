@@ -12,7 +12,7 @@ type = "add-on"
 tags = ["Camera", "Compositing", "Material", "Pipeline", "Render", "Scene"]
 
 blender_version_min = "4.2.0"
-blender_version_max = "4.3.0"
+blender_version_max = "4.7.0"
 
 # License conforming to https://spdx.org/licenses/ (use "SPDX: prefix)
 # https://docs.blender.org/manual/en/dev/advanced/extensions/licenses.html
