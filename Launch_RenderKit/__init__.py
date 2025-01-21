@@ -9,7 +9,7 @@ from .render_0_start import render_kit_start
 from .render_1_frame import render_kit_frame_pre, render_kit_frame_post
 from .render_2_end import render_kit_end
 from .render_autosave import RENDER_PT_autosave_video, RENDER_PT_autosave_image
-from .render_batch import batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render, render_batch_menu_item
+from . import render_batch
 from .render_display import RENDER_PT_total_render_time_display, image_viewer_feedback_display
 from . import render_node
 from .render_proxy import render_proxy_start, render_proxy_menu_item
@@ -28,19 +28,36 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	
 	# Render region
 	region_enable: bpy.props.BoolProperty(
-		name='Render Region Panel',
+		name='Render Region',
 		description='Adds numerical render region controls to the Properties > Output > Format panel',
 		default=True)
 	
 	# Batch rendering
 	batch_enable: bpy.props.BoolProperty(
-		name='Render Batch Panel',
-		description='Adds batch rendering panel to the Properties > Output section and rendering menu',
+		name='Render Batch',
+		description='Adds batch rendering panel to the Properties > Output section, the specified 3D View category, and rendering menu',
 		default=True)
+	
+	def update_batch_category(self, context):
+		category = bpy.context.preferences.addons[__package__].preferences.batch_category
+		try:
+			bpy.utils.unregister_class(render_batch.BATCH_PT_batch_render_3dview)
+		except RuntimeError:
+			pass
+		if len(category) > 0:
+			render_batch.BATCH_PT_batch_render_3dview.bl_category = category
+			bpy.utils.register_class(render_batch.BATCH_PT_batch_render_3dview)
+	
+	batch_category: bpy.props.StringProperty(
+		name="Batch Render Panel",
+		description="Choose a category tab for the panel to be placed in",
+		default="Launch",
+		update=update_batch_category)
+		# Consider adding search_options=(list of currently available tabs) for easier operation
 	
 	# Render node
 	rendernode_enable: bpy.props.BoolProperty(
-		name='Render Node Panel',
+		name='Render Node',
 		description='Adds node baking to the Node Properties panel of the material editor',
 		default=True)
 	
@@ -346,7 +363,12 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		grid0.prop(self, "region_enable")
 		grid0.separator()
 		grid0.prop(self, "batch_enable")
-		grid0.separator()
+		input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+		if not self.batch_enable:
+			input.active = False
+			input.enabled = False
+		input.prop(self, "batch_category", text="")
+		input.separator()
 		
 		# Render Node settings
 		grid0.prop(self, "rendernode_enable")
@@ -918,7 +940,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 # •Registration function
 # •Unregistration function
 
-classes = (RenderKitPreferences, RenderKitSettings, RENDER_PT_autosave_video, RENDER_PT_autosave_image, batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render, render_proxy_start, RENDER_PT_render_region, CopyVariableToClipboard, RenderKit_Property_Add, VariablePopup, ValuePopup)
+classes = (RenderKitPreferences, RenderKitSettings, RENDER_PT_autosave_video, RENDER_PT_autosave_image, render_proxy_start, RENDER_PT_render_region, CopyVariableToClipboard, RenderKit_Property_Add, VariablePopup, ValuePopup)
 
 keymaps = []
 
@@ -939,7 +961,6 @@ def register():
 	
 	# Add proxy and batch render menu items
 	bpy.types.TOPBAR_MT_render.prepend(render_proxy_menu_item)
-	bpy.types.TOPBAR_MT_render.prepend(render_batch_menu_item)
 	
 	# Attach render event handlers
 	bpy.app.handlers.render_init.append(render_kit_start)
@@ -956,10 +977,13 @@ def register():
 	bpy.types.RENDER_PT_output.prepend(RENDER_PT_output_path_variable_list)
 	bpy.types.NODE_PT_active_node_properties.prepend(NODE_PT_output_path_variable_list)
 	
+	########## Render Batch ##########
+	render_batch.register()
+	
 	########## Render Node ##########
 	render_node.register()
 	
-	# Add keymaps for proxy and batch rendering
+	# Add keymaps for proxy rendering
 	wm = bpy.context.window_manager
 	kc = wm.keyconfigs.addon
 	if kc:
@@ -990,8 +1014,10 @@ def unregister():
 	########## Render Node ##########
 	render_node.unregister()
 	
+	########## Render Batch ##########
+	render_batch.unregister()
+	
 	# Remove proxy and batch render menu items
-	bpy.types.TOPBAR_MT_render.remove(render_batch_menu_item)
 	bpy.types.TOPBAR_MT_render.remove(render_proxy_menu_item)
 	
 	# Remove render event handlers

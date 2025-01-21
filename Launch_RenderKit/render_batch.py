@@ -659,6 +659,29 @@ class BATCH_PT_batch_render(bpy.types.Panel):
 			# Start batch render button
 			button.operator(batch_render_start.bl_idname, text=batch_text, icon=batch_icon)
 
+
+
+###########################################################################
+# Instance panel in the 3D View
+
+class BATCH_PT_batch_render_3dview(bpy.types.Panel):
+	bl_idname = "BATCH_PT_batch_render_3DView"
+	bl_label = "Batch Render"
+	bl_space_type = 'VIEW_3D'
+	bl_region_type = 'UI'
+	bl_category = 'Launch'
+	bl_order = 32
+	bl_options = {'DEFAULT_CLOSED'}
+	
+	@classmethod
+	def poll(cls, context):
+		# Reuse the poll method from BATCH_PT_batch_render
+		return BATCH_PT_batch_render.poll(context)
+	
+	def draw(self, context):
+		# Reuse the draw method from BATCH_PT_batch_render
+		BATCH_PT_batch_render.draw(self, context)
+
 ###########################################################################
 # Menu UI rendering class
 
@@ -669,3 +692,32 @@ def render_batch_menu_item(self,context):
 			layout.operator(batch_render_start.bl_idname, text="Render Batch", icon='RENDER_STILL')
 	except Exception as exc:
 		print(str(exc) + " Render Kit | Error in Topbar Mt Render when adding to menu")
+
+
+
+###########################################################################
+# Addon registration functions
+# •Define classes being registered
+# •Registration function
+# •Unregistration function
+
+classes = (batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render, BATCH_PT_batch_render_3dview)
+
+def register():
+	# Register classes
+	for cls in classes:
+		bpy.utils.register_class(cls)
+	
+	# Add menu item
+	bpy.types.TOPBAR_MT_render.prepend(render_batch_menu_item)
+
+def unregister():
+	# Remove menu item
+	bpy.types.TOPBAR_MT_render.remove(render_batch_menu_item)
+	
+	# Deregister classes
+	for cls in reversed(classes):
+		bpy.utils.unregister_class(cls)
+
+if __package__ == "__main__":
+	register()
