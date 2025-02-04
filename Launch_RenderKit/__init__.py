@@ -14,7 +14,7 @@ from .render_display import RENDER_PT_total_render_time_display, image_viewer_fe
 from . import render_node
 from .render_proxy import render_proxy_start, render_proxy_menu_item
 from .render_region import RENDER_PT_render_region
-from .render_variables import CopyVariableToClipboard, VariablePopup, RenderKit_Property_Add, ValuePopup, RENDER_PT_output_path_variable_list, NODE_PT_output_path_variable_list
+from . import render_variables
 
 
 
@@ -143,10 +143,27 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	########## Render Variables and Autosave ##########
 	
 	# Render variables
-	render_output_variables: bpy.props.BoolProperty(
+	render_variable_enable: bpy.props.BoolProperty(
 		name='Render Variables',
 		description='Implements dynamic keywords in the Output directory and Compositing tab "File Output" nodes',
 		default=True)
+	
+	def update_variable_category(self, context):
+		category = bpy.context.preferences.addons[__package__].preferences.variable_category
+		try:
+			bpy.utils.unregister_class(render_variables.RENDER_PT_value_editor_3dview)
+		except RuntimeError:
+			pass
+		if len(category) > 0:
+			render_variables.RENDER_PT_value_editor_3dview.bl_category = category
+			bpy.utils.register_class(render_variables.RENDER_PT_value_editor_3dview)
+	
+	variable_category: bpy.props.StringProperty(
+		name="Batch Render Panel",
+		description="Choose a category tab for the panel to be placed in",
+		default="Launch",
+		update=update_variable_category)
+		# Consider adding search_options=(list of currently available tabs) for easier operation
 	
 	# Autosave videos
 	ffmpeg_processing: bpy.props.BoolProperty(
@@ -425,15 +442,12 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		layout.label(text="Saving", icon="FILE_FOLDER") # CURRENT_FILE FILE_CACHE FILE_FOLDER FILEBROWSER
 		grid1 = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
 		
-		grid1.prop(self, "render_output_variables")
+		grid1.prop(self, "render_variable_enable")
 		input = grid1.grid_flow(row_major=True, columns=1, even_columns=True, even_rows=False, align=False)
-#		if not self.render_output_variables:
-#			input.active = False
-#			input.enabled = False
-#		ops = input.operator(VariablePopup.bl_idname, text = "Variable List", icon = "LINENUMBERS_OFF")
-#		ops.postrender = True
-#		ops.noderender = True
-#		ops.autoclose = False
+		if not self.render_variable_enable:
+			input.active = False
+			input.enabled = False
+		input.prop(self, "variable_category", text="")
 		
 		########## Autosave Videos ##########
 		
@@ -940,7 +954,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 # •Registration function
 # •Unregistration function
 
-classes = (RenderKitPreferences, RenderKitSettings, RENDER_PT_autosave_video, RENDER_PT_autosave_image, render_proxy_start, RENDER_PT_render_region, CopyVariableToClipboard, RenderKit_Property_Add, VariablePopup, ValuePopup)
+classes = (RenderKitPreferences, RenderKitSettings, RENDER_PT_autosave_video, RENDER_PT_autosave_image, render_proxy_start, RENDER_PT_render_region)
 
 keymaps = []
 
@@ -973,15 +987,14 @@ def register():
 	bpy.types.RENDER_PT_output.append(RENDER_PT_total_render_time_display)
 	bpy.types.IMAGE_MT_editor_menus.append(image_viewer_feedback_display)
 	
-	# Add variable popup UI
-	bpy.types.RENDER_PT_output.prepend(RENDER_PT_output_path_variable_list)
-	bpy.types.NODE_PT_active_node_properties.prepend(NODE_PT_output_path_variable_list)
-	
 	########## Render Batch ##########
 	render_batch.register()
 	
 	########## Render Node ##########
 	render_node.register()
+	
+	########## Render Variables ##########
+	render_variables.register()
 	
 	# Add keymaps for proxy rendering
 	wm = bpy.context.window_manager
@@ -1011,6 +1024,9 @@ def unregister():
 		km.keymap_items.remove(kmi)
 	keymaps.clear()
 	
+	########## Render Variables ##########
+	render_variables.unregister()
+	
 	########## Render Node ##########
 	render_node.unregister()
 	
@@ -1030,10 +1046,6 @@ def unregister():
 	# Remove render time displays
 	bpy.types.RENDER_PT_output.remove(RENDER_PT_total_render_time_display)
 	bpy.types.IMAGE_MT_editor_menus.remove(image_viewer_feedback_display)
-	
-	# Remove variable popup UI
-	bpy.types.RENDER_PT_output.remove(RENDER_PT_output_path_variable_list)
-	bpy.types.NODE_PT_active_node_properties.remove(NODE_PT_output_path_variable_list)
 	
 	# Remove extension settings reference
 	del bpy.types.Scene.render_kit_settings

@@ -29,7 +29,7 @@ def render_kit_frame_pre(scene):
 	
 	# If file name processing is enabled and a sequence is underway, re-process output variables
 	# Note: {serial} usage is not checked here as it should have already been completed by the render_kit_start function
-	if prefs.render_output_variables:
+	if prefs.render_variable_enable:
 		
 		# Filter render output file path
 		if settings.output_file_path:

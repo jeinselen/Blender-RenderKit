@@ -47,14 +47,14 @@ def render_kit_start(scene):
 			settings.output_file_serial_used = True if '{serial}' in settings.autosave_video_custom_location else False
 	
 	# If variable processing is turned on
-	if prefs.render_output_variables:
+	if prefs.render_variable_enable:
 		# Save original output file path
 		settings.output_file_path = filepath = scene.render.filepath
 		# Check for serial number usage
 		settings.output_file_serial_used = True if '{serial}' in scene.render.filepath else False
 	
 	# Save compositing node file paths if turned on in the plugin settings and compositing is enabled
-	if prefs.render_output_variables and scene.use_nodes:
+	if prefs.render_variable_enable and scene.use_nodes:
 		# Iterate through Compositor nodes, adding all file output node path and sub-path variables to a dictionary
 		node_settings = {}
 		for node in scene.node_tree.nodes:
@@ -83,7 +83,7 @@ def render_kit_start(scene):
 	
 	# If file name processing is enabled and a sequence is underway, re-process output variables
 	# Note: {serial} usage is not checked here as it should have already been completed by the render_kit_start function
-	if prefs.render_output_variables:
+	if prefs.render_variable_enable:
 		
 		# Filter render output file path
 		if settings.output_file_path:

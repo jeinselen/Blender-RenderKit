@@ -663,7 +663,7 @@ def RENDER_PT_output_path_variable_list(self, context):
 	prefs = context.preferences.addons[__package__].preferences
 	settings = context.scene.render_kit_settings
 	
-	if not (False) and prefs.render_output_variables:
+	if not (False) and prefs.render_variable_enable:
 		# Variable list UI
 		renderkit_variable_ui(self.layout, context, paths=bpy.context.scene.render.filepath, postrender=False, noderender=False, autoclose=True)
 
@@ -674,7 +674,7 @@ def NODE_PT_output_path_variable_list(self, context):
 	prefs = context.preferences.addons[__package__].preferences
 	settings = context.scene.render_kit_settings
 	
-	if not (False) and prefs.render_output_variables and context.scene.node_tree and context.scene.node_tree.type == 'COMPOSITING':
+	if not (False) and prefs.render_variable_enable and context.scene.node_tree and context.scene.node_tree.type == 'COMPOSITING':
 		active_node = context.scene.node_tree.nodes.active
 		if isinstance(active_node, bpy.types.CompositorNodeOutputFile):
 #		if active_node.type == 'OUTPUT_FILE':
@@ -686,4 +686,36 @@ def NODE_PT_output_path_variable_list(self, context):
 			
 			# Variable list UI
 			renderkit_variable_ui(self.layout, context, paths=paths, postrender=False, noderender=False, autoclose=True)
+
+
+
+
+
+###########################################################################
+# Addon registration functions
+# •Define classes being registered
+# •Registration function
+# •Unregistration function
 			
+classes = (CopyVariableToClipboard, RenderKit_Property_Add, VariablePopup, ValuePopup, RENDER_PT_value_editor_3dview)
+
+def register():
+	# Register classes
+	for cls in classes:
+		bpy.utils.register_class(cls)
+	
+	# Add variable popup UI
+	bpy.types.RENDER_PT_output.prepend(RENDER_PT_output_path_variable_list)
+	bpy.types.NODE_PT_active_node_properties.prepend(NODE_PT_output_path_variable_list)
+
+def unregister():
+	# Remove variable popup UI
+	bpy.types.NODE_PT_active_node_properties.remove(NODE_PT_output_path_variable_list)
+	bpy.types.RENDER_PT_output.remove(RENDER_PT_output_path_variable_list)
+	
+	# Deregister classes
+	for cls in reversed(classes):
+		bpy.utils.unregister_class(cls)
+
+if __package__ == "__main__":
+	register()

@@ -74,13 +74,13 @@ def render_kit_end(scene):
 	settings.sequence_rendering_status = False
 	
 	# Restore unprocessed file path if processing is enabled
-	if prefs.render_output_variables and settings.output_file_path:
+	if prefs.render_variable_enable and settings.output_file_path:
 		scene.render.filepath = settings.output_file_path
 		# Clear output file path storage
 		settings.output_file_path = ""
 	
 	# Restore unprocessed node output file path if processing is enabled, compositing is enabled, and a file output node exists with the default node name
-	if prefs.render_output_variables and scene.use_nodes and len(settings.output_file_nodes) > 2:
+	if prefs.render_variable_enable and scene.use_nodes and len(settings.output_file_nodes) > 2:
 		
 		# Get the JSON data from the preferences string where it was stashed
 		json_data = settings.output_file_nodes
