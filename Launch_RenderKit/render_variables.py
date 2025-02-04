@@ -458,7 +458,114 @@ class RenderKit_Property_Add(bpy.types.Operator):
 
 
 
-# Value popup panel UI
+
+
+###########################################################################
+# Value Editor
+
+# Value editing UI
+def draw_value_ui(self, context, layout, popup = False, column_count = 1):
+	grid = layout.grid_flow(row_major=True, columns = column_count, even_columns = True, even_rows = False)
+	
+	# Set first-property tracker to ensure just one "add property" button is added to each column
+	property_first = False
+	
+	for item in valueArray:
+		
+		# Display headers
+		if item.startswith('title,'):
+			x = item.split(',')
+			col = grid.column()
+			col.label(text = x[1], icon = x[2])
+			# Reset the property button tracking
+			property_first = False
+			
+		# Display list elements
+		else:
+			# Define target element
+			target = None
+			target_name = None
+			target_type = None
+			
+			if item.startswith('{s') and context.scene:
+				target = context.scene
+				target_type = 'SCENE'
+				target_path = 'scene'
+			elif item.startswith('{v') and context.view_layer:
+				target = context.view_layer
+				target_type = 'VIEW_LAYER'
+				target_path = 'view_layer'
+			elif item.startswith('{i') and context.view_layer.objects.active:
+				target = context.view_layer.objects.active
+				target_type = 'OBJECT'
+				target_path = 'view_layer.objects.active'
+			elif item.startswith('{m') and bpy.context.view_layer.objects.active.active_material:
+				target = context.view_layer.objects.active.active_material
+				target_type = 'MATERIAL'
+				target_path = 'view_layer.objects.active.active_material'
+				
+			if target != None:
+				target_name = target.name
+			
+			# Get the property number
+			number = sub("\\D", "", item)
+			
+			# Define the property name
+			property_name = f"{valueName}{number}"
+			
+			# Check for existing property
+			if property_name in target:
+				# Start a new row in the column
+				row = col.row()
+				
+				# Left side
+				split = col.split(factor=0.25, align=True)
+				label_row = split.row()
+				label_row.alignment = 'RIGHT'
+				
+				# Copy variable name button
+				ops = label_row.operator(CopyVariableToClipboard.bl_idname, text=item, emboss=False)
+				ops.string = item
+				if popup:
+					ops.close = self.autoclose
+				
+				# Right side
+				value_row = split.row(align=True)
+				value_column = value_row.column(align=True)
+				
+				# Display property value field
+				value_column.prop(target, f'["{property_name}"]', text="")
+				
+				# Create sub-row
+				operator_row = value_row.row(align=True)
+				operator_row.alignment = 'RIGHT'
+				
+				# Edit property button
+				props = operator_row.operator("wm.properties_edit", text="", icon='PREFERENCES', emboss=False)
+				props.data_path = target_path
+				props.property_name = property_name
+				
+				# Remove property button
+				props = operator_row.operator("wm.properties_remove", text="", icon='X', emboss=False)
+				props.data_path = target_path
+				props.property_name = property_name
+			
+			# If no property exists, and no button exists yet, add a button
+			elif not property_first:
+				row = col.row()
+				
+				# Add property button
+				prop = row.operator(RenderKit_Property_Add.bl_idname, text="Add property variable", icon='ADD', emboss=True)
+				prop.target_name = target_name
+				prop.target_type = target_type
+				prop.prop_name = property_name
+				
+				# Update property status
+				property_first = True
+
+
+
+# Value editing popup panel
 class ValuePopup(bpy.types.Operator):
 	"""List of the available value properties"""
 	bl_label = "Values"
@@ -480,143 +587,36 @@ class ValuePopup(bpy.types.Operator):
 	
 	def draw(self, context):
 		layout = self.layout
-		grid = self.layout.grid_flow(row_major=True, columns = 5, even_columns = True, even_rows = True)
-		
-		# Set first-property tracker to ensure just one "add property" button is added to each column
-		property_first = False
-		
-		for item in valueArray:
-			
-			# Display headers
-			if item.startswith('title,'):
-				x = item.split(',')
-				col = grid.column()
-				col.label(text = x[1], icon = x[2])
-				# Reset the property button tracking
-				property_first = False
-			
-			# Display list elements
-			else:
-				# Define target element
-				target = None
-				target_name = None
-				target_type = None
-				
-				if item.startswith('{s') and context.scene:
-					target = context.scene
-					target_type = 'SCENE'
-					target_path = 'scene'
-				elif item.startswith('{v') and context.view_layer:
-					target = context.view_layer
-					target_type = 'VIEW_LAYER'
-					target_path = 'view_layer'
-				elif item.startswith('{i') and context.view_layer.objects.active:
-					target = context.view_layer.objects.active
-					target_type = 'OBJECT'
-					target_path = 'view_layer.objects.active'
-				elif item.startswith('{m') and bpy.context.view_layer.objects.active.active_material:
-					target = context.view_layer.objects.active.active_material
-					target_type = 'MATERIAL'
-					target_path = 'view_layer.objects.active.active_material'
-				
-				if target != None:
-					target_name = target.name
-				
-				# Get the property number
-				number = sub("\\D", "", item)
-				
-				# Define the property name
-				property_name = f"{valueName}{number}"
-				
-				# Check for existing property
-				if property_name in target:
-					# Start a new row in the column
-					row = col.row()
-					
-					# Left side
-					split = col.split(factor=0.25, align=True)
-					label_row = split.row()
-					label_row.alignment = 'RIGHT'
-					
-					# Copy variable name button
-					ops = label_row.operator(CopyVariableToClipboard.bl_idname, text=item, emboss=False)
-					ops.string = item
-					ops.close = self.autoclose
-					
-					# Right side
-					value_row = split.row(align=True)
-					value_column = value_row.column(align=True)
-					
-					# Display property value field
-					value_column.prop(target, f'["{property_name}"]', text="")
-					
-					# Create sub-row
-					operator_row = value_row.row(align=True)
-					operator_row.alignment = 'RIGHT'
-					
-					# Edit property button
-#					bpy.ops.wm.properties_edit(data_path="scene", property_name="RenderKit_Value_0")
-#					bpy.ops.wm.properties_edit(data_path="view_layer", property_name="RenderKit_Value_0")
-#					bpy.ops.wm.properties_edit(data_path="object", property_name="RenderKit_Value_0")
-#					bpy.ops.wm.properties_edit(data_path="material", property_name="RenderKit_Value_0")
-					props = operator_row.operator("wm.properties_edit", text="", icon='PREFERENCES', emboss=False)
-					props.data_path = target_path
-					props.property_name = property_name
-					
-					# Remove property button
-					props = operator_row.operator("wm.properties_remove", text="", icon='X', emboss=False)
-					props.data_path = target_path
-					props.property_name = property_name
-					
-					
-					
-					# Start a new row in the column
-#					row = col.row(align=False)
-#					row.alignment = 'LEFT'
-					
-					# Copy variable name button
-#					ops = row.operator(CopyVariableToClipboard.bl_idname, text=item, emboss=False)
-#					ops.string = item
-					
-					# Display property value field
-#					row.prop(target, f'["{property_name}"]', text="")
-					
-					# Sub row
-#					subrow = row.row(align=True)
-#					subrow.alignment = 'RIGHT'
-					
-					# Edit property button
-#					props = subrow.operator("wm.properties_edit", text="", icon='PREFERENCES', emboss=False)
-#					props.data_path = target_type.lower()
-#					props.property_name = property_name
-					
-					# Remove property button
-#					props = subrow.operator("wm.properties_remove", text="", icon='X', emboss=False)
-#					props.data_path = target_type.lower()
-#					props.property_name = property_name
-					
-					
-				
-				# If no property exists, and no button exists yet, add a button
-				elif not property_first:
-					row = col.row()
-					
-					# Add property button
-					prop = row.operator(RenderKit_Property_Add.bl_idname, text="Add property variable", icon='ADD', emboss=True)
-					prop.target_name = target_name
-					prop.target_type = target_type
-					prop.prop_name = property_name
-					
-#					bpy.ops.wm.properties_add(*, data_path='')
-					
-					# Update property status
-					property_first = True
-		
+		draw_value_ui(self, context, layout, popup = True, column_count = 3)
 		layout.label(text='Click a variable to copy it to the clipboard', icon="COPYDOWN") # COPYDOWN PASTEDOWN
 
 
 
-# Global variable editing UI
+# Value editing 3D View panel
+class RENDER_PT_value_editor_3dview(bpy.types.Panel):
+	bl_idname = "RENDER_PT_value_editor_3dview"
+	bl_label = "Render Values"
+	bl_space_type = 'VIEW_3D'
+	bl_region_type = 'UI'
+	bl_category = 'Launch'
+	bl_order = 31
+	bl_options = {'DEFAULT_CLOSED'}
+	
+	@classmethod
+	def poll(cls, context):
+		return context.preferences.addons[__package__].preferences.render_variable_enable
+	
+	def draw(self, context):
+		layout = self.layout
+		draw_value_ui(self, context, layout, popup = False, column_count = 1)
+
+
+
+
+
+###########################################################################
+# Global variable and values button bar UI panels
+
 def renderkit_variable_ui(layout, context, paths="", postrender=True, noderender=True, autoclose=True, customserial=False):
 	prefs = context.preferences.addons[__package__].preferences
 	settings = context.scene.render_kit_settings
