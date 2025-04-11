@@ -72,9 +72,14 @@
 
 - Go to Blender Preferences > Get Extensions > Repositories > **＋** > Add Remote Repository
 - Set the URL to `https://jeinselen.github.io/Launch-Blender-Extensions/index.json`
-- Set the local directory if desired (relative paths seem to fail, try absolute instead)
 - Enable `Check for Updates on Start`
 - Filter the available extensions for "Launch" and install as needed
+
+
+
+## Installation via Drag-and-Drop:
+
+- Click and drag one of the file links from the [repository list page](https://jeinselen.github.io/Launch-Blender-Extensions/) into Blender
 
 
 
@@ -83,7 +88,9 @@
 - Download the .zip file for a specific kit
 - Drag-and-drop the file into Blender
 
-This method will not connect to the centralised repository here on GitHub and updates will not be automatically available. If you don't need easy updates, don't want GitHub servers to be pinged when you start up Blender, or would just like to try some extensions without adding yet another repository to your Blender settings, this is the option for you.
+
+
+These latter two methods will not connect to the centralised repository here on GitHub and updates will not be automatically available. If you don't need easy updates, don't want GitHub servers to be pinged when you start up Blender, or would just like to try some extensions without adding yet another repository to your Blender settings, this is the option for you.
 
 
 
