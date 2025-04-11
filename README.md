@@ -4,28 +4,66 @@
 
 ## Features:
 
-- Render Variables
+- ### Render Variables
+
   - Adds dynamic variables to rendering output paths, including:
+
     - The name of the current project, scene, view layer, collection, camera, selected item, material, node, socket (for node rendering only), or closest timeline marker
+
     - The selected render engine, device, samples, features, and rendering duration (in total seconds or HH:MM:SS formats)
+
     - The current computer host, processor, platform, system type, OS version, Python version, and Blender version
+
     - Date, time, global serial number, current frame, and batch rendering index (see below batch feature)
+
+      ![Screenshot-VariableList](images/Screenshot-VariableList.png)
+
     - Custom scene, render layer, and object data values that can be set using drivers or animation data
-- Autosave Images
+
+      ![Screenshot-VariableData](images/Screenshot-VariableData.png)
+
+- ### Autosave Images
+
   - Automatically saves every render in a specified folder using custom name and formatting
-- Autosave Videos
+
+    ![Screenshot-AutosaveImages](images/Screenshot-AutosaveImages.png)
+
+- ### Autosave Videos
+
   - Automatically processes image sequences using FFmpeg after rendering completes
-- Batch Rendering
+
+    ![Screenshot-AutosaveVideos](images/Screenshot-AutosaveVideos.png)
+
+- ### Render Batch
+
   - One-click rendering of collections, items, cameras, or texture folders to individual images or sequences
-- Render Nodes
+
+    ![Screenshot-Batch](images/Screenshot-Batch.png)
+
+- ### Render Node
+
   - One-click baking of material nodes to texture files
-- Render Proxy
+
+    ![Screenshot-Node](images/Screenshot-Node.png)
+
+- ### Render Proxy
+
   - Shortcut for triggering a proxy render with resolution and engine settings
-- Render Region
+
+    ![Screenshot-Proxy](images/Screenshot-Proxy.png)
+
+- ### Render Region
+
   - Adds numerical inputs for the render region feature
-- Render Data
+
+    ![Screenshot-Region](images/Screenshot-Region.png)
+
+- ### Render Data
+
   - Tracks the total time spent rendering a project and displays estimated time remaining during animation sequence rendering
-- Render Notifications
+
+- ### Render Notifications
+
   - Sends an email, push notification, or announces render statistics at the completion of renders over a given time limit
 
 
