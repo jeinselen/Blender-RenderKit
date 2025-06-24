@@ -17,7 +17,7 @@ from bpy.app.handlers import persistent
 
 # Add bl_info for version reference
 bl_info = {
-	'version': (1, 0, 0),
+	'version': (1, 0, 1),
 }
 
 # ----
@@ -34,8 +34,8 @@ class TimerManager:
 	def register_timer(self, callback, interval=1.0, persistent=False):
 		"""Register a timer with proper tracking"""
 		if callback in self.active_timers:
-			return False  # Already registered
-		
+			return None # Timer was cancelled
+
 		def wrapper():
 			try:
 				# Check if callback was cancelled
@@ -245,11 +245,19 @@ class FileSyncManager:
 		
 		try:
 			# Include all internal files (which now includes the blend file itself)
+			print(f"Creating manifest for {len(dependencies['internal'])} internal files")
+			
 			for file_path in dependencies['internal']:
 				if os.path.exists(file_path):
-					rel_path = os.path.relpath(file_path, project_root)
-					
+					# Ensure the file is actually within our project scope
 					try:
+						rel_path = os.path.relpath(file_path, project_root)
+						
+						# Skip files that would go outside project root (shouldn't happen but safety check)
+						if rel_path.startswith('..'):
+							print(f"Skipping file outside project root: {file_path}")
+							continue
+							
 						stat = os.stat(file_path)
 						file_hash = self.calculate_file_hash(file_path)
 						
@@ -260,12 +268,21 @@ class FileSyncManager:
 								'mtime': stat.st_mtime,
 								'abs_path': file_path
 							}
+							print(f"Added to manifest: {rel_path} ({stat.st_size} bytes)")
+						else:
+							print(f"Could not hash file: {file_path}")
+							
+					except ValueError as e:
+						print(f"Path error for {file_path}: {e}")
 					except Exception as e:
 						print(f"Error processing file {file_path}: {e}")
+				else:
+					print(f"Referenced file not found: {file_path}")
 						
 		except Exception as e:
 			print(f"Error creating referenced files manifest: {e}")
 			
+		print(f"Manifest created with {len(manifest)} files")
 		return manifest
 	
 	def get_directory_manifest(self, directory_path):
@@ -375,7 +392,307 @@ class SecureConnection:
 		return test_hash == hashed_password
 
 # ----
-# Network Discovery and Communication
+# Output File Monitor (Fixed)
+# ----
+
+class OutputFileMonitor:
+	"""Monitors project directory for new/modified files created during rendering"""
+	
+	def __init__(self, project_root, source_project_root):
+		self.project_root = project_root  # Root directory to monitor on target
+		self.source_project_root = source_project_root  # Root directory on source for path mapping
+		self.monitoring = False
+		self.monitor_thread = None
+		self.known_files = {}  # Store file path -> (size, mtime) mapping
+		self.pending_files = []  # List of files pending sync - THIS WAS MISSING!
+		self.pending_lock = threading.Lock()  # Thread safety for pending files
+		self.post_processing_monitor = False
+		
+		# Initialize known files with their modification times and sizes
+		self._scan_initial_files()
+	
+	def _scan_initial_files(self):
+		"""Scan and record all existing files before rendering starts"""
+		if not os.path.exists(self.project_root):
+			return
+			
+		for root, dirs, files in os.walk(self.project_root):
+			for file in files:
+				file_path = os.path.join(root, file)
+				try:
+					stat = os.stat(file_path)
+					self.known_files[file_path] = (stat.st_size, stat.st_mtime)
+				except OSError:
+					pass
+	
+	def start_monitoring(self):
+		"""Start monitoring for new/modified files"""
+		if self.monitoring:
+			return
+			
+		self.monitoring = True
+		print(f"Started monitoring project directory: {self.project_root}")
+		
+		# Start monitoring thread
+		if not self.monitor_thread or not self.monitor_thread.is_alive():
+			self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+			self.monitor_thread.start()
+	
+	def stop_monitoring(self):
+		"""Stop monitoring and do final sync of any remaining files"""
+		if not self.monitoring:
+			return
+			
+		print("Stopping output file monitoring...")
+		self.monitoring = False
+		self.post_processing_monitor = False
+		
+		if self.monitor_thread:
+			self.monitor_thread.join(timeout=5)
+		
+		# Do final comprehensive scan for any files we might have missed
+		self._final_sync_scan()
+	
+	def _monitor_loop(self):
+		"""Main monitoring loop - runs continuously during rendering"""
+		while self.monitoring:
+			try:
+				# Quick scan during active rendering
+				self._scan_for_new_files(quick_scan=True)
+				time.sleep(2)  # Check every 2 seconds
+				
+			except Exception as e:
+				print(f"Monitor loop error: {e}")
+				time.sleep(5)
+		
+		print("File monitoring loop stopped")
+	
+	def on_frame_written(self, scene, depsgraph=None):
+		"""Called when a frame is written to disk - immediate file detection"""
+		if not self.monitoring:
+			return
+			
+		def detect_frame_files():
+			# Wait a moment for file to be completely written
+			time.sleep(0.5)
+			
+			# Get the expected output file paths for this frame
+			expected_outputs = self._get_expected_frame_outputs(scene)
+			
+			# Check if expected files exist and add them to pending
+			for expected_path in expected_outputs:
+				if os.path.exists(expected_path):
+					try:
+						stat = os.stat(expected_path)
+						
+						# Check if this is actually a new or modified file
+						if (expected_path not in self.known_files or 
+							self.known_files[expected_path] != (stat.st_size, stat.st_mtime)):
+							
+							rel_path = os.path.relpath(expected_path, self.project_root)
+							print(f"Frame output detected: {rel_path}")
+							self._add_pending_file(expected_path, rel_path)
+						
+					except OSError as e:
+						print(f"Error checking frame output {expected_path}: {e}")
+			
+			# Also do a quick scan for any other files that might have been created
+			self._scan_for_new_files(quick_scan=True)
+		
+		# Run detection in background thread
+		threading.Thread(target=detect_frame_files, daemon=True).start()
+	
+	def _get_expected_frame_outputs(self, scene):
+		"""Get expected output file paths for the current frame"""
+		outputs = []
+		
+		# Main render output
+		if scene.render.filepath:
+			base_path = bpy.path.abspath(scene.render.filepath)
+			
+			# Handle frame numbering
+			if scene.render.use_file_extension:
+				if scene.frame_current != scene.frame_start or (scene.frame_end - scene.frame_start) > 0:
+					path_parts = os.path.splitext(base_path)
+					frame_str = f"{scene.frame_current:04d}"
+					
+					# Get file extension based on format
+					file_format = scene.render.image_settings.file_format
+					if file_format == 'PNG':
+						ext = '.png'
+					elif file_format == 'JPEG':
+						ext = '.jpg'
+					elif file_format == 'OPEN_EXR':
+						ext = '.exr'
+					elif file_format == 'TIFF':
+						ext = '.tif'
+					else:
+						ext = path_parts[1] if path_parts[1] else '.png'
+					
+					main_output = f"{path_parts[0]}{frame_str}{ext}"
+				else:
+					main_output = base_path
+			else:
+				main_output = base_path
+				
+			outputs.append(main_output)
+		
+		# Compositor node outputs
+		if scene.use_nodes and scene.node_tree:
+			for node in scene.node_tree.nodes:
+				if node.type == 'OUTPUT_FILE' and node.base_path:
+					base_path = bpy.path.abspath(node.base_path)
+					
+					for input_socket in node.inputs:
+						if input_socket.is_linked:
+							if input_socket.name != 'Image':
+								filename = f"{input_socket.name}{scene.frame_current:04d}"
+							else:
+								filename = f"Image{scene.frame_current:04d}"
+								
+							# Add file extension based on format
+							if hasattr(node, 'format'):
+								if node.format.file_format == 'PNG':
+									filename += '.png'
+								elif node.format.file_format == 'JPEG':
+									filename += '.jpg'
+								elif node.format.file_format == 'OPEN_EXR':
+									filename += '.exr'
+								else:
+									filename += '.png'
+							else:
+								filename += '.png'
+								
+							output_path = os.path.join(base_path, filename)
+							outputs.append(output_path)
+		
+		return outputs
+	
+	def _scan_for_new_files(self, quick_scan=False):
+		"""Scan for new or modified files"""
+		if not os.path.exists(self.project_root):
+			return
+			
+		current_files = {}
+		
+		# Scan all files in project directory
+		for root, dirs, files in os.walk(self.project_root):
+			# Skip certain directories that we don't want to sync back
+			dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['__pycache__', 'node_modules']]
+			
+			for file in files:
+				file_path = os.path.join(root, file)
+				
+				# Skip certain file types
+				if file.lower().endswith(('.tmp', '.lock', '.blend1', '.blend2', '.DS_Store')):
+					continue
+				
+				try:
+					stat = os.stat(file_path)
+					current_files[file_path] = (stat.st_size, stat.st_mtime)
+				except OSError:
+					continue
+		
+		# Find new or modified files
+		new_or_modified = []
+		for file_path, (size, mtime) in current_files.items():
+			if file_path not in self.known_files:
+				# New file
+				new_or_modified.append((file_path, "new"))
+			elif self.known_files[file_path] != (size, mtime):
+				# Modified file
+				new_or_modified.append((file_path, "modified"))
+		
+		# Process new/modified files
+		for file_path, change_type in new_or_modified:
+			rel_path = os.path.relpath(file_path, self.project_root)
+			print(f"Detected {change_type} file: {rel_path}")
+			self._add_pending_file(file_path, rel_path)
+		
+		# Update known files
+		if not quick_scan:
+			# Full update for comprehensive scans
+			self.known_files = current_files
+		else:
+			# For quick scans, update only the files we found as new/modified
+			for file_path, change_type in new_or_modified:
+				if file_path in current_files:
+					self.known_files[file_path] = current_files[file_path]
+	
+	def _add_pending_file(self, file_path, rel_path):
+		"""Add a file to the pending sync list (thread-safe)"""
+		with self.pending_lock:
+			# Check if already pending
+			for pending in self.pending_files:
+				if pending['file_path'] == file_path:
+					return  # Already pending
+			
+			# Add to pending list
+			file_info = {
+				'file_path': file_path,
+				'relative_path': rel_path,
+				'size': os.path.getsize(file_path) if os.path.exists(file_path) else 0,
+				'added_time': time.time()
+			}
+			
+			self.pending_files.append(file_info)
+			print(f"Added to pending sync: {rel_path}")
+	
+	def get_pending_files(self):
+		"""Get list of files pending sync (thread-safe) - THIS METHOD WAS MISSING!"""
+		with self.pending_lock:
+			# Return a copy to avoid threading issues
+			return [file_info.copy() for file_info in self.pending_files]
+	
+	def remove_pending_file(self, file_path):
+		"""Remove a file from pending sync list after successful sync"""
+		with self.pending_lock:
+			self.pending_files = [f for f in self.pending_files if f['file_path'] != file_path]
+	
+	def on_render_complete(self, scene, depsgraph=None):
+		"""Called when rendering completes - start monitoring for post-processing"""
+		if not self.monitoring:
+			return
+			
+		print("Render complete - starting post-processing file monitor")
+		self.post_processing_monitor = True
+		
+		# Do an immediate comprehensive scan
+		self._scan_for_new_files(quick_scan=False)
+		
+		# Continue monitoring for post-processing files (FFmpeg, etc.)
+		def post_processing_monitor():
+			monitor_time = 0
+			while self.post_processing_monitor and monitor_time < 30:  # Monitor for 30 seconds
+				time.sleep(3)
+				monitor_time += 3
+				try:
+					self._scan_for_new_files(quick_scan=True)
+				except Exception as e:
+					print(f"Post-processing monitor error: {e}")
+			
+			print("Post-processing monitoring completed")
+		
+		threading.Thread(target=post_processing_monitor, daemon=True).start()
+	
+	def _final_sync_scan(self):
+		"""Do a final comprehensive scan for any files that might have been created during shutdown"""
+		print("Performing final sync scan...")
+		
+		try:
+			# Wait a moment for any final file operations to complete
+			time.sleep(2)
+			
+			# Do one final comprehensive scan
+			self._scan_for_new_files(quick_scan=False)
+			
+			print(f"Final sync scan completed. {len(self.pending_files)} files pending sync.")
+			
+		except Exception as e:
+			print(f"Error in final sync scan: {e}")
+
+# ----
+# Network Discovery and Communication (Simplified)
 # ----
 
 class NetworkManager:
@@ -450,17 +767,22 @@ class NetworkManager:
 	def start_communication_server(self):
 		"""Start communication server for handling connections"""
 		if self.communication_active:
+			print("Communication server already active")
 			return
 		
 		self.update_ports_from_preferences()
 		
+		print(f"Starting communication server on port {self.communication_port}...")
 		self.communication_active = True
 		self.communication_thread = threading.Thread(
 			target=self._communication_server_loop,
 			daemon=True
 		)
 		self.communication_thread.start()
-		print(f"Communication server started on port {self.communication_port}")
+		
+		# Give the server a moment to start
+		time.sleep(0.5)
+		print(f"Communication server thread started")
 	
 	def stop_communication_server(self):
 		"""Stop communication server"""
@@ -525,13 +847,35 @@ class NetworkManager:
 		try:
 			server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 			server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-			server_sock.bind(('', self.communication_port))
-			server_sock.listen(5)
+			
+			# Try to bind to all interfaces (0.0.0.0) first, fallback to localhost
+			bind_addresses = [('0.0.0.0', self.communication_port), ('', self.communication_port)]
+			
+			bound = False
+			for bind_addr in bind_addresses:
+				try:
+					server_sock.bind(bind_addr)
+					bound = True
+					print(f"Communication server bound to {bind_addr[0] or 'localhost'}:{self.communication_port}")
+					break
+				except OSError as e:
+					print(f"Failed to bind to {bind_addr}: {e}")
+					continue
+			
+			if not bound:
+				print(f"Failed to bind communication server to any address on port {self.communication_port}")
+				return
+			
+			server_sock.listen(10)  # Increased queue size for multiple file transfers
 			server_sock.settimeout(1.0)
+			
+			print(f"Communication server listening, ready to accept connections")
 			
 			while self.communication_active and not self._shutdown_requested:
 				try:
 					client_sock, addr = server_sock.accept()
+					print(f"Accepted connection from {addr[0]}:{addr[1]}")
+					
 					# Handle client in separate thread
 					client_thread = threading.Thread(
 						target=self._handle_client,
@@ -554,6 +898,7 @@ class NetworkManager:
 					server_sock.close()
 				except:
 					pass
+			print("Communication server stopped")
 	
 	def _handle_client(self, client_sock, addr):
 		"""Handle individual client connections"""
@@ -582,22 +927,35 @@ class NetworkManager:
 						break
 					
 					message = json.loads(message_data.decode())
+					
+					# Debug: Log what type of message we're receiving
+					msg_type = message.get('type', 'unknown')
+					print(f"Received message type: {msg_type} from {addr[0]}")
+					
 					response = self._process_message(message, addr, client_sock)
 					
-					# Send response
-					response_data = json.dumps(response).encode()
-					client_sock.send(struct.pack('!I', len(response_data)))
-					client_sock.sendall(response_data)
+					# Send response (if not None - file transfers handle their own response)
+					if response is not None:
+						response_data = json.dumps(response).encode()
+						client_sock.send(struct.pack('!I', len(response_data)))
+						client_sock.sendall(response_data)
+						
+						# Log the response status
+						print(f"Sent response: {response.get('status', 'unknown')} for {msg_type}")
 				
-				except json.JSONDecodeError:
+				except json.JSONDecodeError as e:
+					print(f"JSON decode error from {addr[0]}: {e}")
 					error_response = {'status': 'error', 'message': 'Invalid JSON'}
 					response_data = json.dumps(error_response).encode()
 					client_sock.send(struct.pack('!I', len(response_data)))
 					client_sock.sendall(response_data)
 					break
+				except Exception as e:
+					print(f"Client handler error from {addr[0]}: {e}")
+					break
 		
 		except Exception as e:
-			print(f"Client handler error: {e}")
+			print(f"Client connection error from {addr[0]}: {e}")
 		finally:
 			try:
 				client_sock.close()
@@ -650,11 +1008,88 @@ class NetworkManager:
 		elif msg_type == 'render_cancel':
 			return self._handle_render_cancel(message)
 			
-		elif msg_type == 'output_file_sync':
-			return self._handle_output_file_sync(message, client_sock)
+		elif msg_type == 'get_pending_files':
+			return self._handle_get_pending_files(message)
+			
+		elif msg_type == 'request_file':
+			return self._handle_request_file(message, client_sock)
 		
 		else:
 			return {'status': 'error', 'message': 'Unknown message type'}
+	
+	def _handle_get_pending_files(self, message):
+		"""Handle request for list of files pending sync"""
+		try:
+			auth_token = message.get('auth_token')
+			
+			if self.stored_password_hash:
+				if not auth_token or auth_token not in self.security.auth_tokens:
+					return {'status': 'error', 'message': 'Authentication required'}
+			
+			# Get pending files from output monitor
+			global render_manager
+			if render_manager and render_manager.output_file_monitor:
+				pending_files = render_manager.output_file_monitor.get_pending_files()
+				return {'status': 'success', 'pending_files': pending_files}
+			else:
+				return {'status': 'success', 'pending_files': []}
+				
+		except Exception as e:
+			print(f"Get pending files request failed: {e}")
+			return {'status': 'error', 'message': f'Failed to get pending files: {e}'}
+	
+	def _handle_request_file(self, message, client_sock):
+		"""Handle request for a specific file"""
+		try:
+			auth_token = message.get('auth_token')
+			
+			if self.stored_password_hash:
+				if not auth_token or auth_token not in self.security.auth_tokens:
+					return {'status': 'error', 'message': 'Authentication required'}
+			
+			file_path = message.get('file_path')
+			relative_path = message.get('relative_path')
+			
+			if not file_path or not os.path.exists(file_path):
+				return {'status': 'error', 'message': 'File not found'}
+			
+			file_size = os.path.getsize(file_path)
+			
+			# Send file info first
+			response = {
+				'status': 'success', 
+				'message': 'Sending file',
+				'file_size': file_size,
+				'relative_path': relative_path
+			}
+			
+			response_data = json.dumps(response).encode()
+			client_sock.send(struct.pack('!I', len(response_data)))
+			client_sock.sendall(response_data)
+			
+			# Send file data
+			print(f"Sending file: {relative_path} ({file_size} bytes)")
+			with open(file_path, 'rb') as f:
+				bytes_sent = 0
+				while bytes_sent < file_size:
+					chunk = f.read(file_sync_manager.chunk_size)
+					if not chunk:
+						break
+					client_sock.sendall(chunk)
+					bytes_sent += len(chunk)
+			
+			print(f"File sent successfully: {relative_path}")
+			
+			# Remove from pending files after successful send
+			global render_manager
+			if render_manager and render_manager.output_file_monitor:
+				render_manager.output_file_monitor.remove_pending_file(file_path)
+			
+			return None  # Response already sent
+			
+		except Exception as e:
+			print(f"File request failed: {e}")
+			return {'status': 'error', 'message': f'File request failed: {e}'}
 	
 	def _handle_get_manifest(self, message):
 		"""Handle request for project manifest"""
@@ -741,28 +1176,18 @@ class NetworkManager:
 			render_settings = message.get('render_settings', {})
 			project_name = message.get('project_name', 'default')
 			blend_file = message.get('blend_file')
+			source_project_root = message.get('source_project_root')
 			
 			if not blend_file:
 				return {'status': 'error', 'message': 'Blend file path required'}
 			
-			# Set up output sync callback
-			global output_sync_manager
-			if not output_sync_manager:
-				output_sync_manager = OutputSyncManager(self)
+			# Add source project root to render settings for output monitoring
+			if source_project_root:
+				render_settings['source_project_root'] = source_project_root
 			
-			def output_callback(output_file, frame_number):
-				output_sync_manager.queue_output_file(
-					output_file,
-					frame_number,
-					addr[0],
-					self.communication_port,
-					auth_token,
-					project_name
-				)
-			
-			# Start render - mark as rendering to prevent connection drops
+			# Start render
 			self.is_rendering = True
-			result = render_manager.start_render(blend_file, render_settings, output_callback)
+			result = render_manager.start_render(blend_file, render_settings, source_project_root)
 			return result
 			
 		except Exception as e:
@@ -787,43 +1212,16 @@ class NetworkManager:
 		except Exception as e:
 			return {'status': 'error', 'message': f'Cancel request failed: {e}'}
 	
-	def _handle_output_file_sync(self, message, client_sock):
-		"""Handle output file synchronization from target to source"""
+	def _get_local_ip(self):
+		"""Get local IP address"""
 		try:
-			file_path = message.get('file_path')
-			file_size = message.get('file_size', 0)
-			frame_number = message.get('frame_number', 0)
-			
-			if not file_path:
-				return {'status': 'error', 'message': 'File path required'}
-			
-			# Create output directory
-			blend_dir = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else os.getcwd()
-			output_dir = os.path.join(blend_dir, 'output')
-			os.makedirs(output_dir, exist_ok=True)
-			
-			filename = os.path.basename(file_path)
-			target_path = os.path.join(output_dir, filename)
-			
-			# Receive file data
-			bytes_received = 0
-			with open(target_path, 'wb') as f:
-				while bytes_received < file_size:
-					chunk_size = min(file_sync_manager.chunk_size, file_size - bytes_received)
-					chunk = client_sock.recv(chunk_size)
-					if not chunk:
-						break
-					f.write(chunk)
-					bytes_received += len(chunk)
-			
-			if bytes_received == file_size:
-				return {'status': 'success', 'message': 'Output file received'}
-			else:
-				return {'status': 'error', 'message': 'Incomplete file transfer'}
-				
-		except Exception as e:
-			return {'status': 'error', 'message': f'Output file sync failed: {e}'}
+			with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+				s.connect(("8.8.8.8", 80))
+				return s.getsockname()[0]
+		except:
+			return "127.0.0.1"
 	
+	# Client-side methods for source computer
 	def discover_nodes(self, timeout=3):
 		"""Discover available nodes on the network"""
 		discovered = {}
@@ -1031,63 +1429,7 @@ class NetworkManager:
 			print(f"File sync failed: {e}")
 			return False
 	
-	def sync_output_file_to_source(self, ip, port, auth_token, file_path, frame_number):
-		"""Sync output file back to source computer"""
-		try:
-			if not os.path.exists(file_path):
-				return False
-				
-			file_size = os.path.getsize(file_path)
-			
-			with socket.create_connection((ip, port), timeout=30) as sock:
-				request = {
-					'type': 'output_file_sync',
-					'auth_token': auth_token,
-					'file_path': file_path,
-					'file_size': file_size,
-					'frame_number': frame_number,
-					'timestamp': time.time()
-				}
-				
-				message_data = json.dumps(request).encode()
-				sock.send(struct.pack('!I', len(message_data)))
-				sock.sendall(message_data)
-				
-				# Send file data
-				with open(file_path, 'rb') as f:
-					bytes_sent = 0
-					while bytes_sent < file_size:
-						chunk = f.read(file_sync_manager.chunk_size)
-						if not chunk:
-							break
-						sock.sendall(chunk)
-						bytes_sent += len(chunk)
-				
-				# Receive response
-				length_data = sock.recv(4)
-				if len(length_data) != 4:
-					return False
-					
-				response_length = struct.unpack('!I', length_data)[0]
-				response_data = sock.recv(response_length)
-				response = json.loads(response_data.decode())
-				
-				return response.get('status') == 'success'
-				
-		except Exception as e:
-			print(f"Output file sync failed: {e}")
-			return False
-	
-	def _get_local_ip(self):
-		"""Get local IP address"""
-		try:
-			with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-				s.connect(("8.8.8.8", 80))
-				return s.getsockname()[0]
-		except:
-			return "127.0.0.1"
-			
-	def send_render_request(self, ip, port, auth_token, project_name, blend_file, render_settings):
+	def send_render_request(self, ip, port, auth_token, project_name, blend_file, render_settings, source_project_root=None):
 		"""Send render request to remote node"""
 		try:
 			with socket.create_connection((ip, port), timeout=30) as sock:
@@ -1097,6 +1439,7 @@ class NetworkManager:
 					'project_name': project_name,
 					'blend_file': blend_file,
 					'render_settings': render_settings,
+					'source_project_root': source_project_root,
 					'timestamp': time.time()
 				}
 				
@@ -1149,6 +1492,105 @@ class NetworkManager:
 			
 		return None
 		
+	def get_pending_files(self, ip, port, auth_token):
+		"""Get list of files pending sync from remote node"""
+		try:
+			with socket.create_connection((ip, port), timeout=10) as sock:
+				request = {
+					'type': 'get_pending_files',
+					'auth_token': auth_token,
+					'timestamp': time.time()
+				}
+				
+				message_data = json.dumps(request).encode()
+				sock.send(struct.pack('!I', len(message_data)))
+				sock.sendall(message_data)
+				
+				length_data = sock.recv(4)
+				if len(length_data) != 4:
+					return None
+					
+				response_length = struct.unpack('!I', length_data)[0]
+				response_data = sock.recv(response_length)
+				response = json.loads(response_data.decode())
+				
+				if response.get('status') == 'success':
+					return response.get('pending_files', [])
+					
+		except Exception as e:
+			print(f"Get pending files request failed: {e}")
+			
+		return []
+	
+	def request_file_from_target(self, ip, port, auth_token, file_path, relative_path):
+		"""Request a specific file from target computer"""
+		try:
+			with socket.create_connection((ip, port), timeout=30) as sock:
+				request = {
+					'type': 'request_file',
+					'auth_token': auth_token,
+					'file_path': file_path,
+					'relative_path': relative_path,
+					'timestamp': time.time()
+				}
+				
+				message_data = json.dumps(request).encode()
+				sock.send(struct.pack('!I', len(message_data)))
+				sock.sendall(message_data)
+				
+				# Receive response with file info
+				length_data = sock.recv(4)
+				if len(length_data) != 4:
+					return False
+					
+				response_length = struct.unpack('!I', length_data)[0]
+				response_data = sock.recv(response_length)
+				response = json.loads(response_data.decode())
+				
+				if response.get('status') != 'success':
+					print(f"File request failed: {response.get('message', 'Unknown error')}")
+					return False
+				
+				file_size = response.get('file_size', 0)
+				target_relative_path = response.get('relative_path', relative_path)
+				
+				print(f"Receiving file: {target_relative_path} ({file_size} bytes)")
+				
+				# Determine where to save the file on source
+				if bpy.data.filepath:
+					source_blend_dir = os.path.dirname(bpy.data.filepath)
+					source_project_root = os.path.dirname(source_blend_dir)
+				else:
+					source_project_root = os.getcwd()
+				
+				target_path = os.path.join(source_project_root, target_relative_path)
+				
+				# Create directory structure if needed
+				target_dir = os.path.dirname(target_path)
+				os.makedirs(target_dir, exist_ok=True)
+				
+				# Receive file data
+				bytes_received = 0
+				with open(target_path, 'wb') as f:
+					while bytes_received < file_size:
+						chunk_size = min(file_sync_manager.chunk_size, file_size - bytes_received)
+						chunk = sock.recv(chunk_size)
+						if not chunk:
+							break
+						f.write(chunk)
+						bytes_received += len(chunk)
+				
+				if bytes_received == file_size:
+					print(f"✓ Successfully received: {target_relative_path}")
+					return True
+				else:
+					print(f"✗ Incomplete transfer for: {target_relative_path} ({bytes_received}/{file_size} bytes)")
+					return False
+				
+		except Exception as e:
+			print(f"File request failed: {e}")
+			return False
+	
 	def cancel_remote_render(self, ip, port, auth_token):
 		"""Cancel render on remote node"""
 		try:
@@ -1178,7 +1620,7 @@ class NetworkManager:
 			return False
 
 # ----
-# Rendering Management
+# Rendering Management (Simplified)
 # ----
 
 class RenderManager:
@@ -1196,11 +1638,10 @@ class RenderManager:
 		self.output_paths = []
 		self.original_output_path = ""
 		self.render_queue = []
-		self.output_callback = None
 		self._handlers_registered = False
 		self.output_file_monitor = None
 		
-	def start_render(self, blend_file_path, render_settings, output_callback=None):
+	def start_render(self, blend_file_path, render_settings, source_project_root):
 		"""Queue a render request"""
 		if self.active_render and self.render_status in ['preparing', 'rendering']:
 			return {'status': 'error', 'message': 'Render already in progress'}
@@ -1208,7 +1649,7 @@ class RenderManager:
 		render_request = {
 			'blend_file_path': blend_file_path,
 			'render_settings': render_settings,
-			'output_callback': output_callback,
+			'source_project_root': source_project_root,
 			'timestamp': time.time()
 		}
 		
@@ -1242,7 +1683,7 @@ class RenderManager:
 		"""Execute render request on main thread"""
 		blend_file_path = render_request['blend_file_path']
 		render_settings = render_request['render_settings']
-		output_callback = render_request['output_callback']
+		source_project_root = render_request['source_project_root']
 		
 		# Ensure blend file exists
 		if not os.path.exists(blend_file_path):
@@ -1268,10 +1709,10 @@ class RenderManager:
 		self._apply_render_settings(render_settings)
 		
 		# Set up progress monitoring
-		self._setup_render_monitoring(output_callback)
+		self._setup_render_monitoring()
 		
 		# Set up output file monitoring for automatic sync
-		self._setup_output_file_monitoring(render_settings)
+		self._setup_output_file_monitoring(source_project_root)
 		
 		# Start render
 		self.render_status = "preparing"
@@ -1320,24 +1761,21 @@ class RenderManager:
 		else:
 			self.frame_count = 1
 	
-	def _setup_output_file_monitoring(self, render_settings):
+	def _setup_output_file_monitoring(self, source_project_root):
 		"""Set up monitoring for newly created files during rendering"""
-		if not self.output_callback:
+		# Get the project root directory (parent of blend file)
+		blend_file_path = bpy.data.filepath
+		if not blend_file_path:
 			return
 			
-		# Get output directory
-		scene = bpy.context.scene
-		output_path = bpy.path.abspath(scene.render.filepath)
-		output_dir = os.path.dirname(output_path)
+		project_root = os.path.dirname(os.path.dirname(blend_file_path))
 		
-		# Create a file monitor that watches for new files
-		self.output_file_monitor = OutputFileMonitor(output_dir, self.output_callback)
+		# Create a file monitor - SIMPLIFIED VERSION
+		self.output_file_monitor = OutputFileMonitor(project_root, source_project_root)
 		self.output_file_monitor.start_monitoring()
 			
-	def _setup_render_monitoring(self, output_callback):
+	def _setup_render_monitoring(self):
 		"""Set up render progress monitoring"""
-		self.output_callback = output_callback
-		
 		# Clear previous handlers
 		self._clear_render_handlers()
 		
@@ -1456,168 +1894,8 @@ class RenderManager:
 		# Reset rendering flag
 		network_manager.is_rendering = False
 
-class OutputFileMonitor:
-	"""Monitors directory for new files created during rendering"""
-	
-	def __init__(self, output_dir, callback):
-		self.output_dir = output_dir
-		self.callback = callback
-		self.monitoring = False
-		self.monitor_thread = None
-		self.known_files = set()
-		
-		# Initialize known files
-		if os.path.exists(self.output_dir):
-			for root, dirs, files in os.walk(self.output_dir):
-				for file in files:
-					file_path = os.path.join(root, file)
-					self.known_files.add(file_path)
-	
-	def start_monitoring(self):
-		"""Start monitoring for new files"""
-		if self.monitoring:
-			return
-			
-		self.monitoring = True
-		self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-		self.monitor_thread.start()
-	
-	def stop_monitoring(self):
-		"""Stop monitoring"""
-		self.monitoring = False
-		if self.monitor_thread:
-			self.monitor_thread.join(timeout=2)
-	
-	def _monitor_loop(self):
-		"""Main monitoring loop"""
-		while self.monitoring:
-			try:
-				if os.path.exists(self.output_dir):
-					current_files = set()
-					
-					for root, dirs, files in os.walk(self.output_dir):
-						for file in files:
-							file_path = os.path.join(root, file)
-							current_files.add(file_path)
-					
-					# Find new files
-					new_files = current_files - self.known_files
-					
-					for new_file in new_files:
-						# Wait a moment to ensure file is completely written
-						time.sleep(0.5)
-						
-						if os.path.exists(new_file) and self.callback:
-							try:
-								# Extract frame number from filename if possible
-								frame_number = 0
-								filename = os.path.basename(new_file)
-								import re
-								frame_match = re.search(r'(\d{4})', filename)
-								if frame_match:
-									frame_number = int(frame_match.group(1))
-								
-								self.callback(new_file, frame_number)
-							except Exception as e:
-								print(f"Error syncing new output file {new_file}: {e}")
-					
-					self.known_files = current_files
-				
-				time.sleep(1)  # Check every second
-				
-			except Exception as e:
-				print(f"Output file monitor error: {e}")
-				time.sleep(2)
-
-class OutputSyncManager:
-	"""Manages synchronization of rendered output files back to source"""
-	
-	def __init__(self, network_manager):
-		self.network_manager = network_manager
-		self.sync_queue = []
-		self.sync_thread = None
-		self.sync_active = False
-		
-	def queue_output_file(self, file_path, frame_number, source_ip, source_port, auth_token, project_name):
-		"""Queue an output file for syncing back to source"""
-		sync_item = {
-			'file_path': file_path,
-			'frame_number': frame_number,
-			'source_ip': source_ip,
-			'source_port': source_port,
-			'auth_token': auth_token,
-			'project_name': project_name,
-			'timestamp': time.time()
-		}
-		
-		self.sync_queue.append(sync_item)
-		
-		if not self.sync_active:
-			self.start_sync_thread()
-			
-	def start_sync_thread(self):
-		"""Start background thread for syncing output files"""
-		if self.sync_active:
-			return
-			
-		self.sync_active = True
-		self.sync_thread = threading.Thread(target=self._sync_loop, daemon=True)
-		self.sync_thread.start()
-		
-	def stop_sync_thread(self):
-		"""Stop sync thread"""
-		self.sync_active = False
-		if self.sync_thread:
-			self.sync_thread.join(timeout=5)
-			
-	def _sync_loop(self):
-		"""Main loop for output file synchronization"""
-		while self.sync_active:
-			if self.sync_queue:
-				sync_item = self.sync_queue.pop(0)
-				self._sync_output_file(sync_item)
-			else:
-				time.sleep(0.5)
-				
-	def _sync_output_file(self, sync_item):
-		"""Sync individual output file back to source"""
-		try:
-			file_path = sync_item['file_path']
-			
-			if not os.path.exists(file_path):
-				return
-			
-			# Retry logic for network connection issues
-			max_retries = 3
-			retry_delay = 2
-			
-			for attempt in range(max_retries):
-				try:
-					success = self.network_manager.sync_output_file_to_source(
-						sync_item['source_ip'],
-						sync_item['source_port'],
-						sync_item['auth_token'],
-						file_path,
-						sync_item['frame_number']
-					)
-					
-					if success:
-						print(f"Successfully synced output file: {os.path.basename(file_path)}")
-						return
-						
-				except Exception as e:
-					print(f"Error syncing output file (attempt {attempt + 1}/{max_retries}): {e}")
-				
-				if attempt < max_retries - 1:
-					time.sleep(retry_delay)
-					retry_delay *= 2
-				
-		except Exception as e:
-			print(f"Error syncing output file: {e}")
-
 # Global instances
 render_manager = RenderManager()
-output_sync_manager = None
 network_manager = NetworkManager()
 
 # ----
@@ -1756,7 +2034,7 @@ class RemoteRenderProperties(PropertyGroup):
 	)
 
 # ----
-# Operators
+# Operators (keeping existing ones but simplifying some logic)
 # ----
 
 class REMOTERENDER_OT_StartDiscovery(Operator):
@@ -2128,28 +2406,6 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 		
 		return {'FINISHED'}
 
-class REMOTERENDER_OT_ClearCache(Operator):
-	bl_idname = "render_remote.clear_cache"
-	bl_label = "Clear Cache"
-	bl_description = "Clear local cache directory"
-	
-	def execute(self, context):
-		prefs = context.preferences.addons[__package__].preferences
-		cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
-		
-		if os.path.exists(cache_dir):
-			try:
-				shutil.rmtree(cache_dir)
-				os.makedirs(cache_dir, exist_ok=True)
-				self.report({'INFO'}, "Cache cleared successfully")
-			except Exception as e:
-				self.report({'ERROR'}, f"Failed to clear cache: {e}")
-				return {'CANCELLED'}
-		else:
-			self.report({'WARNING'}, "Cache directory does not exist")
-		
-		return {'FINISHED'}
-
 class REMOTERENDER_OT_StartRemoteRender(Operator):
 	bl_idname = "render_remote.start_remote_render"
 	bl_label = "Start Remote Render"
@@ -2179,6 +2435,14 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 		if not target_node:
 			self.report({'ERROR'}, "Remote node not connected")
 			return {'CANCELLED'}
+		
+		# Ensure source communication server is running for output file sync
+		if not network_manager.communication_active:
+			print("Starting communication server for output file sync...")
+			network_manager.start_communication_server()
+			time.sleep(1.0)  # Give it time to start
+		
+		print(f"Info: Render started on remote computer")
 		
 		# Prepare render settings
 		render_settings = {
@@ -2214,7 +2478,8 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			target_node.auth_token,
 			props.project_name,
 			remote_blend_path,
-			render_settings
+			render_settings,
+			project_root  # Pass source project root for output sync
 		)
 		
 		if result and result.get('status') == 'success':
@@ -2231,13 +2496,14 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 		return {'FINISHED'}
 	
 	def _start_progress_monitoring(self, context, target_node):
-		"""Start monitoring render progress"""
+		"""Start monitoring render progress and syncing output files - SIMPLIFIED"""
 		def monitor_progress():
 			props = context.scene.remote_render_props
 			
 			if not props.monitor_render:
 				return None
 			
+			# Get render status
 			status = network_manager.get_render_status(
 				target_node.ip,
 				target_node.port,
@@ -2251,14 +2517,68 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 				props.total_frames = status.get('frame_count', 0)
 				props.render_elapsed_time = status.get('elapsed_time', 0.0)
 				props.render_error_message = status.get('error_message', '')
+			
+			# Check for pending output files and sync them
+			try:
+				pending_files = network_manager.get_pending_files(
+					target_node.ip,
+					target_node.port,
+					target_node.auth_token
+				)
 				
-				if props.render_status in ['preparing', 'rendering']:
-					return 2.0
-				else:
-					props.monitor_render = False
-					return None
+				if pending_files:
+					print(f"Found {len(pending_files)} pending files for sync")
+					
+					for file_info in pending_files:
+						file_path = file_info.get('file_path')
+						relative_path = file_info.get('relative_path')
+						
+						if file_path and relative_path:
+							print(f"Syncing from target: {relative_path}")
+							
+							success = network_manager.request_file_from_target(
+								target_node.ip,
+								target_node.port,
+								target_node.auth_token,
+								file_path,
+								relative_path
+							)
+							
+							if not success:
+								print(f"Failed to sync: {relative_path}")
+				
+			except Exception as e:
+				print(f"Error checking for pending files: {e}")
+			
+			# Continue monitoring if render is still active
+			if status and props.render_status in ['preparing', 'rendering']:
+				return 2.0  # Check every 2 seconds during rendering
 			else:
-				props.render_status = "Connection Error"
+				# Do one final check for pending files after render completes
+				try:
+					final_pending = network_manager.get_pending_files(
+						target_node.ip,
+						target_node.port,
+						target_node.auth_token
+					)
+					
+					if final_pending:
+						print(f"Final sync: {len(final_pending)} remaining files")
+						for file_info in final_pending:
+							file_path = file_info.get('file_path')
+							relative_path = file_info.get('relative_path')
+							
+							if file_path and relative_path:
+								network_manager.request_file_from_target(
+									target_node.ip,
+									target_node.port,
+									target_node.auth_token,
+									file_path,
+									relative_path
+								)
+				except Exception as e:
+					print(f"Error in final file sync: {e}")
+				
 				props.monitor_render = False
 				return None
 		
@@ -2365,6 +2685,28 @@ class REMOTERENDER_OT_DeselectAllSyncFiles(Operator):
 	def execute(self, context):
 		for sync_file in context.scene.sync_files:
 			sync_file.selected = False
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_ClearCache(Operator):
+	bl_idname = "render_remote.clear_cache"
+	bl_label = "Clear Cache"
+	bl_description = "Clear local cache directory"
+	
+	def execute(self, context):
+		prefs = context.preferences.addons[__package__].preferences
+		cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
+		
+		if os.path.exists(cache_dir):
+			try:
+				shutil.rmtree(cache_dir)
+				os.makedirs(cache_dir, exist_ok=True)
+				self.report({'INFO'}, "Cache cleared successfully")
+			except Exception as e:
+				self.report({'ERROR'}, f"Failed to clear cache: {e}")
+				return {'CANCELLED'}
+		else:
+			self.report({'WARNING'}, "Cache directory does not exist")
+		
 		return {'FINISHED'}
 
 # ----
@@ -2612,18 +2954,20 @@ class REMOTERENDER_PT_MainPanel(Panel):
 				if props.render_error_message:
 					status_box.label(text=f"Error: {props.render_error_message}", icon='ERROR')
 		
-		# Output monitoring
+		# Output monitoring info
 		box.separator()
-		box.label(text="Output Files:")
-		box.label(text="Rendered files will be automatically synced back to:")
-		box.label(text=f"  {bpy.path.abspath('//output/')}")
+		box.label(text="Output File Sync:", icon='FILE_REFRESH')
+		box.label(text="• Files are automatically pulled from target")
+		box.label(text="• Maintains project folder structure")
+		box.label(text="• No firewall issues (source pulls from target)")
 		
-		# Create output directory info
-		output_dir = bpy.path.abspath('//output/')
-		if not os.path.exists(output_dir):
-			box.label(text="(Output directory will be created automatically)", icon='INFO')
+		# Show project root info
+		if bpy.data.filepath:
+			project_root = file_sync_manager.get_project_root()
+			if project_root:
+				box.label(text=f"Project root: {os.path.basename(project_root)}/", icon='FILE_FOLDER')
 		else:
-			box.label(text="(Output directory exists)", icon='CHECKMARK')
+			box.label(text="(Save your project to see sync info)", icon='INFO')
 
 # ----
 # Render Handler Functions (Module Level)
@@ -2651,6 +2995,14 @@ def _render_cancel_handler(scene, depsgraph):
 	global render_manager, network_manager
 	render_manager.render_status = "cancelled"
 	render_manager.active_render = False
+	
+	# Stop output file monitoring immediately on cancel
+	if render_manager.output_file_monitor:
+		render_manager.output_file_monitor.stop_monitoring()
+		render_manager.output_file_monitor = None
+	
+	render_manager._clear_render_handlers()
+	
 	# Mark rendering as complete so connections can be cleaned up if needed
 	network_manager.is_rendering = False
 	print("Render cancelled")
@@ -2662,21 +3014,33 @@ def _render_complete_handler(scene, depsgraph):
 	render_manager.render_status = "completed"
 	render_manager.render_progress = 100.0
 	render_manager.active_render = False
-	render_manager._clear_render_handlers()
 	
-	# Stop output file monitoring
+	# Trigger post-processing file monitoring
 	if render_manager.output_file_monitor:
-		render_manager.output_file_monitor.stop_monitoring()
-		render_manager.output_file_monitor = None
+		render_manager.output_file_monitor.on_render_complete(scene, depsgraph)
 	
-	# Mark rendering as complete so connections can be cleaned up if needed
-	network_manager.is_rendering = False
+	# Clean up after a delay to allow final file operations
+	def delayed_cleanup():
+		time.sleep(10)  # Wait 10 seconds for final file operations
+		if render_manager.output_file_monitor:
+			render_manager.output_file_monitor.stop_monitoring()
+			render_manager.output_file_monitor = None
+		render_manager._clear_render_handlers()
+		network_manager.is_rendering = False
+		print("Render cleanup completed")
+	
+	threading.Thread(target=delayed_cleanup, daemon=True).start()
+	
 	print("All rendering completed")
 
 @persistent
 def _render_write_handler(scene, depsgraph):
 	"""Called when frame is written to disk"""
 	global render_manager
+	
+	# Trigger immediate file detection
+	if render_manager.output_file_monitor:
+		render_manager.output_file_monitor.on_frame_written(scene, depsgraph)
 	
 	# Update progress
 	if render_manager.frame_count > 0:
