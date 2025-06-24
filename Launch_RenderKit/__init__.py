@@ -1083,7 +1083,12 @@ def register():
 	render_variables.register()
 		
 	########## Render Remote ##########
-	render_remote.register()
+	if bpy.context.preferences.addons[__package__].preferences.remote_enable:
+		try:
+			render_remote.register()
+		except Exception as e:
+			print(f"Remote render registration failed: {e}")
+
 	
 	# Add keymaps for proxy rendering
 	wm = bpy.context.window_manager
@@ -1114,7 +1119,10 @@ def unregister():
 	keymaps.clear()
 		
 	########## Render Remote ##########
-	render_remote.unregister()
+	try:
+		render_remote.unregister()
+	except Exception as e:
+		print(f"Remote render unregistration failed: {e}")
 	
 	########## Render Variables ##########
 	render_variables.unregister()

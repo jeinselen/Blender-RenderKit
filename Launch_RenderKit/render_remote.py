@@ -15,6 +15,106 @@ from bpy.props import StringProperty, EnumProperty, BoolProperty, IntProperty, F
 from bpy.types import Operator, Panel, AddonPreferences, PropertyGroup
 from bpy.app.handlers import persistent
 
+# Add bl_info for version reference
+bl_info = {
+	'version': (1, 0, 0),
+}
+
+# ----
+# Timer Management System
+# ----
+
+class TimerManager:
+	"""Centralized timer management to prevent registration issues"""
+	
+	def __init__(self):
+		self.active_timers = set()
+		self.timer_callbacks = {}
+	
+	def register_timer(self, callback, interval=1.0, persistent=False):
+		"""Register a timer with proper tracking"""
+		if callback in self.active_timers:
+			return False  # Already registered
+		
+		def wrapper():
+			try:
+				# Check if callback was cancelled
+				if callback not in self.active_timers:
+					return None  # Timer was cancelled
+				
+				result = callback()
+				
+				# Handle different return values
+				if result is None:
+					# Callback wants to stop
+					self.unregister_timer(callback)
+					return None
+				elif result is False:
+					# Callback wants to stop
+					self.unregister_timer(callback)
+					return None
+				elif persistent and isinstance(result, (int, float)) and result > 0:
+					# Persistent timer with custom interval
+					return result
+				elif persistent:
+					# Persistent timer with default interval
+					return interval
+				else:
+					# One-shot timer, stop after execution
+					self.unregister_timer(callback)
+					return None
+				
+			except Exception as e:
+				print(f"Timer callback error: {e}")
+				self.unregister_timer(callback)
+				return None
+		
+		self.active_timers.add(callback)
+		self.timer_callbacks[callback] = wrapper
+		
+		try:
+			bpy.app.timers.register(wrapper, first_interval=interval)
+			return True
+		except Exception as e:
+			print(f"Failed to register timer: {e}")
+			self.active_timers.discard(callback)
+			if callback in self.timer_callbacks:
+				del self.timer_callbacks[callback]
+			return False
+	
+	def unregister_timer(self, callback):
+		"""Unregister a specific timer"""
+		if callback in self.active_timers:
+			self.active_timers.discard(callback)
+			if callback in self.timer_callbacks:
+				wrapper = self.timer_callbacks.pop(callback)
+				try:
+					# Check if timer is actually registered before trying to unregister
+					# Use hasattr to check if is_registered method exists (newer Blender versions)
+					if hasattr(bpy.app.timers, 'is_registered'):
+						if bpy.app.timers.is_registered(wrapper):
+							bpy.app.timers.unregister(wrapper)
+					else:
+						# For older Blender versions, just try to unregister
+						bpy.app.timers.unregister(wrapper)
+				except (ValueError, AttributeError, RuntimeError):
+					# Timer was already unregistered, doesn't exist, or Blender is shutting down
+					pass
+	
+	def cleanup_all(self):
+		"""Clean up all registered timers"""
+		# Make a copy of the set to iterate over since we'll be modifying it
+		active_timers_copy = self.active_timers.copy()
+		for callback in active_timers_copy:
+			self.unregister_timer(callback)
+		
+		# Clear any remaining references
+		self.active_timers.clear()
+		self.timer_callbacks.clear()
+
+# Global timer manager
+timer_manager = TimerManager()
+
 # ----
 # File Synchronization Manager
 # ----
@@ -64,6 +164,10 @@ class FileSyncManager:
 		project_root = self.get_project_root(blend_file_path)
 		dependencies = {'internal': [], 'external': [], 'missing': []}
 		
+		# Always include the blend file itself as an internal dependency
+		if os.path.exists(blend_file_path) and self.validate_file_scope(blend_file_path, project_root):
+			dependencies['internal'].append(blend_file_path)
+		
 		# Collect all file references from Blender
 		file_paths = set()
 		
@@ -97,9 +201,24 @@ class FileSyncManager:
 			for modifier in obj.modifiers:
 				if hasattr(modifier, 'filepath') and modifier.filepath:
 					file_paths.add(bpy.path.abspath(modifier.filepath))
-					
-		# Categorize files
+		
+		# Check for particle cache files
+		for obj in bpy.data.objects:
+			for modifier in obj.modifiers:
+				if modifier.type == 'PARTICLE_SYSTEM':
+					psys = modifier.particle_system
+					if psys.settings.type == 'HAIR':
+						continue
+					# Point cache files
+					if hasattr(psys, 'point_cache') and psys.point_cache.filepath:
+						file_paths.add(bpy.path.abspath(psys.point_cache.filepath))
+		
+		# Categorize files (excluding the blend file since we already added it)
 		for file_path in file_paths:
+			# Skip the blend file itself since we already added it
+			if file_path == blend_file_path:
+				continue
+				
 			if not os.path.exists(file_path):
 				dependencies['missing'].append(file_path)
 			elif self.validate_file_scope(file_path, project_root):
@@ -119,6 +238,35 @@ class FileSyncManager:
 			return hash_sha256.hexdigest()
 		except:
 			return None
+	
+	def get_referenced_files_manifest(self, project_root, dependencies):
+		"""Create a manifest of only referenced files with hashes and metadata"""
+		manifest = {}
+		
+		try:
+			# Include all internal files (which now includes the blend file itself)
+			for file_path in dependencies['internal']:
+				if os.path.exists(file_path):
+					rel_path = os.path.relpath(file_path, project_root)
+					
+					try:
+						stat = os.stat(file_path)
+						file_hash = self.calculate_file_hash(file_path)
+						
+						if file_hash:
+							manifest[rel_path] = {
+								'hash': file_hash,
+								'size': stat.st_size,
+								'mtime': stat.st_mtime,
+								'abs_path': file_path
+							}
+					except Exception as e:
+						print(f"Error processing file {file_path}: {e}")
+						
+		except Exception as e:
+			print(f"Error creating referenced files manifest: {e}")
+			
+		return manifest
 	
 	def get_directory_manifest(self, directory_path):
 		"""Create a manifest of all files in directory with hashes and metadata"""
@@ -211,12 +359,8 @@ class SecureConnection:
 	def create_ssl_context(self, is_server=False):
 		"""Create SSL context for secure connections"""
 		context = ssl.create_default_context()
-		if is_server:
-			context.check_hostname = False
-			context.verify_mode = ssl.CERT_NONE
-		else:
-			context.check_hostname = False
-			context.verify_mode = ssl.CERT_NONE
+		context.check_hostname = False
+		context.verify_mode = ssl.CERT_NONE
 		return context
 	
 	def hash_password(self, password, salt=None):
@@ -238,8 +382,8 @@ class NetworkManager:
 	"""Manages network discovery and communication"""
 	
 	def __init__(self):
-		self.discovery_port = 5001 # Port preferences will be updated later when available
-		self.communication_port = 5002 # Port preferences will be updated later when available
+		self.discovery_port = 5001
+		self.communication_port = 5002
 		self.broadcast_interval = 5
 		self.discovery_active = False
 		self.communication_active = False
@@ -249,7 +393,8 @@ class NetworkManager:
 		self.security = SecureConnection()
 		self.stored_password_hash = None
 		self.stored_salt = None
-		self.preserve_network_on_file_load = False  # Flag to prevent shutdown during file loads
+		self._shutdown_requested = False
+		self.is_rendering = False  # Track if we're currently rendering
 	
 	def update_ports_from_preferences(self):
 		"""Update ports from addon preferences if available"""
@@ -258,7 +403,6 @@ class NetworkManager:
 			self.discovery_port = prefs.remote_discovery_port
 			self.communication_port = prefs.remote_communication_port
 		except (AttributeError, KeyError):
-			# Keep existing values if preferences aren't available
 			pass
 	
 	def start_discovery_server(self, node_name, passcode=""):
@@ -273,6 +417,7 @@ class NetworkManager:
 			self.stored_password_hash = None
 			self.stored_salt = None
 			
+		self._shutdown_requested = False
 		self.discovery_active = True
 		self.discovery_thread = threading.Thread(
 			target=self._discovery_server_loop, 
@@ -288,9 +433,16 @@ class NetworkManager:
 	
 	def stop_discovery_server(self):
 		"""Stop discovery server"""
+		# Don't stop if we're actively rendering
+		if self.is_rendering:
+			print("Skipping discovery server stop - rendering in progress")
+			return
+			
+		self._shutdown_requested = True
 		self.discovery_active = False
-		if self.discovery_thread:
-			self.discovery_thread.join(timeout=1)
+		
+		if self.discovery_thread and self.discovery_thread.is_alive():
+			self.discovery_thread.join(timeout=2)
 			
 		self.stop_communication_server()
 		print("Discovery server stopped")
@@ -300,7 +452,6 @@ class NetworkManager:
 		if self.communication_active:
 			return
 		
-		# Ensure we have the latest port values from preferences
 		self.update_ports_from_preferences()
 		
 		self.communication_active = True
@@ -313,20 +464,26 @@ class NetworkManager:
 	
 	def stop_communication_server(self):
 		"""Stop communication server"""
+		# Don't stop if we're actively rendering
+		if self.is_rendering:
+			print("Skipping communication server stop - rendering in progress")
+			return
+			
 		self.communication_active = False
-		if self.communication_thread:
-			self.communication_thread.join(timeout=1)
+		if self.communication_thread and self.communication_thread.is_alive():
+			self.communication_thread.join(timeout=2)
 		print("Communication server stopped")
 	
 	def _discovery_server_loop(self, node_name, requires_auth):
 		"""Discovery server main loop"""
+		sock = None
 		try:
 			sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 			sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			sock.bind(('', self.discovery_port))
 			sock.settimeout(1.0)
 			
-			while self.discovery_active:
+			while self.discovery_active and not self._shutdown_requested:
 				try:
 					data, addr = sock.recvfrom(1024)
 					message = json.loads(data.decode())
@@ -350,29 +507,29 @@ class NetworkManager:
 				except socket.timeout:
 					continue
 				except Exception as e:
-					print(f"Discovery server error: {e}")
+					if self.discovery_active:  # Only log if we should be active
+						print(f"Discovery server error: {e}")
 					
 		except Exception as e:
 			print(f"Failed to start discovery server: {e}")
 		finally:
-			try:
-				sock.close()
-			except:
-				pass
+			if sock:
+				try:
+					sock.close()
+				except:
+					pass
 	
 	def _communication_server_loop(self):
 		"""Communication server main loop for handling connections"""
+		server_sock = None
 		try:
-			# Create server socket
 			server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 			server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			server_sock.bind(('', self.communication_port))
 			server_sock.listen(5)
 			server_sock.settimeout(1.0)
 			
-			print(f"Communication server listening on port {self.communication_port}")
-			
-			while self.communication_active:
+			while self.communication_active and not self._shutdown_requested:
 				try:
 					client_sock, addr = server_sock.accept()
 					# Handle client in separate thread
@@ -386,24 +543,24 @@ class NetworkManager:
 				except socket.timeout:
 					continue
 				except Exception as e:
-					if self.communication_active:  # Only log if we're supposed to be active
+					if self.communication_active:
 						print(f"Communication server error: {e}")
 					
 		except Exception as e:
 			print(f"Failed to start communication server: {e}")
 		finally:
-			try:
-				server_sock.close()
-			except:
-				pass
+			if server_sock:
+				try:
+					server_sock.close()
+				except:
+					pass
 	
 	def _handle_client(self, client_sock, addr):
 		"""Handle individual client connections"""
 		try:
-			client_sock.settimeout(30.0)  # Longer timeout for file transfers
+			client_sock.settimeout(30.0)
 			
-			while True:
-				# Receive message length first
+			while not self._shutdown_requested:
 				try:
 					length_data = client_sock.recv(4)
 					if not length_data:
@@ -453,42 +610,29 @@ class NetworkManager:
 		
 		if msg_type == 'connection_test':
 			auth_token = message.get('auth_token')
-			print(f"Connection test from {addr[0]}, auth_token: {'provided' if auth_token else 'missing'}")
 			
-			# If no auth required, allow connection
 			if not self.stored_password_hash:
-				print("No authentication required - connection allowed")
 				return {'status': 'success', 'message': 'Connection successful'}
 			
-			# If auth required, check token
 			if auth_token and auth_token in self.security.auth_tokens:
-				print(f"Valid auth token found for connection test")
 				return {'status': 'success', 'message': 'Connection successful'}
 			else:
-				print(f"Authentication required for connection test. Token valid: {auth_token in self.security.auth_tokens if auth_token else False}")
 				return {'status': 'error', 'message': 'Authentication required'}
 			
 		elif msg_type == 'authenticate':
 			password = message.get('password', '')
-			print(f"Authentication request from {addr[0]}")
 			
-			# If no password set, reject
 			if not self.stored_password_hash:
-				print("Authentication rejected - no password configured")
 				return {'status': 'error', 'message': 'No authentication required'}
 			
-			# Verify password
 			if self.security.verify_password(password, self.stored_password_hash, self.stored_salt):
-				# Generate and store auth token
 				auth_token = self.security.generate_auth_token()
 				self.security.auth_tokens[auth_token] = {
 					'created': time.time(),
 					'ip': addr[0]
 				}
-				print(f"Authentication successful for {addr[0]}, token generated. Total active tokens: {len(self.security.auth_tokens)}")
 				return {'status': 'success', 'auth_token': auth_token}
 			else:
-				print(f"Authentication failed for {addr[0]} - invalid password")
 				return {'status': 'error', 'message': 'Invalid password'}
 			
 		elif msg_type == 'get_project_manifest':
@@ -516,12 +660,9 @@ class NetworkManager:
 		"""Handle request for project manifest"""
 		try:
 			auth_token = message.get('auth_token')
-			print(f"Manifest request, auth_token: {'provided' if auth_token else 'missing'}")
 			
-			# Check authentication if required
 			if self.stored_password_hash:
 				if not auth_token or auth_token not in self.security.auth_tokens:
-					print("Manifest request rejected - authentication required")
 					return {'status': 'error', 'message': 'Authentication required'}
 			
 			prefs = bpy.context.preferences.addons[__package__].preferences
@@ -532,10 +673,8 @@ class NetworkManager:
 			
 			if os.path.exists(project_cache_dir):
 				manifest = file_sync_manager.get_directory_manifest(project_cache_dir)
-				print(f"Manifest generated with {len(manifest)} files")
 				return {'status': 'success', 'manifest': manifest}
 			else:
-				print("No project cache directory found")
 				return {'status': 'success', 'manifest': {}}
 				
 		except Exception as e:
@@ -546,12 +685,9 @@ class NetworkManager:
 		"""Handle file synchronization request"""
 		try:
 			auth_token = message.get('auth_token')
-			print(f"File sync request, auth_token: {'provided' if auth_token else 'missing'}")
 			
-			# Check authentication if required
 			if self.stored_password_hash:
 				if not auth_token or auth_token not in self.security.auth_tokens:
-					print("File sync request rejected - authentication required")
 					return {'status': 'error', 'message': 'Authentication required'}
 			
 			prefs = bpy.context.preferences.addons[__package__].preferences
@@ -559,8 +695,6 @@ class NetworkManager:
 			project_name = message.get('project_name', 'default')
 			file_path = message.get('file_path')
 			file_size = message.get('file_size', 0)
-			
-			print(f"Syncing file: {file_path} ({file_size} bytes)")
 			
 			if not file_path:
 				return {'status': 'error', 'message': 'File path required'}
@@ -587,10 +721,8 @@ class NetworkManager:
 					bytes_received += len(chunk)
 			
 			if bytes_received == file_size:
-				print(f"File sync successful: {file_path}")
 				return {'status': 'success', 'message': 'File received'}
 			else:
-				print(f"File sync incomplete: {bytes_received}/{file_size} bytes")
 				return {'status': 'error', 'message': 'Incomplete file transfer'}
 				
 		except Exception as e:
@@ -600,48 +732,18 @@ class NetworkManager:
 	def _handle_render_request(self, message, addr):
 		"""Handle render request from source computer"""
 		try:
-			# Check authentication if required
 			auth_token = message.get('auth_token')
-			print(f"Render request from {addr[0]}, auth_token: {'provided' if auth_token else 'missing'}")
 			
 			if self.stored_password_hash:
-				if not auth_token:
-					print("Authentication required but no token provided")
-					return {'status': 'error', 'message': 'Authentication required - no token'}
-				
-				# Clean up expired tokens (older than 1 hour)
-				current_time = time.time()
-				expired_tokens = []
-				for token, token_info in self.security.auth_tokens.items():
-					if current_time - token_info['created'] > 3600:  # 1 hour
-						expired_tokens.append(token)
-				
-				for token in expired_tokens:
-					del self.security.auth_tokens[token]
-				
-				if auth_token not in self.security.auth_tokens:
-					print(f"Invalid or expired auth token. Active tokens: {len(self.security.auth_tokens)}")
-					return {'status': 'error', 'message': 'Authentication required - invalid token'}
-				
-				# Verify the token is from the correct IP
-				token_info = self.security.auth_tokens[auth_token]
-				if token_info['ip'] != addr[0]:
-					print(f"Token IP mismatch: expected {token_info['ip']}, got {addr[0]}")
-					return {'status': 'error', 'message': 'Authentication required - IP mismatch'}
-				
-				print(f"Authentication successful for {addr[0]}")
-			else:
-				print("No authentication required")
+				if not auth_token or auth_token not in self.security.auth_tokens:
+					return {'status': 'error', 'message': 'Authentication required'}
 			
-			# Get render settings
 			render_settings = message.get('render_settings', {})
 			project_name = message.get('project_name', 'default')
 			blend_file = message.get('blend_file')
 			
 			if not blend_file:
 				return {'status': 'error', 'message': 'Blend file path required'}
-			
-			print(f"Starting render for project: {project_name}, blend file: {blend_file}")
 			
 			# Set up output sync callback
 			global output_sync_manager
@@ -652,19 +754,20 @@ class NetworkManager:
 				output_sync_manager.queue_output_file(
 					output_file,
 					frame_number,
-					addr[0],  # source IP
+					addr[0],
 					self.communication_port,
 					auth_token,
 					project_name
 				)
 			
-			# Start render
+			# Start render - mark as rendering to prevent connection drops
+			self.is_rendering = True
 			result = render_manager.start_render(blend_file, render_settings, output_callback)
-			print(f"Render start result: {result}")
 			return result
 			
 		except Exception as e:
-			print(f"Render request failed with exception: {e}")
+			print(f"Render request failed: {e}")
+			self.is_rendering = False
 			return {'status': 'error', 'message': f'Render request failed: {e}'}
 			
 	def _handle_render_status_request(self, message):
@@ -679,6 +782,7 @@ class NetworkManager:
 		"""Handle render cancellation request"""
 		try:
 			render_manager.cancel_render()
+			self.is_rendering = False
 			return {'status': 'success', 'message': 'Render cancelled'}
 		except Exception as e:
 			return {'status': 'error', 'message': f'Cancel request failed: {e}'}
@@ -686,7 +790,6 @@ class NetworkManager:
 	def _handle_output_file_sync(self, message, client_sock):
 		"""Handle output file synchronization from target to source"""
 		try:
-			# This is called on the source computer to receive output files
 			file_path = message.get('file_path')
 			file_size = message.get('file_size', 0)
 			frame_number = message.get('frame_number', 0)
@@ -714,7 +817,6 @@ class NetworkManager:
 					bytes_received += len(chunk)
 			
 			if bytes_received == file_size:
-				print(f"Received output file: {filename}")
 				return {'status': 'success', 'message': 'Output file received'}
 			else:
 				return {'status': 'error', 'message': 'Incomplete file transfer'}
@@ -731,7 +833,6 @@ class NetworkManager:
 			sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 			sock.settimeout(0.5)
 			
-			# Send discovery request
 			request = {
 				'type': 'discovery_request',
 				'timestamp': time.time()
@@ -792,7 +893,6 @@ class NetworkManager:
 		"""Test connection to a remote node"""
 		try:
 			with socket.create_connection((ip, port), timeout=5) as sock:
-				# Send connection test
 				test_message = {
 					'type': 'connection_test',
 					'auth_token': auth_token,
@@ -803,14 +903,11 @@ class NetworkManager:
 				sock.send(struct.pack('!I', len(message_data)))
 				sock.sendall(message_data)
 				
-				# Receive response length
 				length_data = sock.recv(4)
 				if len(length_data) != 4:
 					return False
 					
 				response_length = struct.unpack('!I', length_data)[0]
-				
-				# Receive response
 				response_data = sock.recv(response_length)
 				response = json.loads(response_data.decode())
 				
@@ -819,12 +916,11 @@ class NetworkManager:
 		except Exception as e:
 			print(f"Connection test failed: {e}")
 			return False
-		
+	
 	def authenticate(self, ip, port, password):
 		"""Authenticate with a remote node"""
 		try:
 			with socket.create_connection((ip, port), timeout=5) as sock:
-				# Send authentication request
 				auth_message = {
 					'type': 'authenticate',
 					'password': password,
@@ -835,21 +931,16 @@ class NetworkManager:
 				sock.send(struct.pack('!I', len(message_data)))
 				sock.sendall(message_data)
 				
-				# Receive response length
 				length_data = sock.recv(4)
 				if len(length_data) != 4:
 					return None
 					
 				response_length = struct.unpack('!I', length_data)[0]
-				
-				# Receive response
 				response_data = sock.recv(response_length)
 				response = json.loads(response_data.decode())
 				
 				if response.get('status') == 'success':
 					return response.get('auth_token')
-				else:
-					print(f"Authentication error: {response.get('message', 'Unknown error')}")
 					
 		except Exception as e:
 			print(f"Authentication failed: {e}")
@@ -860,7 +951,6 @@ class NetworkManager:
 		"""Get project manifest from remote node"""
 		try:
 			with socket.create_connection((ip, port), timeout=10) as sock:
-				# Send manifest request
 				request = {
 					'type': 'get_project_manifest',
 					'auth_token': auth_token,
@@ -872,14 +962,12 @@ class NetworkManager:
 				sock.send(struct.pack('!I', len(message_data)))
 				sock.sendall(message_data)
 				
-				# Receive response length
 				length_data = sock.recv(4)
 				if len(length_data) != 4:
 					return None
 					
 				response_length = struct.unpack('!I', length_data)[0]
 				
-				# Receive response
 				response_data = b''
 				bytes_received = 0
 				while bytes_received < response_length:
@@ -905,7 +993,6 @@ class NetworkManager:
 			file_size = os.path.getsize(local_file_path)
 			
 			with socket.create_connection((ip, port), timeout=30) as sock:
-				# Send sync request
 				request = {
 					'type': 'sync_file',
 					'auth_token': auth_token,
@@ -953,7 +1040,6 @@ class NetworkManager:
 			file_size = os.path.getsize(file_path)
 			
 			with socket.create_connection((ip, port), timeout=30) as sock:
-				# Send output file sync request
 				request = {
 					'type': 'output_file_sync',
 					'auth_token': auth_token,
@@ -995,7 +1081,6 @@ class NetworkManager:
 	def _get_local_ip(self):
 		"""Get local IP address"""
 		try:
-			# Connect to a remote address to determine local IP
 			with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
 				s.connect(("8.8.8.8", 80))
 				return s.getsockname()[0]
@@ -1048,7 +1133,6 @@ class NetworkManager:
 				sock.send(struct.pack('!I', len(message_data)))
 				sock.sendall(message_data)
 				
-				# Receive response
 				length_data = sock.recv(4)
 				if len(length_data) != 4:
 					return None
@@ -1059,8 +1143,6 @@ class NetworkManager:
 				
 				if response.get('status') == 'success':
 					return response.get('render_status')
-				else:
-					print(f"Render status error: {response.get('message')}")
 					
 		except Exception as e:
 			print(f"Render status request failed: {e}")
@@ -1081,7 +1163,6 @@ class NetworkManager:
 				sock.send(struct.pack('!I', len(message_data)))
 				sock.sendall(message_data)
 				
-				# Receive response
 				length_data = sock.recv(4)
 				if len(length_data) != 4:
 					return False
@@ -1113,17 +1194,17 @@ class RenderManager:
 		self.frame_count = 0
 		self.current_frame = 0
 		self.output_paths = []
-		self.temp_render_handler = None
 		self.original_output_path = ""
 		self.render_queue = []
-		self.queue_timer_active = False
+		self.output_callback = None
+		self._handlers_registered = False
+		self.output_file_monitor = None
 		
 	def start_render(self, blend_file_path, render_settings, output_callback=None):
-		"""Queue a render request (called from network thread)"""
+		"""Queue a render request"""
 		if self.active_render and self.render_status in ['preparing', 'rendering']:
 			return {'status': 'error', 'message': 'Render already in progress'}
 		
-		# Queue the render request instead of executing immediately
 		render_request = {
 			'blend_file_path': blend_file_path,
 			'render_settings': render_settings,
@@ -1133,25 +1214,12 @@ class RenderManager:
 		
 		self.render_queue.append(render_request)
 		
-		# Start processing queue if not already active
-		if not self.queue_timer_active:
-			self._start_queue_processor()
-			
-		return {'status': 'success', 'message': 'Render queued'}
-	
-	def _start_queue_processor(self):
-		"""Start timer to process render queue on main thread"""
-		if self.queue_timer_active:
-			return
-			
-		self.queue_timer_active = True
-		
-		def process_queue():
+		# Process the render request using timer
+		def process_render():
+			global network_manager
 			if not self.render_queue:
-				self.queue_timer_active = False
-				return None  # Stop timer
+				return None
 				
-			# Process next render request
 			render_request = self.render_queue.pop(0)
 			
 			try:
@@ -1161,12 +1229,14 @@ class RenderManager:
 				self.render_status = "error"
 				self.render_error_message = str(e)
 				self.active_render = False
+				# Mark rendering as complete so connections can be cleaned up if needed
+				network_manager.is_rendering = False
 			
-			self.queue_timer_active = False
-			return None  # Stop timer
+			return None
 		
-		# Schedule on main thread
-		bpy.app.timers.register(process_queue, first_interval=0.1)
+		timer_manager.register_timer(process_render, interval=0.1)
+		
+		return {'status': 'success', 'message': 'Render queued'}
 	
 	def _execute_render_request(self, render_request):
 		"""Execute render request on main thread"""
@@ -1178,26 +1248,21 @@ class RenderManager:
 		if not os.path.exists(blend_file_path):
 			raise Exception(f'Blend file not found: {blend_file_path}')
 		
-		# Set flag to preserve network services during file load
-		global network_manager
-		network_manager.preserve_network_on_file_load = True
-		
 		try:
-			# Load blend file (now safe on main thread)
 			print(f"Loading blend file: {blend_file_path}")
+			# Temporarily disable cleanup during file loading
+			global network_manager
+			was_rendering = network_manager.is_rendering
+			network_manager.is_rendering = True
+			
 			bpy.ops.wm.open_mainfile(filepath=blend_file_path)
+			
+			# Keep rendering flag set if it was set before
+			network_manager.is_rendering = was_rendering
+			
 			print("Blend file loaded successfully")
 		except Exception as e:
-			network_manager.preserve_network_on_file_load = False
 			raise Exception(f"Failed to load blend file: {e}")
-		
-		# Clear the flag after file load
-		network_manager.preserve_network_on_file_load = False
-		
-		# Restart network services if they were stopped during file load
-		if not network_manager.communication_active:
-			print("Restarting network services after file load")
-			network_manager.start_communication_server()
 		
 		# Apply render settings
 		self._apply_render_settings(render_settings)
@@ -1205,15 +1270,18 @@ class RenderManager:
 		# Set up progress monitoring
 		self._setup_render_monitoring(output_callback)
 		
+		# Set up output file monitoring for automatic sync
+		self._setup_output_file_monitoring(render_settings)
+		
 		# Start render
 		self.render_status = "preparing"
 		self.render_start_time = time.time()
 		self.active_render = True
 		
 		if render_settings.get('animation', False):
-			self._start_animation_render(render_settings)
+			self._start_animation_render()
 		else:
-			self._start_still_render(render_settings)
+			self._start_still_render()
 			
 	def _apply_render_settings(self, settings):
 		"""Apply render settings to scene"""
@@ -1251,6 +1319,20 @@ class RenderManager:
 			self.frame_count = scene.frame_end - scene.frame_start + 1
 		else:
 			self.frame_count = 1
+	
+	def _setup_output_file_monitoring(self, render_settings):
+		"""Set up monitoring for newly created files during rendering"""
+		if not self.output_callback:
+			return
+			
+		# Get output directory
+		scene = bpy.context.scene
+		output_path = bpy.path.abspath(scene.render.filepath)
+		output_dir = os.path.dirname(output_path)
+		
+		# Create a file monitor that watches for new files
+		self.output_file_monitor = OutputFileMonitor(output_dir, self.output_callback)
+		self.output_file_monitor.start_monitoring()
 			
 	def _setup_render_monitoring(self, output_callback):
 		"""Set up render progress monitoring"""
@@ -1259,15 +1341,20 @@ class RenderManager:
 		# Clear previous handlers
 		self._clear_render_handlers()
 		
-		# Add render handlers
-		bpy.app.handlers.render_pre.append(_render_pre_handler)
-		bpy.app.handlers.render_post.append(_render_post_handler)
-		bpy.app.handlers.render_cancel.append(_render_cancel_handler)
-		bpy.app.handlers.render_complete.append(_render_complete_handler)
-		bpy.app.handlers.render_write.append(_render_write_handler)
+		# Add render handlers only if not already registered
+		if not self._handlers_registered:
+			bpy.app.handlers.render_pre.append(_render_pre_handler)
+			bpy.app.handlers.render_post.append(_render_post_handler)
+			bpy.app.handlers.render_cancel.append(_render_cancel_handler)
+			bpy.app.handlers.render_complete.append(_render_complete_handler)
+			bpy.app.handlers.render_write.append(_render_write_handler)
+			self._handlers_registered = True
 	
 	def _clear_render_handlers(self):
 		"""Remove all render handlers"""
+		if not self._handlers_registered:
+			return
+			
 		handlers_to_remove = [
 			(bpy.app.handlers.render_pre, _render_pre_handler),
 			(bpy.app.handlers.render_post, _render_post_handler),
@@ -1279,85 +1366,13 @@ class RenderManager:
 		for handler_list, handler_func in handlers_to_remove:
 			if handler_func in handler_list:
 				handler_list.remove(handler_func)
-	
-	def _sync_output_files(self, scene):
-		"""Sync rendered output files back to source computer"""
-		print(f"_sync_output_files called for frame {self.current_frame}")
 		
-		if not self.output_callback:
-			print("No output callback available for syncing")
-			return
-			
-		output_files = self._find_output_files(scene)
-		print(f"Found {len(output_files)} output files to sync: {output_files}")
+		self._handlers_registered = False
 		
-		for output_file in output_files:
-			if os.path.exists(output_file):
-				print(f"Syncing output file: {output_file}")
-				try:
-					self.output_callback(output_file, self.current_frame)
-					print(f"Output callback executed for: {output_file}")
-				except Exception as e:
-					print(f"Error syncing output file {output_file}: {e}")
-			else:
-				print(f"Output file not found: {output_file}")
-	
-	def _find_output_files(self, scene):
-		"""Find all output files for current frame"""
-		output_files = []
-		
-		# Main render output
-		if scene.render.filepath:
-			# Handle frame number formatting
-			base_path = scene.render.filepath
-			if scene.render.use_file_extension:
-				if scene.frame_current != scene.frame_start or self.frame_count > 1:
-					# Add frame number
-					path_parts = os.path.splitext(base_path)
-					frame_str = f"{scene.frame_current:04d}"
-					main_output = f"{path_parts[0]}{frame_str}{path_parts[1]}"
-				else:
-					main_output = base_path
-			else:
-				main_output = base_path
-				
-			output_files.append(bpy.path.abspath(main_output))
-		
-		# Compositor node outputs
-		if scene.use_nodes and scene.node_tree:
-			for node in scene.node_tree.nodes:
-				if node.type == 'OUTPUT_FILE' and node.base_path:
-					base_path = bpy.path.abspath(node.base_path)
-					
-					for input_socket in node.inputs:
-						if input_socket.is_linked:
-							# Build output filename for this socket
-							if input_socket.name != 'Image':
-								filename = f"{input_socket.name}{scene.frame_current:04d}"
-							else:
-								filename = f"Image{scene.frame_current:04d}"
-								
-							# Add file extension based on format
-							if hasattr(node, 'format'):
-								if node.format.file_format == 'PNG':
-									filename += '.png'
-								elif node.format.file_format == 'JPEG':
-									filename += '.jpg'
-								elif node.format.file_format == 'OPEN_EXR':
-									filename += '.exr'
-								else:
-									filename += '.png'  # default
-							else:
-								filename += '.png'  # default
-								
-							output_path = os.path.join(base_path, filename)
-							output_files.append(output_path)
-		
-		return output_files
-		
-	def _start_still_render(self, settings):
-		"""Start still image render (on main thread)"""
-		def render_on_main_thread():
+	def _start_still_render(self):
+		"""Start still image render"""
+		def render_callback():
+			global network_manager
 			try:
 				self.render_status = "rendering"
 				bpy.ops.render.render('INVOKE_DEFAULT')
@@ -1365,15 +1380,15 @@ class RenderManager:
 				self.render_status = "error"
 				self.render_error_message = str(e)
 				self.active_render = False
-				print(f"Render error: {e}")
-			return None  # Don't repeat
+				network_manager.is_rendering = False
+			return None
 		
-		# Schedule render on main thread
-		bpy.app.timers.register(render_on_main_thread, first_interval=0.1)
+		timer_manager.register_timer(render_callback, interval=0.1)
 		
-	def _start_animation_render(self, settings):
-		"""Start animation render (on main thread)"""
-		def render_on_main_thread():
+	def _start_animation_render(self):
+		"""Start animation render"""
+		def render_callback():
+			global network_manager
 			try:
 				self.render_status = "rendering"
 				bpy.ops.render.render('INVOKE_DEFAULT', animation=True)
@@ -1381,29 +1396,32 @@ class RenderManager:
 				self.render_status = "error"
 				self.render_error_message = str(e)
 				self.active_render = False
-				print(f"Animation render error: {e}")
-			return None  # Don't repeat
+				network_manager.is_rendering = False
+			return None
 		
-		# Schedule render on main thread
-		bpy.app.timers.register(render_on_main_thread, first_interval=0.1)
+		timer_manager.register_timer(render_callback, interval=0.1)
 		
 	def cancel_render(self):
 		"""Cancel active render"""
 		if self.active_render:
-			def cancel_on_main_thread():
+			def cancel_callback():
+				global network_manager
 				try:
-					# Stop render if active
-					if hasattr(bpy.ops.render, 'render') and bpy.context.scene:
-						# Try to cancel any active render
-						self.render_status = "cancelled"
-						self.active_render = False
+					self.render_status = "cancelled"
+					self.active_render = False
+					network_manager.is_rendering = False
 				except:
 					self.render_status = "cancelled"
 					self.active_render = False
-				return None  # Don't repeat
+					network_manager.is_rendering = False
+				return None
 			
-			# Schedule cancel on main thread
-			bpy.app.timers.register(cancel_on_main_thread, first_interval=0.1)
+			timer_manager.register_timer(cancel_callback, interval=0.1)
+		
+		# Stop output file monitoring
+		if self.output_file_monitor:
+			self.output_file_monitor.stop_monitoring()
+			self.output_file_monitor = None
 				
 		self._clear_render_handlers()
 		
@@ -1424,18 +1442,92 @@ class RenderManager:
 	
 	def cleanup(self):
 		"""Clean up render manager resources"""
-		self.queue_timer_active = False
+		global network_manager
 		self.render_queue.clear()
 		self.active_render = False
+		
+		# Stop output file monitoring
+		if self.output_file_monitor:
+			self.output_file_monitor.stop_monitoring()
+			self.output_file_monitor = None
+			
 		self._clear_render_handlers()
 		
-		# Clear any pending timers safely
-		try:
-			# We can't unregister specific timer functions in Blender
-			# Just set flags to stop timer loops
-			pass
-		except:
-			pass
+		# Reset rendering flag
+		network_manager.is_rendering = False
+
+class OutputFileMonitor:
+	"""Monitors directory for new files created during rendering"""
+	
+	def __init__(self, output_dir, callback):
+		self.output_dir = output_dir
+		self.callback = callback
+		self.monitoring = False
+		self.monitor_thread = None
+		self.known_files = set()
+		
+		# Initialize known files
+		if os.path.exists(self.output_dir):
+			for root, dirs, files in os.walk(self.output_dir):
+				for file in files:
+					file_path = os.path.join(root, file)
+					self.known_files.add(file_path)
+	
+	def start_monitoring(self):
+		"""Start monitoring for new files"""
+		if self.monitoring:
+			return
+			
+		self.monitoring = True
+		self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+		self.monitor_thread.start()
+	
+	def stop_monitoring(self):
+		"""Stop monitoring"""
+		self.monitoring = False
+		if self.monitor_thread:
+			self.monitor_thread.join(timeout=2)
+	
+	def _monitor_loop(self):
+		"""Main monitoring loop"""
+		while self.monitoring:
+			try:
+				if os.path.exists(self.output_dir):
+					current_files = set()
+					
+					for root, dirs, files in os.walk(self.output_dir):
+						for file in files:
+							file_path = os.path.join(root, file)
+							current_files.add(file_path)
+					
+					# Find new files
+					new_files = current_files - self.known_files
+					
+					for new_file in new_files:
+						# Wait a moment to ensure file is completely written
+						time.sleep(0.5)
+						
+						if os.path.exists(new_file) and self.callback:
+							try:
+								# Extract frame number from filename if possible
+								frame_number = 0
+								filename = os.path.basename(new_file)
+								import re
+								frame_match = re.search(r'(\d{4})', filename)
+								if frame_match:
+									frame_number = int(frame_match.group(1))
+								
+								self.callback(new_file, frame_number)
+							except Exception as e:
+								print(f"Error syncing new output file {new_file}: {e}")
+					
+					self.known_files = current_files
+				
+				time.sleep(1)  # Check every second
+				
+			except Exception as e:
+				print(f"Output file monitor error: {e}")
+				time.sleep(2)
 
 class OutputSyncManager:
 	"""Manages synchronization of rendered output files back to source"""
@@ -1458,15 +1550,10 @@ class OutputSyncManager:
 			'timestamp': time.time()
 		}
 		
-		print(f"Queuing output file for sync: {os.path.basename(file_path)} -> {source_ip}:{source_port}")
 		self.sync_queue.append(sync_item)
 		
-		# Start sync thread if not running
 		if not self.sync_active:
-			print("Starting output sync thread")
 			self.start_sync_thread()
-		else:
-			print(f"Output sync thread already active, queue size: {len(self.sync_queue)}")
 			
 	def start_sync_thread(self):
 		"""Start background thread for syncing output files"""
@@ -1490,7 +1577,7 @@ class OutputSyncManager:
 				sync_item = self.sync_queue.pop(0)
 				self._sync_output_file(sync_item)
 			else:
-				time.sleep(0.5)  # Wait for more files
+				time.sleep(0.5)
 				
 	def _sync_output_file(self, sync_item):
 		"""Sync individual output file back to source"""
@@ -1498,7 +1585,6 @@ class OutputSyncManager:
 			file_path = sync_item['file_path']
 			
 			if not os.path.exists(file_path):
-				print(f"Output file not found: {file_path}")
 				return
 			
 			# Retry logic for network connection issues
@@ -1518,26 +1604,20 @@ class OutputSyncManager:
 					if success:
 						print(f"Successfully synced output file: {os.path.basename(file_path)}")
 						return
-					else:
-						print(f"Failed to sync output file (attempt {attempt + 1}/{max_retries}): {os.path.basename(file_path)}")
 						
 				except Exception as e:
 					print(f"Error syncing output file (attempt {attempt + 1}/{max_retries}): {e}")
 				
-				# Wait before retry (except on last attempt)
 				if attempt < max_retries - 1:
-					print(f"Retrying in {retry_delay} seconds...")
 					time.sleep(retry_delay)
-					retry_delay *= 2  # Exponential backoff
-			
-			print(f"Failed to sync output file after {max_retries} attempts: {os.path.basename(file_path)}")
+					retry_delay *= 2
 				
 		except Exception as e:
 			print(f"Error syncing output file: {e}")
 
 # Global instances
 render_manager = RenderManager()
-output_sync_manager = None  # Will be initialized when needed
+output_sync_manager = None
 network_manager = NetworkManager()
 
 # ----
@@ -1692,7 +1772,6 @@ class REMOTERENDER_OT_StartDiscovery(Operator):
 			self.report({'WARNING'}, "Discovery already active")
 			return {'CANCELLED'}
 		
-		# Update ports from preferences
 		network_manager.update_ports_from_preferences()
 		
 		network_manager.start_discovery_server(
@@ -1722,31 +1801,29 @@ class REMOTERENDER_OT_ScanNetwork(Operator):
 	def execute(self, context):
 		self.report({'INFO'}, "Scanning network for remote nodes...")
 		
-		# Run discovery in a separate thread to avoid blocking UI
-		threading.Thread(target=self._scan_network, daemon=True).start()
+		def scan_network():
+			discovered = network_manager.discover_nodes()
+			
+			def update_ui():
+				context = bpy.context
+				context.scene.discovered_nodes.clear()
+				
+				for node_id, node_info in discovered.items():
+					item = context.scene.discovered_nodes.add()
+					item.node_id = node_id
+					item.name = node_info['name']
+					item.ip = node_info['ip']
+					item.port = node_info['port']
+					item.blender_version = node_info['blender_version']
+					item.requires_auth = node_info['requires_auth']
+				
+				return None
+			
+			timer_manager.register_timer(update_ui, interval=0.1)
+		
+		threading.Thread(target=scan_network, daemon=True).start()
 		
 		return {'FINISHED'}
-	
-	def _scan_network(self):
-		discovered = network_manager.discover_nodes()
-		
-		def update_ui():
-			# Update UI with discovered nodes
-			context = bpy.context
-			# Clear existing discovered nodes
-			context.scene.discovered_nodes.clear()
-			
-			for node_id, node_info in discovered.items():
-				item = context.scene.discovered_nodes.add()
-				item.node_id = node_id
-				item.name = node_info['name']
-				item.ip = node_info['ip']
-				item.port = node_info['port']
-				item.blender_version = node_info['blender_version']
-				item.requires_auth = node_info['requires_auth']
-				
-		# Schedule UI update on main thread
-		bpy.app.timers.register(update_ui, first_interval=0.1)
 
 class REMOTERENDER_OT_ConnectNode(Operator):
 	bl_idname = "render_remote.connect_node"
@@ -1792,10 +1869,8 @@ class REMOTERENDER_OT_ConnectNode(Operator):
 			target_node.auth_token = auth_token or ""
 			props.selected_node = self.node_id
 			
-			# Start communication server on source to receive output files
 			if not network_manager.communication_active:
 				network_manager.start_communication_server()
-				print("Started communication server on source for output file reception")
 			
 			self.report({'INFO'}, f"Connected to {target_node.name}")
 		else:
@@ -1862,10 +1937,8 @@ class REMOTERENDER_OT_ConnectManual(Operator):
 			
 			props.selected_node = manual_node.node_id
 			
-			# Start communication server on source to receive output files
 			if not network_manager.communication_active:
 				network_manager.start_communication_server()
-				print("Started communication server on source for output file reception")
 			
 			self.report({'INFO'}, f"Connected to {props.manual_ip}")
 		else:
@@ -1888,94 +1961,88 @@ class REMOTERENDER_OT_ScanProject(Operator):
 		
 		self.report({'INFO'}, "Scanning project dependencies...")
 		
-		# Run scan in separate thread
-		threading.Thread(target=self._scan_project, daemon=True).start()
-		
-		return {'FINISHED'}
-	
-	def _scan_project(self):
-		def update_ui(dependencies, sync_changes):
-			context = bpy.context
-			props = context.scene.remote_render_props
-			
-			# Update external files warning
-			props.external_files_count = len(dependencies['external'])
-			props.show_external_warning = len(dependencies['external']) > 0
-			
-			# Clear existing sync files
-			context.scene.sync_files.clear()
-			
-			if sync_changes:
-				# Add files that need syncing
-				for file_info in sync_changes['new_files']:
-					item = context.scene.sync_files.add()
-					item.file_path = file_info['path']
-					item.status = 'new'
-					item.size = file_info['size']
+		def scan_project():
+			try:
+				dependencies = file_sync_manager.scan_blend_dependencies()
 				
-				for file_info in sync_changes['modified_files']:
-					item = context.scene.sync_files.add()
-					item.file_path = file_info['path']
-					item.status = 'modified'
-					item.size = file_info['size']
-				
-				for file_info in sync_changes['deleted_files']:
-					item = context.scene.sync_files.add()
-					item.file_path = file_info['path']
-					item.status = 'deleted'
-					item.size = 0
-				
-				total_files = len(sync_changes['new_files']) + len(sync_changes['modified_files'])
-				props.sync_status = f"{total_files} files need sync"
-			else:
-				props.sync_status = "Up to date"
-		
-		try:
-			# Scan dependencies
-			dependencies = file_sync_manager.scan_blend_dependencies()
-			
-			# If connected to a node, check sync status
-			sync_changes = None
-			context = bpy.context
-			props = context.scene.remote_render_props
-			
-			if props.selected_node:
-				# Find connected node
-				target_node = None
-				for node in context.scene.discovered_nodes:
-					if node.node_id == props.selected_node and node.is_connected:
-						target_node = node
-						break
-				
-				if target_node:
-					# Get project root and create local manifest
-					project_root = file_sync_manager.get_project_root()
-					if project_root:
-						local_manifest = file_sync_manager.get_directory_manifest(project_root)
-						
-						# Get remote manifest
-						remote_manifest = network_manager.get_remote_manifest(
-							target_node.ip,
-							target_node.port,
-							target_node.auth_token,
-							props.project_name
-						)
-						
-						if remote_manifest is not None:
-							sync_changes = file_sync_manager.compare_manifests(local_manifest, remote_manifest)
-			
-			# Schedule UI update on main thread
-			bpy.app.timers.register(lambda: update_ui(dependencies, sync_changes), first_interval=0.1)
-		
-		except Exception as e:
-			print(f"Project scan failed: {e}")
-			
-			def update_error():
+				sync_changes = None
 				context = bpy.context
 				props = context.scene.remote_render_props
-				props.sync_status = f"Scan failed: {e}"
+				
+				if props.selected_node:
+					target_node = None
+					for node in context.scene.discovered_nodes:
+						if node.node_id == props.selected_node and node.is_connected:
+							target_node = node
+							break
+					
+					if target_node:
+						project_root = file_sync_manager.get_project_root()
+						if project_root:
+							# Use the new method that only includes referenced files
+							local_manifest = file_sync_manager.get_referenced_files_manifest(project_root, dependencies)
+							
+							remote_manifest = network_manager.get_remote_manifest(
+								target_node.ip,
+								target_node.port,
+								target_node.auth_token,
+								props.project_name
+							)
+							
+							if remote_manifest is not None:
+								sync_changes = file_sync_manager.compare_manifests(local_manifest, remote_manifest)
+				
+				def update_ui():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					
+					props.external_files_count = len(dependencies['external'])
+					props.show_external_warning = len(dependencies['external']) > 0
+					
+					context.scene.sync_files.clear()
+					
+					if sync_changes:
+						for file_info in sync_changes['new_files']:
+							item = context.scene.sync_files.add()
+							item.file_path = file_info['path']
+							item.status = 'new'
+							item.size = file_info['size']
+						
+						for file_info in sync_changes['modified_files']:
+							item = context.scene.sync_files.add()
+							item.file_path = file_info['path']
+							item.status = 'modified'
+							item.size = file_info['size']
+						
+						for file_info in sync_changes['deleted_files']:
+							item = context.scene.sync_files.add()
+							item.file_path = file_info['path']
+							item.status = 'deleted'
+							item.size = 0
+						
+						total_files = len(sync_changes['new_files']) + len(sync_changes['modified_files'])
+						props.sync_status = f"{total_files} files need sync"
+					else:
+						props.sync_status = "Up to date"
+					
+					return None
+				
+				timer_manager.register_timer(update_ui, interval=0.1)
 			
-			bpy.app.timers.register(update_error, first_interval=0.1)
+			except Exception as e:
+				print(f"Project scan failed: {e}")
+				
+				def update_error():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.sync_status = f"Scan failed: {e}"
+					return None
+				
+				timer_manager.register_timer(update_error, interval=0.1)
+		
+		threading.Thread(target=scan_project, daemon=True).start()
+		
+		return {'FINISHED'}
 
 class REMOTERENDER_OT_SyncFiles(Operator):
 	bl_idname = "render_remote.sync_files"
@@ -2009,60 +2076,57 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 		
 		self.report({'INFO'}, f"Syncing {len(selected_files)} files...")
 		
-		# Run sync in separate thread
-		threading.Thread(
-			target=self._sync_files,
-			args=(target_node, selected_files, props.project_name),
-			daemon=True
-		).start()
+		def sync_files():
+			try:
+				project_root = file_sync_manager.get_project_root()
+				if not project_root:
+					raise Exception("Could not determine project root")
+				
+				success_count = 0
+				total_files = len(selected_files)
+				
+				for file_info in selected_files:
+					local_file_path = os.path.join(project_root, file_info.file_path)
+					
+					if os.path.exists(local_file_path):
+						success = network_manager.sync_file_to_remote(
+							target_node.ip,
+							target_node.port,
+							target_node.auth_token,
+							props.project_name,
+							file_info.file_path,
+							local_file_path
+						)
+						
+						if success:
+							success_count += 1
+				
+				def update_ui():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.sync_status = f"Synced {success_count}/{total_files} files"
+					
+					if success_count > 0:
+						bpy.ops.render_remote.scan_project()
+					
+					return None
+				
+				timer_manager.register_timer(update_ui, interval=0.1)
+			
+			except Exception as e:
+				print(f"File sync failed: {e}")
+				
+				def update_error():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.sync_status = f"Sync failed: {e}"
+					return None
+				
+				timer_manager.register_timer(update_error, interval=0.1)
+		
+		threading.Thread(target=sync_files, daemon=True).start()
 		
 		return {'FINISHED'}
-	
-	def _sync_files(self, target_node, selected_files, project_name):
-		try:
-			project_root = file_sync_manager.get_project_root()
-			if not project_root:
-				raise Exception("Could not determine project root")
-			
-			success_count = 0
-			total_files = len(selected_files)
-			
-			for file_info in selected_files:
-				local_file_path = os.path.join(project_root, file_info.file_path)
-				
-				if os.path.exists(local_file_path):
-					success = network_manager.sync_file_to_remote(
-						target_node.ip,
-						target_node.port,
-						target_node.auth_token,
-						project_name,
-						file_info.file_path,
-						local_file_path
-					)
-					
-					if success:
-						success_count += 1
-			
-			def update_ui():
-				context = bpy.context
-				props = context.scene.remote_render_props
-				props.sync_status = f"Synced {success_count}/{total_files} files"
-				
-				# Remove successfully synced files from list and re-scan
-				if success_count > 0:
-					bpy.ops.render_remote.scan_project()
-			
-			bpy.app.timers.register(update_ui, first_interval=0.1)
-		
-		except Exception as e:
-			print(f"File sync failed: {e}")
-			
-			def update_error():
-				context = bpy.context
-				props = context.scene.remote_render_props
-				props.sync_status = f"Sync failed: {e}"
-			
-			bpy.app.timers.register(update_error, first_interval=0.1)
 
 class REMOTERENDER_OT_ClearCache(Operator):
 	bl_idname = "render_remote.clear_cache"
@@ -2130,7 +2194,7 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			'engine': scene.render.engine
 		}
 		
-		# Get blend file path on remote (assume synced)
+		# Get blend file path on remote
 		prefs = context.preferences.addons[__package__].preferences
 		cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
 		project_root = file_sync_manager.get_project_root()
@@ -2144,11 +2208,6 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 		remote_blend_path = os.path.join(cache_dir, props.project_name, blend_file_rel).replace('\\', '/')
 		
 		# Send render request
-		print(f"Sending render request to {target_node.ip}:{target_node.port}")
-		print(f"Auth token: {'provided' if target_node.auth_token else 'missing'}")
-		print(f"Project: {props.project_name}")
-		print(f"Blend file: {remote_blend_path}")
-		
 		result = network_manager.send_render_request(
 			target_node.ip,
 			target_node.port,
@@ -2157,8 +2216,6 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			remote_blend_path,
 			render_settings
 		)
-		
-		print(f"Render request result: {result}")
 		
 		if result and result.get('status') == 'success':
 			self.report({'INFO'}, "Render started on remote computer")
@@ -2169,7 +2226,6 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			self._start_progress_monitoring(context, target_node)
 		else:
 			error_msg = result.get('message', 'Unknown error') if result else 'Connection failed'
-			print(f"Render failed with error: {error_msg}")
 			self.report({'ERROR'}, f"Failed to start render: {error_msg}")
 		
 		return {'FINISHED'}
@@ -2180,7 +2236,7 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			props = context.scene.remote_render_props
 			
 			if not props.monitor_render:
-				return None  # Stop monitoring
+				return None
 			
 			status = network_manager.get_render_status(
 				target_node.ip,
@@ -2196,19 +2252,17 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 				props.render_elapsed_time = status.get('elapsed_time', 0.0)
 				props.render_error_message = status.get('error_message', '')
 				
-				# Continue monitoring if render is active
 				if props.render_status in ['preparing', 'rendering']:
-					return 2.0  # Check every 2 seconds
+					return 2.0
 				else:
 					props.monitor_render = False
-					return None  # Stop monitoring
+					return None
 			else:
 				props.render_status = "Connection Error"
 				props.monitor_render = False
 				return None
 		
-		# Start monitoring timer
-		bpy.app.timers.register(monitor_progress, first_interval=1.0)
+		timer_manager.register_timer(monitor_progress, interval=1.0, persistent=True)
 
 class REMOTERENDER_OT_CancelRemoteRender(Operator):
 	bl_idname = "render_remote.cancel_remote_render"
@@ -2318,15 +2372,21 @@ class REMOTERENDER_OT_DeselectAllSyncFiles(Operator):
 # ----
 
 class REMOTERENDER_PT_MainPanel(Panel):
-	bl_label = "Remote Render Sync"
+	bl_label = "Remote Render"
 	bl_idname = "REMOTERENDER_PT_main_panel"
+	bl_description = 'Manage remote rendering options'
 	bl_space_type = "VIEW_3D"
 	bl_region_type = "UI"
 	bl_category = "Launch"
+#	bl_options = {'DEFAULT_CLOSED'}
+	bl_order = 64
 	
 	@classmethod
 	def poll(cls, context):
-		return context.preferences.addons[__package__].preferences.remote_enable
+		try:
+			return context.preferences.addons[__package__].preferences.remote_enable
+		except:
+			return False
 	
 	def draw(self, context):
 		layout = self.layout
@@ -2347,7 +2407,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			self.draw_source_mode(layout, props, prefs)
 	
 	def draw_target_mode(self, layout, props, prefs):
-		"""Draw UI for Target mode (allow this computer to be used for rendering)"""
+		"""Draw UI for Target mode"""
 		box = layout.box()
 		box.label(text="Target Mode - Allow Remote Rendering:", icon='NETWORK_DRIVE')
 		
@@ -2371,7 +2431,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			row.label(text="Inactive", icon='X')
 	
 	def draw_source_mode(self, layout, props, prefs):
-		"""Draw UI for Source mode (control remote rendering)"""
+		"""Draw UI for Source mode"""
 		context = bpy.context
 		box = layout.box()
 		box.label(text="Source Mode - Control Remote Rendering:", icon='DESKTOP')
@@ -2535,7 +2595,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			# Render controls
 			row = box.row()
 			
-			# Still image render
+			# Animation render
 			col = row.column()
 			op = col.operator("render_remote.start_remote_render", text="Render Animation", icon='RENDER_ANIMATION')
 			op.animation = True
@@ -2566,6 +2626,141 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			box.label(text="(Output directory exists)", icon='CHECKMARK')
 
 # ----
+# Render Handler Functions (Module Level)
+# ----
+
+@persistent
+def _render_pre_handler(scene, depsgraph):
+	"""Called before rendering starts"""
+	global render_manager
+	render_manager.render_status = "rendering"
+	render_manager.current_frame = scene.frame_current
+	print(f"Render started for frame {render_manager.current_frame}")
+
+@persistent
+def _render_post_handler(scene, depsgraph):
+	"""Called after rendering completes"""
+	global render_manager
+	if render_manager.render_status != "cancelled":
+		render_manager.render_status = "completed"
+	print(f"Render completed for frame {render_manager.current_frame}")
+
+@persistent
+def _render_cancel_handler(scene, depsgraph):
+	"""Called when render is cancelled"""
+	global render_manager, network_manager
+	render_manager.render_status = "cancelled"
+	render_manager.active_render = False
+	# Mark rendering as complete so connections can be cleaned up if needed
+	network_manager.is_rendering = False
+	print("Render cancelled")
+
+@persistent
+def _render_complete_handler(scene, depsgraph):
+	"""Called when all rendering is complete"""
+	global render_manager, network_manager
+	render_manager.render_status = "completed"
+	render_manager.render_progress = 100.0
+	render_manager.active_render = False
+	render_manager._clear_render_handlers()
+	
+	# Stop output file monitoring
+	if render_manager.output_file_monitor:
+		render_manager.output_file_monitor.stop_monitoring()
+		render_manager.output_file_monitor = None
+	
+	# Mark rendering as complete so connections can be cleaned up if needed
+	network_manager.is_rendering = False
+	print("All rendering completed")
+
+@persistent
+def _render_write_handler(scene, depsgraph):
+	"""Called when frame is written to disk"""
+	global render_manager
+	
+	# Update progress
+	if render_manager.frame_count > 0:
+		frames_completed = (render_manager.current_frame - scene.frame_start + 1)
+		render_manager.render_progress = (frames_completed / render_manager.frame_count) * 100.0
+	
+	print(f"Frame {render_manager.current_frame} written to disk, progress: {render_manager.render_progress:.1f}%")
+
+# ----
+# Cleanup Functions
+# ----
+
+@persistent
+def cleanup_on_exit(dummy):
+	"""Clean up network connections on Blender exit"""
+	global network_manager, render_manager, timer_manager
+	
+	print("Cleaning up remote render resources")
+	
+	try:
+		if network_manager:
+			network_manager.stop_discovery_server()
+	except Exception as e:
+		print(f"Error stopping network manager: {e}")
+	
+	try:
+		if render_manager:
+			render_manager.cleanup()
+	except Exception as e:
+		print(f"Error cleaning up render manager: {e}")
+	
+	try:
+		if timer_manager:
+			timer_manager.cleanup_all()
+	except Exception as e:
+		print(f"Error cleaning up timer manager: {e}")
+
+@persistent
+def cleanup_on_load_pre(dummy):
+	"""Clean up before loading files"""
+	global render_manager, timer_manager
+	
+	try:
+		# Only cleanup render manager if not actively rendering
+		if render_manager and not render_manager.active_render:
+			render_manager.cleanup()
+	except Exception as e:
+		print(f"Error cleaning up render manager on load: {e}")
+	
+	try:
+		# Clean up any stale timers
+		if timer_manager:
+			timer_manager.cleanup_all()
+	except Exception as e:
+		print(f"Error cleaning up timers on load: {e}")
+
+@persistent
+def reset_connection_status_on_load(dummy):
+	"""Reset connection status when loading new projects"""
+	try:
+		# Clear previous connection data when opening a new project
+		context = bpy.context
+		if hasattr(context.scene, 'remote_render_props'):
+			props = context.scene.remote_render_props
+			
+			# Reset connection status but keep discovered nodes
+			if hasattr(context.scene, 'discovered_nodes'):
+				for node in context.scene.discovered_nodes:
+					node.is_connected = False
+					node.auth_token = ""
+			
+			# Reset selection and status
+			props.selected_node = ""
+			props.sync_status = "Not Scanned"
+			props.render_status = "Not Started"
+			props.monitor_render = False
+			
+			# Clear sync files
+			if hasattr(context.scene, 'sync_files'):
+				context.scene.sync_files.clear()
+	except Exception as e:
+		print(f"Error resetting connection status: {e}")
+
+# ----
 # Registration
 # ----
 
@@ -2590,113 +2785,8 @@ classes = (
 	REMOTERENDER_PT_MainPanel,
 )
 
-@persistent
-def cleanup_on_exit(dummy):
-	"""Clean up network connections on Blender exit"""
-	global network_manager, render_manager
-	
-	# Don't cleanup if we're preserving network during file load
-	if network_manager and network_manager.preserve_network_on_file_load:
-		print("Preserving network services during file load")
-		return
-		
-	if network_manager:
-		print("Cleaning up network manager on exit")
-		network_manager.stop_discovery_server()
-	if render_manager:
-		render_manager.cleanup()
-
-@persistent
-def cleanup_on_load_pre(dummy):
-	"""Clean up before loading files, but preserve network if rendering"""
-	global network_manager, render_manager
-	
-	# Don't cleanup if we're preserving network during file load
-	if network_manager and network_manager.preserve_network_on_file_load:
-		print("Preserving network services during render file load")
-		return
-		
-	# Only cleanup render manager, keep network for normal file loads
-	if render_manager and not render_manager.active_render:
-		render_manager.cleanup()
-
-@persistent
-def restore_network_on_load_post(dummy):
-	"""Restore network services after file load if needed"""
-	global network_manager
-	
-	# If we were preserving network and services stopped, restart them
-	if (network_manager and 
-		network_manager.preserve_network_on_file_load and 
-		not network_manager.communication_active):
-		print("Restoring network services after file load")
-		# Small delay to ensure file is fully loaded
-		def restore_services():
-			if hasattr(bpy.context.scene, 'remote_render_props'):
-				props = bpy.context.scene.remote_render_props
-				if props.mode == 'TARGET':
-					network_manager.start_communication_server()
-			return None
-		bpy.app.timers.register(restore_services, first_interval=1.0)
-
-
-
-# ----
-# Render Handler Functions (Module Level)
-# ----
-
-@persistent
-def _render_pre_handler(scene, depsgraph):
-	"""Called before rendering starts"""
-	global render_manager
-	render_manager.render_status = "rendering"
-	render_manager.current_frame = scene.frame_current
-	print(f"Render started for frame {render_manager.current_frame}")
-
-@persistent
-def _render_post_handler(scene, depsgraph):
-	"""Called after rendering completes"""
-	global render_manager
-	if render_manager.render_status != "cancelled":
-		render_manager.render_status = "completed"
-	print(f"Render completed for frame {render_manager.current_frame}")
-
-@persistent
-def _render_cancel_handler(scene, depsgraph):
-	"""Called when render is cancelled"""
-	global render_manager
-	render_manager.render_status = "cancelled"
-	render_manager.active_render = False
-	print("Render cancelled")
-
-@persistent
-def _render_complete_handler(scene, depsgraph):
-	"""Called when all rendering is complete"""
-	global render_manager
-	render_manager.render_status = "completed"
-	render_manager.render_progress = 100.0
-	render_manager.active_render = False
-	render_manager._clear_render_handlers()
-	print("All rendering completed")
-
-@persistent
-def _render_write_handler(scene, depsgraph):
-	"""Called when frame is written to disk"""
-	global render_manager
-	# Find output files and sync them
-	render_manager._sync_output_files(scene)
-	
-	# Update progress
-	if render_manager.frame_count > 0:
-		frames_completed = (render_manager.current_frame - scene.frame_start + 1)
-		render_manager.render_progress = (frames_completed / render_manager.frame_count) * 100.0
-	
-	print(f"Frame {render_manager.current_frame} written to disk, progress: {render_manager.render_progress:.1f}%")
-	print(f"Attempting to sync output files for frame {render_manager.current_frame}")
-
-
-
 def register():
+	# Register all classes
 	for cls in classes:
 		bpy.utils.register_class(cls)
 		
@@ -2705,14 +2795,22 @@ def register():
 	bpy.types.Scene.discovered_nodes = bpy.props.CollectionProperty(type=RemoteNodeProperties)
 	bpy.types.Scene.sync_files = bpy.props.CollectionProperty(type=SyncFileInfo)
 	
-	# Register cleanup handler
-	bpy.app.handlers.load_pre.append(cleanup_on_exit)
+	# Register cleanup handlers
+	if cleanup_on_exit not in bpy.app.handlers.load_pre:
+		bpy.app.handlers.load_pre.append(cleanup_on_exit)
 	
-	print("Remote Render Sync add-on registered with file synchronization")
+	if cleanup_on_load_pre not in bpy.app.handlers.load_pre:
+		bpy.app.handlers.load_pre.append(cleanup_on_load_pre)
+	
+	if reset_connection_status_on_load not in bpy.app.handlers.load_post:
+		bpy.app.handlers.load_post.append(reset_connection_status_on_load)
+	
+	print("Remote Render Sync add-on registered")
 
 def unregister():
 	# Cleanup network manager
-	global network_manager, render_manager
+	global network_manager, render_manager, timer_manager
+	
 	if network_manager:
 		network_manager.stop_discovery_server()
 	
@@ -2720,17 +2818,30 @@ def unregister():
 	if render_manager:
 		render_manager.cleanup()
 	
+	# Cleanup timer manager
+	if timer_manager:
+		timer_manager.cleanup_all()
+	
 	# Remove handlers
 	if cleanup_on_exit in bpy.app.handlers.load_pre:
 		bpy.app.handlers.load_pre.remove(cleanup_on_exit)
+		
+	if cleanup_on_load_pre in bpy.app.handlers.load_pre:
+		bpy.app.handlers.load_pre.remove(cleanup_on_load_pre)
+	
+	if reset_connection_status_on_load in bpy.app.handlers.load_post:
+		bpy.app.handlers.load_post.remove(reset_connection_status_on_load)
 		
 	# Unregister classes
 	for cls in reversed(classes):
 		bpy.utils.unregister_class(cls)
 		
 	# Remove properties
-	del bpy.types.Scene.remote_render_props
-	del bpy.types.Scene.discovered_nodes
-	del bpy.types.Scene.sync_files
+	if hasattr(bpy.types.Scene, 'remote_render_props'):
+		del bpy.types.Scene.remote_render_props
+	if hasattr(bpy.types.Scene, 'discovered_nodes'):
+		del bpy.types.Scene.discovered_nodes
+	if hasattr(bpy.types.Scene, 'sync_files'):
+		del bpy.types.Scene.sync_files
 	
 	print("Remote Render Sync add-on unregistered")
