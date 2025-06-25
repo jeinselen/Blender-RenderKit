@@ -17,8 +17,83 @@ from bpy.app.handlers import persistent
 
 # Add bl_info for version reference
 bl_info = {
-	'version': (1, 0, 1),
+	'version': (1, 0, 2),
 }
+
+# ----
+# File Filtering Utilities
+# ----
+
+class FileFilter:
+	"""Centralized file filtering logic"""
+	
+	# Files that should never be synced (OS, temp, backup files)
+	IGNORE_EXTENSIONS = {
+		'.tmp', '.temp', '.log', '.lock', '.bak', '.backup',
+		'.blend1', '.blend2', '.blend3',  # Blender backups
+		'.ds_store', '._.ds_store',  # macOS
+		'thumbs.db', 'desktop.ini',  # Windows
+		'.directory',  # Linux
+	}
+	
+	# Directories that should never be synced
+	IGNORE_DIRECTORIES = {
+		'__pycache__', '.git', '.svn', '.hg',
+		'node_modules', '.cache', 'cache',
+		'temp', 'tmp', '.tmp',
+	}
+	
+	# Common render output patterns (these are outputs, not dependencies)
+	RENDER_OUTPUT_PATTERNS = {
+		'render', 'renders', 'output', 'outputs', 'frames', 'images',
+		'animation', 'anim', 'sequence', 'comp', 'compositing'
+	}
+	
+	@classmethod
+	def should_ignore_file(cls, file_path, is_dependency_scan=False):
+		"""Check if a file should be ignored during scanning/syncing"""
+		file_name = os.path.basename(file_path).lower()
+		file_ext = os.path.splitext(file_name)[1].lower()
+		
+		# Always ignore certain extensions
+		if file_ext in cls.IGNORE_EXTENSIONS or file_name in cls.IGNORE_EXTENSIONS:
+			return True
+		
+		# Check if it's in an ignored directory
+		path_parts = Path(file_path).parts
+		for part in path_parts:
+			if part.lower() in cls.IGNORE_DIRECTORIES:
+				return True
+		
+		# During dependency scans, also ignore likely render outputs
+		if is_dependency_scan:
+			for pattern in cls.RENDER_OUTPUT_PATTERNS:
+				if pattern in file_path.lower():
+					# Additional check: if it's an image/video in a render-like folder, likely output
+					if file_ext in {'.png', '.jpg', '.jpeg', '.exr', '.tif', '.tiff', '.mp4', '.mov', '.avi'}:
+						return True
+		
+		return False
+	
+	@classmethod
+	def is_likely_render_output(cls, file_path, project_root=None):
+		"""Check if a file is likely a render output (not a dependency)"""
+		file_name = os.path.basename(file_path).lower()
+		file_ext = os.path.splitext(file_name)[1].lower()
+		
+		# Image/video files in render-like directories
+		if file_ext in {'.png', '.jpg', '.jpeg', '.exr', '.tif', '.tiff', '.mp4', '.mov', '.avi'}:
+			path_lower = file_path.lower()
+			for pattern in cls.RENDER_OUTPUT_PATTERNS:
+				if pattern in path_lower:
+					return True
+			
+			# Check for numbered sequences (typical render output)
+			import re
+			if re.search(r'\d{3,6}\.(png|jpg|jpeg|exr|tif|tiff)$', file_name):
+				return True
+		
+		return False
 
 # ----
 # Timer Management System
@@ -45,11 +120,7 @@ class TimerManager:
 				result = callback()
 				
 				# Handle different return values
-				if result is None:
-					# Callback wants to stop
-					self.unregister_timer(callback)
-					return None
-				elif result is False:
+				if result is None or result is False:
 					# Callback wants to stop
 					self.unregister_timer(callback)
 					return None
@@ -174,33 +245,45 @@ class FileSyncManager:
 		# Images
 		for img in bpy.data.images:
 			if img.filepath and not img.packed_file:
-				file_paths.add(bpy.path.abspath(img.filepath))
+				abs_path = bpy.path.abspath(img.filepath)
+				if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
+					file_paths.add(abs_path)
 		
 		# Sounds
 		for sound in bpy.data.sounds:
 			if sound.filepath and not sound.packed_file:
-				file_paths.add(bpy.path.abspath(sound.filepath))
+				abs_path = bpy.path.abspath(sound.filepath)
+				if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
+					file_paths.add(abs_path)
 				
 		# Movie clips
 		for clip in bpy.data.movieclips:
 			if clip.filepath:
-				file_paths.add(bpy.path.abspath(clip.filepath))
+				abs_path = bpy.path.abspath(clip.filepath)
+				if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
+					file_paths.add(abs_path)
 				
 		# Fonts
 		for font in bpy.data.fonts:
 			if font.filepath:
-				file_paths.add(bpy.path.abspath(font.filepath))
+				abs_path = bpy.path.abspath(font.filepath)
+				if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
+					file_paths.add(abs_path)
 				
 		# Libraries (linked files)
 		for lib in bpy.data.libraries:
 			if lib.filepath:
-				file_paths.add(bpy.path.abspath(lib.filepath))
+				abs_path = bpy.path.abspath(lib.filepath)
+				if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
+					file_paths.add(abs_path)
 		
 		# Cache files (simulation caches, etc.)
 		for obj in bpy.data.objects:
 			for modifier in obj.modifiers:
 				if hasattr(modifier, 'filepath') and modifier.filepath:
-					file_paths.add(bpy.path.abspath(modifier.filepath))
+					abs_path = bpy.path.abspath(modifier.filepath)
+					if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
+						file_paths.add(abs_path)
 		
 		# Check for particle cache files
 		for obj in bpy.data.objects:
@@ -211,7 +294,9 @@ class FileSyncManager:
 						continue
 					# Point cache files
 					if hasattr(psys, 'point_cache') and psys.point_cache.filepath:
-						file_paths.add(bpy.path.abspath(psys.point_cache.filepath))
+						abs_path = bpy.path.abspath(psys.point_cache.filepath)
+						if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
+							file_paths.add(abs_path)
 		
 		# Categorize files (excluding the blend file since we already added it)
 		for file_path in file_paths:
@@ -244,18 +329,21 @@ class FileSyncManager:
 		manifest = {}
 		
 		try:
-			# Include all internal files (which now includes the blend file itself)
 			print(f"Creating manifest for {len(dependencies['internal'])} internal files")
 			
 			for file_path in dependencies['internal']:
 				if os.path.exists(file_path):
-					# Ensure the file is actually within our project scope
 					try:
 						rel_path = os.path.relpath(file_path, project_root)
 						
-						# Skip files that would go outside project root (shouldn't happen but safety check)
+						# Skip files that would go outside project root
 						if rel_path.startswith('..'):
 							print(f"Skipping file outside project root: {file_path}")
+							continue
+						
+						# Additional filter for files that shouldn't be in manifest
+						if FileFilter.should_ignore_file(file_path):
+							print(f"Skipping filtered file: {file_path}")
 							continue
 							
 						stat = os.stat(file_path)
@@ -291,13 +379,17 @@ class FileSyncManager:
 		
 		try:
 			for root, dirs, files in os.walk(directory_path):
+				# Filter out ignored directories
+				dirs[:] = [d for d in dirs if not FileFilter.should_ignore_file(os.path.join(root, d))]
+				
 				for file in files:
 					file_path = os.path.join(root, file)
-					rel_path = os.path.relpath(file_path, directory_path)
 					
-					# Skip certain file types
-					if file.lower().endswith(('.tmp', '.log', '.blend1', '.blend2')):
+					# Skip files that should be ignored
+					if FileFilter.should_ignore_file(file_path):
 						continue
+					
+					rel_path = os.path.relpath(file_path, directory_path)
 					
 					try:
 						stat = os.stat(file_path)
@@ -345,13 +437,38 @@ class FileSyncManager:
 			else:
 				changes['unchanged_files'].append(rel_path)
 		
-		# Files that exist remotely but not locally (deleted)
+		# Files that exist remotely but not locally
+		# BUT only consider them "deleted" if they're actually dependencies/inputs
 		for rel_path in remote_manifest:
 			if rel_path not in local_manifest:
-				changes['deleted_files'].append({
-					'path': rel_path,
-					'remote_info': remote_manifest[rel_path]
-				})
+				# Skip files that are likely render outputs or should be ignored
+				remote_file_path = remote_manifest[rel_path].get('abs_path', rel_path)
+				
+				# Don't treat render outputs as "deleted dependencies"
+				if FileFilter.is_likely_render_output(rel_path):
+					print(f"Skipping likely render output: {rel_path}")
+					continue
+				
+				# Don't treat ignored files as "deleted dependencies"  
+				if FileFilter.should_ignore_file(rel_path):
+					print(f"Skipping ignored file: {rel_path}")
+					continue
+				
+				# Only consider actual dependency-type files as potentially "deleted"
+				file_ext = os.path.splitext(rel_path)[1].lower()
+				dependency_extensions = {
+					'.blend', '.jpg', '.jpeg', '.png', '.exr', '.tif', '.tiff',
+					'.hdr', '.wav', '.mp3', '.mp4', '.mov', '.avi',
+					'.ttf', '.otf', '.obj', '.fbx', '.dae', '.abc'
+				}
+				
+				if file_ext in dependency_extensions:
+					changes['deleted_files'].append({
+						'path': rel_path,
+						'remote_info': remote_manifest[rel_path]
+					})
+				else:
+					print(f"Skipping non-dependency file: {rel_path}")
 				
 		return changes
 
@@ -392,7 +509,7 @@ class SecureConnection:
 		return test_hash == hashed_password
 
 # ----
-# Output File Monitor (Fixed)
+# Output File Monitor (Simplified)
 # ----
 
 class OutputFileMonitor:
@@ -404,9 +521,8 @@ class OutputFileMonitor:
 		self.monitoring = False
 		self.monitor_thread = None
 		self.known_files = {}  # Store file path -> (size, mtime) mapping
-		self.pending_files = []  # List of files pending sync - THIS WAS MISSING!
+		self.pending_files = []  # List of files pending sync
 		self.pending_lock = threading.Lock()  # Thread safety for pending files
-		self.post_processing_monitor = False
 		
 		# Initialize known files with their modification times and sizes
 		self._scan_initial_files()
@@ -419,6 +535,11 @@ class OutputFileMonitor:
 		for root, dirs, files in os.walk(self.project_root):
 			for file in files:
 				file_path = os.path.join(root, file)
+				
+				# Skip files that should be ignored
+				if FileFilter.should_ignore_file(file_path):
+					continue
+					
 				try:
 					stat = os.stat(file_path)
 					self.known_files[file_path] = (stat.st_size, stat.st_mtime)
@@ -445,7 +566,6 @@ class OutputFileMonitor:
 			
 		print("Stopping output file monitoring...")
 		self.monitoring = False
-		self.post_processing_monitor = False
 		
 		if self.monitor_thread:
 			self.monitor_thread.join(timeout=5)
@@ -458,7 +578,7 @@ class OutputFileMonitor:
 		while self.monitoring:
 			try:
 				# Quick scan during active rendering
-				self._scan_for_new_files(quick_scan=True)
+				self._scan_for_new_files()
 				time.sleep(2)  # Check every 2 seconds
 				
 			except Exception as e:
@@ -481,7 +601,7 @@ class OutputFileMonitor:
 			
 			# Check if expected files exist and add them to pending
 			for expected_path in expected_outputs:
-				if os.path.exists(expected_path):
+				if os.path.exists(expected_path) and not FileFilter.should_ignore_file(expected_path):
 					try:
 						stat = os.stat(expected_path)
 						
@@ -497,7 +617,7 @@ class OutputFileMonitor:
 						print(f"Error checking frame output {expected_path}: {e}")
 			
 			# Also do a quick scan for any other files that might have been created
-			self._scan_for_new_files(quick_scan=True)
+			self._scan_for_new_files()
 		
 		# Run detection in background thread
 		threading.Thread(target=detect_frame_files, daemon=True).start()
@@ -568,7 +688,7 @@ class OutputFileMonitor:
 		
 		return outputs
 	
-	def _scan_for_new_files(self, quick_scan=False):
+	def _scan_for_new_files(self):
 		"""Scan for new or modified files"""
 		if not os.path.exists(self.project_root):
 			return
@@ -578,13 +698,13 @@ class OutputFileMonitor:
 		# Scan all files in project directory
 		for root, dirs, files in os.walk(self.project_root):
 			# Skip certain directories that we don't want to sync back
-			dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['__pycache__', 'node_modules']]
+			dirs[:] = [d for d in dirs if not FileFilter.should_ignore_file(os.path.join(root, d))]
 			
 			for file in files:
 				file_path = os.path.join(root, file)
 				
-				# Skip certain file types
-				if file.lower().endswith(('.tmp', '.lock', '.blend1', '.blend2', '.DS_Store')):
+				# Skip files that should be ignored
+				if FileFilter.should_ignore_file(file_path):
 					continue
 				
 				try:
@@ -610,14 +730,7 @@ class OutputFileMonitor:
 			self._add_pending_file(file_path, rel_path)
 		
 		# Update known files
-		if not quick_scan:
-			# Full update for comprehensive scans
-			self.known_files = current_files
-		else:
-			# For quick scans, update only the files we found as new/modified
-			for file_path, change_type in new_or_modified:
-				if file_path in current_files:
-					self.known_files[file_path] = current_files[file_path]
+		self.known_files = current_files
 	
 	def _add_pending_file(self, file_path, rel_path):
 		"""Add a file to the pending sync list (thread-safe)"""
@@ -639,7 +752,7 @@ class OutputFileMonitor:
 			print(f"Added to pending sync: {rel_path}")
 	
 	def get_pending_files(self):
-		"""Get list of files pending sync (thread-safe) - THIS METHOD WAS MISSING!"""
+		"""Get list of files pending sync (thread-safe)"""
 		with self.pending_lock:
 			# Return a copy to avoid threading issues
 			return [file_info.copy() for file_info in self.pending_files]
@@ -655,19 +768,18 @@ class OutputFileMonitor:
 			return
 			
 		print("Render complete - starting post-processing file monitor")
-		self.post_processing_monitor = True
 		
 		# Do an immediate comprehensive scan
-		self._scan_for_new_files(quick_scan=False)
+		self._scan_for_new_files()
 		
 		# Continue monitoring for post-processing files (FFmpeg, etc.)
 		def post_processing_monitor():
 			monitor_time = 0
-			while self.post_processing_monitor and monitor_time < 30:  # Monitor for 30 seconds
+			while monitor_time < 30:  # Monitor for 30 seconds
 				time.sleep(3)
 				monitor_time += 3
 				try:
-					self._scan_for_new_files(quick_scan=True)
+					self._scan_for_new_files()
 				except Exception as e:
 					print(f"Post-processing monitor error: {e}")
 			
@@ -1670,7 +1782,6 @@ class RenderManager:
 				self.render_status = "error"
 				self.render_error_message = str(e)
 				self.active_render = False
-				# Mark rendering as complete so connections can be cleaned up if needed
 				network_manager.is_rendering = False
 			
 			return None
