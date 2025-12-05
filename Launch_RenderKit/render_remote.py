@@ -520,9 +520,11 @@ class OutputFileMonitor:
 		self.source_project_root = source_project_root  # Root directory on source for path mapping
 		self.monitoring = False
 		self.monitor_thread = None
-		self.known_files = {}  # Store file path -> (size, mtime) mapping
+		self.known_files = {}  # Store file path -> (size, mtime, hash) mapping
 		self.pending_files = []  # List of files pending sync
+		self.synced_files = set()  # Track files that have been successfully synced
 		self.pending_lock = threading.Lock()  # Thread safety for pending files
+		self.last_scan_time = 0  # Prevent too-frequent scans
 		
 		# Initialize known files with their modification times and sizes
 		self._scan_initial_files()
@@ -532,6 +534,9 @@ class OutputFileMonitor:
 		if not os.path.exists(self.project_root):
 			return
 			
+		print(f"Scanning initial files in: {self.project_root}")
+		file_count = 0
+		
 		for root, dirs, files in os.walk(self.project_root):
 			for file in files:
 				file_path = os.path.join(root, file)
@@ -542,9 +547,14 @@ class OutputFileMonitor:
 					
 				try:
 					stat = os.stat(file_path)
-					self.known_files[file_path] = (stat.st_size, stat.st_mtime)
+					# Store size, mtime, and a simple hash for better change detection
+					file_hash = f"{stat.st_size}_{stat.st_mtime}"
+					self.known_files[file_path] = (stat.st_size, stat.st_mtime, file_hash)
+					file_count += 1
 				except OSError:
 					pass
+		
+		print(f"Initial scan complete: {file_count} files recorded")
 	
 	def start_monitoring(self):
 		"""Start monitoring for new/modified files"""
@@ -577,9 +587,14 @@ class OutputFileMonitor:
 		"""Main monitoring loop - runs continuously during rendering"""
 		while self.monitoring:
 			try:
-				# Quick scan during active rendering
-				self._scan_for_new_files()
-				time.sleep(2)  # Check every 2 seconds
+				current_time = time.time()
+				
+				# Limit scan frequency to prevent excessive CPU usage
+				if current_time - self.last_scan_time >= 2.0:  # Scan every 2 seconds minimum
+					self._scan_for_new_files()
+					self.last_scan_time = current_time
+				
+				time.sleep(1)  # Check condition every 1 second
 				
 			except Exception as e:
 				print(f"Monitor loop error: {e}")
@@ -594,7 +609,7 @@ class OutputFileMonitor:
 			
 		def detect_frame_files():
 			# Wait a moment for file to be completely written
-			time.sleep(0.5)
+			time.sleep(1.0)  # Increased wait time for file completion
 			
 			# Get the expected output file paths for this frame
 			expected_outputs = self._get_expected_frame_outputs(scene)
@@ -604,20 +619,24 @@ class OutputFileMonitor:
 				if os.path.exists(expected_path) and not FileFilter.should_ignore_file(expected_path):
 					try:
 						stat = os.stat(expected_path)
+						file_hash = f"{stat.st_size}_{stat.st_mtime}"
 						
 						# Check if this is actually a new or modified file
 						if (expected_path not in self.known_files or 
-							self.known_files[expected_path] != (stat.st_size, stat.st_mtime)):
+							self.known_files[expected_path][2] != file_hash):
 							
 							rel_path = os.path.relpath(expected_path, self.project_root)
-							print(f"Frame output detected: {rel_path}")
-							self._add_pending_file(expected_path, rel_path)
+							
+							# Don't add if already synced recently
+							if expected_path not in self.synced_files:
+								print(f"Frame output detected: {rel_path}")
+								self._add_pending_file(expected_path, rel_path, priority=True)
+								
+								# Update known files immediately
+								self.known_files[expected_path] = (stat.st_size, stat.st_mtime, file_hash)
 						
 					except OSError as e:
 						print(f"Error checking frame output {expected_path}: {e}")
-			
-			# Also do a quick scan for any other files that might have been created
-			self._scan_for_new_files()
 		
 		# Run detection in background thread
 		threading.Thread(target=detect_frame_files, daemon=True).start()
@@ -709,18 +728,23 @@ class OutputFileMonitor:
 				
 				try:
 					stat = os.stat(file_path)
-					current_files[file_path] = (stat.st_size, stat.st_mtime)
+					file_hash = f"{stat.st_size}_{stat.st_mtime}"
+					current_files[file_path] = (stat.st_size, stat.st_mtime, file_hash)
 				except OSError:
 					continue
 		
 		# Find new or modified files
 		new_or_modified = []
-		for file_path, (size, mtime) in current_files.items():
+		for file_path, (size, mtime, file_hash) in current_files.items():
+			# Skip if already synced recently
+			if file_path in self.synced_files:
+				continue
+				
 			if file_path not in self.known_files:
 				# New file
 				new_or_modified.append((file_path, "new"))
-			elif self.known_files[file_path] != (size, mtime):
-				# Modified file
+			elif self.known_files[file_path][2] != file_hash:
+				# Modified file (hash changed)
 				new_or_modified.append((file_path, "modified"))
 		
 		# Process new/modified files
@@ -730,37 +754,94 @@ class OutputFileMonitor:
 			self._add_pending_file(file_path, rel_path)
 		
 		# Update known files
-		self.known_files = current_files
+		self.known_files.update(current_files)
 	
-	def _add_pending_file(self, file_path, rel_path):
+	def _add_pending_file(self, file_path, rel_path, priority=False):
 		"""Add a file to the pending sync list (thread-safe)"""
 		with self.pending_lock:
-			# Check if already pending
+			# Check if already pending (prevent duplicates)
 			for pending in self.pending_files:
 				if pending['file_path'] == file_path:
+					print(f"File already pending: {rel_path}")
 					return  # Already pending
+			
+			# Check if already synced recently
+			if file_path in self.synced_files:
+				print(f"File already synced: {rel_path}")
+				return
+			
+			# Sanitize relative path for JSON safety
+			safe_rel_path = rel_path.replace('\\', '/').encode('unicode_escape').decode('ascii')
 			
 			# Add to pending list
 			file_info = {
 				'file_path': file_path,
-				'relative_path': rel_path,
+				'relative_path': safe_rel_path,
+				'original_relative_path': rel_path,  # Keep original for actual file operations
 				'size': os.path.getsize(file_path) if os.path.exists(file_path) else 0,
-				'added_time': time.time()
+				'added_time': time.time(),
+				'priority': priority
 			}
 			
-			self.pending_files.append(file_info)
-			print(f"Added to pending sync: {rel_path}")
+			if priority:
+				# Insert priority files at the beginning
+				self.pending_files.insert(0, file_info)
+			else:
+				self.pending_files.append(file_info)
+			
+			print(f"Added to pending sync: {rel_path} (queue: {len(self.pending_files)})")
+			
+			# Limit pending queue size to prevent memory issues
+			if len(self.pending_files) > 100:
+				print("Warning: Pending files queue is getting large, removing oldest entries")
+				# Remove oldest non-priority items
+				self.pending_files = [f for f in self.pending_files if f.get('priority', False)] + \
+									self.pending_files[-50:]  # Keep last 50 regular items
 	
 	def get_pending_files(self):
 		"""Get list of files pending sync (thread-safe)"""
 		with self.pending_lock:
-			# Return a copy to avoid threading issues
-			return [file_info.copy() for file_info in self.pending_files]
+			try:
+				# Clean up the pending list - remove files that no longer exist
+				valid_pending = []
+				for file_info in self.pending_files:
+					if os.path.exists(file_info['file_path']):
+						valid_pending.append(file_info.copy())
+					else:
+						print(f"Removing non-existent pending file: {file_info['relative_path']}")
+				
+				self.pending_files = valid_pending
+				
+				# Limit response size to prevent JSON issues
+				if len(self.pending_files) > 50:
+					print(f"Large pending list ({len(self.pending_files)}), returning first 50 items")
+					return self.pending_files[:50]
+				
+				return self.pending_files
+				
+			except Exception as e:
+				print(f"Error getting pending files: {e}")
+				return []
 	
 	def remove_pending_file(self, file_path):
 		"""Remove a file from pending sync list after successful sync"""
 		with self.pending_lock:
+			# Remove from pending list
+			initial_count = len(self.pending_files)
 			self.pending_files = [f for f in self.pending_files if f['file_path'] != file_path]
+			
+			if len(self.pending_files) < initial_count:
+				print(f"Removed from pending: {os.path.basename(file_path)}")
+			
+			# Add to synced files set to prevent re-detection
+			self.synced_files.add(file_path)
+			
+			# Limit synced files set size
+			if len(self.synced_files) > 200:
+				# Remove oldest entries (convert to list, sort by age, keep newest)
+				oldest_files = sorted(self.synced_files)[:100]  # Remove 100 oldest
+				for old_file in oldest_files:
+					self.synced_files.discard(old_file)
 	
 	def on_render_complete(self, scene, depsgraph=None):
 		"""Called when rendering completes - start monitoring for post-processing"""
@@ -796,9 +877,12 @@ class OutputFileMonitor:
 			time.sleep(2)
 			
 			# Do one final comprehensive scan
-			self._scan_for_new_files(quick_scan=False)
+			self._scan_for_new_files()
 			
-			print(f"Final sync scan completed. {len(self.pending_files)} files pending sync.")
+			with self.pending_lock:
+				pending_count = len(self.pending_files)
+			
+			print(f"Final sync scan completed. {pending_count} files pending sync.")
 			
 		except Exception as e:
 			print(f"Error in final sync scan: {e}")
@@ -1128,9 +1212,9 @@ class NetworkManager:
 		
 		else:
 			return {'status': 'error', 'message': 'Unknown message type'}
-	
+
 	def _handle_get_pending_files(self, message):
-		"""Handle request for list of files pending sync"""
+		"""Handle request for list of files pending sync - with better error handling"""
 		try:
 			auth_token = message.get('auth_token')
 			
@@ -1141,8 +1225,35 @@ class NetworkManager:
 			# Get pending files from output monitor
 			global render_manager
 			if render_manager and render_manager.output_file_monitor:
-				pending_files = render_manager.output_file_monitor.get_pending_files()
-				return {'status': 'success', 'pending_files': pending_files}
+				try:
+					pending_files = render_manager.output_file_monitor.get_pending_files()
+					
+					# Validate JSON can be encoded properly
+					test_json = json.dumps(pending_files)
+					
+					return {'status': 'success', 'pending_files': pending_files}
+				except (UnicodeDecodeError, UnicodeEncodeError) as e:
+					print(f"Unicode error in pending files: {e}")
+					# Return sanitized version
+					sanitized_files = []
+					for file_info in pending_files:
+						try:
+							sanitized_info = {
+								'file_path': file_info.get('file_path', '').encode('ascii', 'ignore').decode('ascii'),
+								'relative_path': file_info.get('relative_path', '').encode('ascii', 'ignore').decode('ascii'),
+								'size': file_info.get('size', 0),
+								'added_time': file_info.get('added_time', 0)
+							}
+							# Test JSON encoding
+							json.dumps(sanitized_info)
+							sanitized_files.append(sanitized_info)
+						except Exception:
+							continue  # Skip problematic files
+					
+					return {'status': 'success', 'pending_files': sanitized_files}
+				except json.JSONEncodeError as e:
+					print(f"JSON encoding error in pending files: {e}")
+					return {'status': 'success', 'pending_files': []}
 			else:
 				return {'status': 'success', 'pending_files': []}
 				
@@ -1151,7 +1262,7 @@ class NetworkManager:
 			return {'status': 'error', 'message': f'Failed to get pending files: {e}'}
 	
 	def _handle_request_file(self, message, client_sock):
-		"""Handle request for a specific file"""
+		"""Handle request for a specific file - with better error handling"""
 		try:
 			auth_token = message.get('auth_token')
 			
@@ -1161,8 +1272,10 @@ class NetworkManager:
 			
 			file_path = message.get('file_path')
 			relative_path = message.get('relative_path')
+			original_relative_path = message.get('original_relative_path', relative_path)
 			
 			if not file_path or not os.path.exists(file_path):
+				print(f"File not found for request: {file_path}")
 				return {'status': 'error', 'message': 'File not found'}
 			
 			file_size = os.path.getsize(file_path)
@@ -1172,7 +1285,7 @@ class NetworkManager:
 				'status': 'success', 
 				'message': 'Sending file',
 				'file_size': file_size,
-				'relative_path': relative_path
+				'relative_path': original_relative_path  # Use original path for destination
 			}
 			
 			response_data = json.dumps(response).encode()
@@ -1180,7 +1293,7 @@ class NetworkManager:
 			client_sock.sendall(response_data)
 			
 			# Send file data
-			print(f"Sending file: {relative_path} ({file_size} bytes)")
+			print(f"Sending file: {original_relative_path} ({file_size} bytes)")
 			with open(file_path, 'rb') as f:
 				bytes_sent = 0
 				while bytes_sent < file_size:
@@ -1190,7 +1303,7 @@ class NetworkManager:
 					client_sock.sendall(chunk)
 					bytes_sent += len(chunk)
 			
-			print(f"File sent successfully: {relative_path}")
+			print(f"File sent successfully: {original_relative_path}")
 			
 			# Remove from pending files after successful send
 			global render_manager
@@ -1635,14 +1748,18 @@ class NetworkManager:
 		return []
 	
 	def request_file_from_target(self, ip, port, auth_token, file_path, relative_path):
-		"""Request a specific file from target computer"""
+		"""Request a specific file from target computer - with better error handling"""
 		try:
 			with socket.create_connection((ip, port), timeout=30) as sock:
+				# Use original relative path if available
+				original_relative_path = relative_path
+				
 				request = {
 					'type': 'request_file',
 					'auth_token': auth_token,
 					'file_path': file_path,
 					'relative_path': relative_path,
+					'original_relative_path': original_relative_path,
 					'timestamp': time.time()
 				}
 				
@@ -2831,7 +2948,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 	bl_space_type = "VIEW_3D"
 	bl_region_type = "UI"
 	bl_category = "Launch"
-#	bl_options = {'DEFAULT_CLOSED'}
+	bl_options = {'DEFAULT_CLOSED'}
 	bl_order = 64
 	
 	@classmethod
