@@ -150,9 +150,9 @@ def processFFmpeg(render_path='', render_time=-1):
 			# FFmpeg location
 			ffmpeg_command = ffmpeg_location + ' ' + settings.autosave_video_custom_command
 			# Replace variables
-			ffmpeg_command = ffmpeg_command.replace("{fps}", fps_float)
-			ffmpeg_command = ffmpeg_command.replace("{input}", glob_pattern)
-			ffmpeg_command = ffmpeg_command.replace("{output}", output_path)
+			ffmpeg_command = ffmpeg_command.replace("{{fps}}", fps_float)
+			ffmpeg_command = ffmpeg_command.replace("{{input}}", glob_pattern)
+			ffmpeg_command = ffmpeg_command.replace("{{output}}", output_path)
 			# Remove any accidental double spaces
 			ffmpeg_command = sub(r'\s{2,}', " ", ffmpeg_command)
 			

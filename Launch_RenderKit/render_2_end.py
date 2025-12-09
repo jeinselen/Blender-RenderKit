@@ -192,11 +192,11 @@ def render_kit_end(scene):
 				return format(highest+1, '04')
 			
 			# Create string with serial number
-			filename = '{project}-' + save_number_from_files(files)
+			filename = '{{project}}-' + save_number_from_files(files)
 		elif file_name_type == 'DATE':
-			filename = '{project} {date} {time}'
+			filename = '{{project}} {{date}} {{time}}'
 		elif file_name_type == 'RENDER':
-			filename = '{project} {engine} {duration}'
+			filename = '{{project}} {{engine}} {{duration}}'
 		else:
 			# Load custom file name with override
 			if prefs.override_autosave_render:
@@ -245,7 +245,7 @@ def render_kit_end(scene):
 	if prefs.external_render_time and bpy.data.filepath:
 		# Log file settings
 		logname = prefs.external_log_name
-		logname = logname.replace("{project}", projectname)
+		logname = logname.replace("{{project}}", projectname)
 		logpath = os.path.join(os.path.dirname(bpy.data.filepath), logname) # Limited to locations local to the project file
 		logtitle = 'Total Render Time: '
 		logtime = 0.00

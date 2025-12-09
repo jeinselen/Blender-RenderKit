@@ -18,15 +18,15 @@ from .utility_time import secondsToStrings
 # Available variables
 # Includes both headers (string starting with "title,") and variables (string with brackets, commas segment multi-variable lines)
 variableArray = ["title,Project,SCENE_DATA",
-					"{project}", "{scene}", "{viewlayer}", "{collection}", "{camera}", "{item}", "{material}", "{node}", "{socket}", "{marker}",
+					"{{project}}", "{{scene}}", "{{viewlayer}}", "{{collection}}", "{{camera}}", "{{item}}", "{{material}}", "{{node}}", "{{socket}}", "{{marker}}",
 				"title,Image,NODE_COMPOSITING",
-					"{display}", "{colorspace}", "{look}", "{exposure}", "{gamma}", "{curves}", "{compositing}",
+					"{{display}}", "{{colorspace}}", "{{look}}", "{{exposure}}", "{{gamma}}", "{{curves}}", "{{compositing}}",
 				"title,Render,SCENE",
-					"{engine}", "{device}", "{samples}", "{features}", "{duration}", "{rtime}", "{rH},{rM},{rS}",
+					"{{engine}}", "{{device}}", "{{samples}}", "{{features}}", "{{duration}}", "{{rtime}}", "{{rH}},{{rM}},{{rS}}",
 				"title,System,DESKTOP",
-					"{host}", "{processor}", "{platform}", "{system}", "{release}", "{python}", "{blender}",
+					"{{host}}", "{{processor}}", "{{platform}}", "{{system}}", "{{release}}", "{{python}}", "{{blender}}",
 				"title,Identifier,COPY_ID",
-					"{date}", "{y},{m},{d}", "{time}", "{H},{M},{S}", "{serial}", "{frame}", "{batch}",
+					"{{date}}", "{{y}},{{m}},{{d}}", "{{time}}", "{{H}},{{M}},{{S}}", "{{serial}}", "{{frame}}", "{{batch}}",
 				]
 
 
@@ -34,13 +34,13 @@ variableArray = ["title,Project,SCENE_DATA",
 # Available values
 # Includes both headers (string starting with "title,") and value properties (string with brackets)
 valueArray =   ["title,Scene,SCENE_DATA",
-					"{s0}", "{s1}", "{s2}", "{s3}", "{s4}", "{s5}", "{s6}", "{s7}", "{s8}", "{s9}",
+					"{{s0}}", "{{s1}}", "{{s2}}", "{{s3}}", "{{s4}}", "{{s5}}", "{{s6}}", "{{s7}}", "{{s8}}", "{{s9}}",
 				"title,View Layer,RENDERLAYERS",
-					"{v0}", "{v1}", "{v2}", "{v3}", "{v4}", "{v5}", "{v6}", "{v7}", "{v8}", "{v9}",
+					"{{v0}}", "{{v1}}", "{{v2}}", "{{v3}}", "{{v4}}", "{{v5}}", "{{v6}}", "{{v7}}", "{{v8}}", "{{v9}}",
 				"title,Active Item,OBJECT_DATA",
-					"{i0}", "{i1}", "{i2}", "{i3}", "{i4}", "{i5}", "{i6}", "{i7}", "{i8}", "{i9}",
+					"{{i0}}", "{{i1}}", "{{i2}}", "{{i3}}", "{{i4}}", "{{i5}}", "{{i6}}", "{{i7}}", "{{i8}}", "{{i9}}",
 #				"title,Active Material,MATERIAL",
-#					"{m0}", "{m1}", "{m2}", "{m3}", "{m4}", "{m5}", "{m6}", "{m7}", "{m8}", "{m9}",
+#					"{{m0}}", "{{m1}}", "{{m2}}", "{{m3}}", "{{m4}}", "{{m5}}", "{{m6}}", "{{m7}}", "{{m8}}", "{{m9}}",
 				]
 
 valueName = "RenderKit_Value_"
@@ -238,85 +238,85 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 	
 	
 	# Project variables
-	string = string.replace("{project}", os.path.splitext(os.path.basename(bpy.data.filepath))[0])
-	string = string.replace("{scene}", scene.name)
-	string = string.replace("{viewlayer}", view_layer.name)
-	string = string.replace("{collection}", settings.batch_collection_name if len(settings.batch_collection_name) > 0 else bpy.context.collection.name)
-	string = string.replace("{camera}", scene.camera.name if scene.camera else 'none')
-	string = string.replace("{object}", "{item}") # Alternate variable naming convention
-	string = string.replace("{item}", projectItem)
-	string = string.replace("{material}", projectMaterial)
-	string = string.replace("{node}", projectNode)
+	string = string.replace("{{project}}", os.path.splitext(os.path.basename(bpy.data.filepath))[0])
+	string = string.replace("{{scene}}", scene.name)
+	string = string.replace("{{viewlayer}}", view_layer.name)
+	string = string.replace("{{collection}}", settings.batch_collection_name if len(settings.batch_collection_name) > 0 else bpy.context.collection.name)
+	string = string.replace("{{camera}}", scene.camera.name if scene.camera else 'none')
+	string = string.replace("{{object}}", "{{item}}") # Alternate variable naming convention
+	string = string.replace("{{item}}", projectItem)
+	string = string.replace("{{material}}", projectMaterial)
+	string = string.replace("{{node}}", projectNode)
 	if len(socket) > 0: # Only enabled if a value is supplied
-		string = string.replace("{socket}", str(socket))
-	string = string.replace("{marker}", markerName)
+		string = string.replace("{{socket}}", str(socket))
+	string = string.replace("{{marker}}", markerName)
 	
 	
 	
 	# Image variables
 	sceneOverride = scene.render.image_settings if bpy.context.scene.render.image_settings.color_management == "OVERRIDE" else scene
-	string = string.replace("{display}", sceneOverride.display_settings.display_device.replace(" ", "").replace(".", ""))
-	string = string.replace("{space}", sceneOverride.view_settings.view_transform.replace(" ", ""))
-	string = string.replace("{look}", sceneOverride.view_settings.look.replace(" ", "").replace("AgX-", "").replace("FalseColor-", ""))
-	string = string.replace("{exposure}", str(sceneOverride.view_settings.exposure))
-	string = string.replace("{gamma}", str(sceneOverride.view_settings.gamma))
-	string = string.replace("{curves}", "Curves" if sceneOverride.view_settings.use_curve_mapping else "none")
-	string = string.replace("{compositing}", "Compositing" if scene.use_nodes else "none")
+	string = string.replace("{{display}}", sceneOverride.display_settings.display_device.replace(" ", "").replace(".", ""))
+	string = string.replace("{{space}}", sceneOverride.view_settings.view_transform.replace(" ", ""))
+	string = string.replace("{{look}}", sceneOverride.view_settings.look.replace(" ", "").replace("AgX-", "").replace("FalseColor-", ""))
+	string = string.replace("{{exposure}}", str(sceneOverride.view_settings.exposure))
+	string = string.replace("{{gamma}}", str(sceneOverride.view_settings.gamma))
+	string = string.replace("{{curves}}", "Curves" if sceneOverride.view_settings.use_curve_mapping else "none")
+	string = string.replace("{{compositing}}", "Compositing" if scene.use_nodes else "none")
 	
 	
 	
 	# Rendering variables
-	string = string.replace("{engine}", renderEngine)
-	string = string.replace("{device}", renderDevice)
-	string = string.replace("{samples}", renderSamples)
-	string = string.replace("{features}", renderFeatures)
+	string = string.replace("{{engine}}", renderEngine)
+	string = string.replace("{{device}}", renderDevice)
+	string = string.replace("{{samples}}", renderSamples)
+	string = string.replace("{{features}}", renderFeatures)
 	if float(render_time) >= 0.0: # Only enabled if a zero or positive value is supplied
-		string = string.replace("{duration}", str(render_time) + 's')
+		string = string.replace("{{duration}}", str(render_time) + 's')
 		rH, rM, rS = secondsToStrings(render_time)
-		string = string.replace("{rtime}", rH + '-' + rM + '-' + rS)
-		string = string.replace("{rH}", rH)
-		string = string.replace("{rM}", rM)
-		string = string.replace("{rS}", rS)
+		string = string.replace("{{rtime}}", rH + '-' + rM + '-' + rS)
+		string = string.replace("{{rH}}", rH)
+		string = string.replace("{{rM}}", rM)
+		string = string.replace("{{rS}}", rS)
 	
 	
 	
 	# System variables
-	string = string.replace("{host}", platform.node().split('.')[0])
-	string = string.replace("{processor}", platform.processor()) # Alternate: platform.machine() provides the same information in many cases
-	string = string.replace("{platform}", platform.platform())
-	string = string.replace("{system}", platform.system().replace("Darwin", "macOS")) # Alternate: {os}
-	string = string.replace("{release}", platform.mac_ver()[0] if platform.system() == "Darwin" else platform.release()) # Alternate: {system}
-	string = string.replace("{python}", platform.python_version())
-	string = string.replace("{blender}", bpy.app.version_string + '-' + bpy.app.version_cycle)
+	string = string.replace("{{host}}", platform.node().split('.')[0])
+	string = string.replace("{{processor}}", platform.processor()) # Alternate: platform.machine() provides the same information in many cases
+	string = string.replace("{{platform}}", platform.platform())
+	string = string.replace("{{system}}", platform.system().replace("Darwin", "macOS")) # Alternate: {os}
+	string = string.replace("{{release}}", platform.mac_ver()[0] if platform.system() == "Darwin" else platform.release()) # Alternate: {system}
+	string = string.replace("{{python}}", platform.python_version())
+	string = string.replace("{{blender}}", bpy.app.version_string + '-' + bpy.app.version_cycle)
 	
 	
 	
 	# Identifier variables
-	string = string.replace("{date}", datetime.datetime.now().strftime('%Y-%m-%d'))
-	string = string.replace("{year}", "{y}") # Alternative variable
-	string = string.replace("{y}", datetime.datetime.now().strftime('%Y'))
-	string = string.replace("{month}", "{m}") # Alternative variable
-	string = string.replace("{m}", datetime.datetime.now().strftime('%m'))
-	string = string.replace("{day}", "{d}") # Alternative variable
-	string = string.replace("{d}", datetime.datetime.now().strftime('%d'))
-	string = string.replace("{time}", datetime.datetime.now().strftime('%H-%M-%S'))
-	string = string.replace("{hour}", "{H}") # Alternative variable
-	string = string.replace("{H}", datetime.datetime.now().strftime('%H'))
-	string = string.replace("{minute}", "{M}") # Alternative variable
-	string = string.replace("{M}", datetime.datetime.now().strftime('%M'))
-	string = string.replace("{second}", "{S}") # Alternative variable
-	string = string.replace("{S}", datetime.datetime.now().strftime('%S'))
+	string = string.replace("{{date}}", datetime.datetime.now().strftime('%Y-%m-%d'))
+	string = string.replace("{{year}}", "{{y}}") # Alternative variable
+	string = string.replace("{{y}}", datetime.datetime.now().strftime('%Y'))
+	string = string.replace("{{month}}", "{{m}}") # Alternative variable
+	string = string.replace("{{m}}", datetime.datetime.now().strftime('%m'))
+	string = string.replace("{{day}}", "{{d}}") # Alternative variable
+	string = string.replace("{{d}}", datetime.datetime.now().strftime('%d'))
+	string = string.replace("{{time}}", datetime.datetime.now().strftime('%H-%M-%S'))
+	string = string.replace("{{hour}}", "{{H}}") # Alternative variable
+	string = string.replace("{{H}}", datetime.datetime.now().strftime('%H'))
+	string = string.replace("{{minute}}", "{{M}}") # Alternative variable
+	string = string.replace("{{M}}", datetime.datetime.now().strftime('%M'))
+	string = string.replace("{{second}}", "{{S}}") # Alternative variable
+	string = string.replace("{{S}}", datetime.datetime.now().strftime('%S'))
 	if serial >= 0: # Only enabled if a value is supplied
-		string = string.replace("{serial}", format(serial, '04'))
-	string = string.replace("{frame}", format(scene_frame, '04'))
+		string = string.replace("{{serial}}", format(serial, '04'))
+	string = string.replace("{{frame}}", format(scene_frame, '04'))
 	# Consider adding hash-mark support for inserting frames: sub(r'#+(?!.*#)', "", absolute_path)
 	# Batch variables
-	string = string.replace("{batch}", format(settings.batch_index, '04'))
+	string = string.replace("{{batch}}", format(settings.batch_index, '04'))
 	
 	
 	
 	# Value properties
-	property_pattern = r"\{([a-z])(\d)\}"
+	property_pattern = r"\{\{([a-z])(\d)\}\}"
 	def get_property_value(match):
 		type = f"{match.group(1)}"
 		property = f"{valueName}{match.group(2)}"
@@ -412,7 +412,7 @@ class VariablePopup(bpy.types.Operator):
 				col = grid.column()
 				col.label(text = x[1], icon = x[2])
 			# Display list elements (filtering out time and node socket variables unless specifically enabled)
-			elif (item not in ["{duration}", "{rtime}", "{rH},{rM},{rS}"] or self.postrender) and (item not in ["{socket}"] or self.noderender):
+			elif (item not in ["{{duration}}", "{{rtime}}", "{{rH}},{{rM}},{{rS}}"] or self.postrender) and (item not in ["{{socket}}"] or self.noderender):
 				if ',' in item:
 					subrow = col.row(align = True)
 					for subitem in item.split(','):
@@ -687,6 +687,7 @@ def NODE_PT_output_path_variable_list(self, context):
 			
 			# Variable list UI
 			renderkit_variable_ui(self.layout, context, paths=paths, postrender=False, noderender=False, autoclose=True)
+
 
 
 

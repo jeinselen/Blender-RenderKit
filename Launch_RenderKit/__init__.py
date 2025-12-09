@@ -286,7 +286,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	file_name_custom_global: StringProperty(
 		name="Global Custom String",
 		description="Format a custom string using the variables listed below",
-		default="{project}-{serial}",
+		default="{{project}}-{{serial}}",
 		maxlen=4096)
 	file_serial_global: IntProperty(
 		name="Global Serial Number",
@@ -320,8 +320,8 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		default=True)
 	external_log_name: StringProperty(
 		name="File Name",
-		description="Log file name; use {project} for per-project tracking, remove it for per-directory tracking",
-#		default="{project}-TotalRenderTime.txt",
+		description="Log file name; use {{project}} for per-project tracking, remove it for per-directory tracking",
+#		default="{{project}}-TotalRenderTime.txt",
 		default="RenderKit-TotalTime.txt",
 		maxlen=4096)
 	
@@ -366,12 +366,12 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	email_subject: StringProperty(
 		name="Email Subject",
 		description="Text string sent as the email subject line",
-		default="{project} rendering completed",
+		default="{{project}} rendering completed",
 		maxlen=1024)
 	email_message: StringProperty(
 		name="Email Body",
 		description="Text string sent as the email body copy",
-		default="{project} rendering completed in {rH}:{rM}:{rS} on {host}",
+		default="{{project}} rendering completed in {{rH}}:{{rM}}:{{rS}} on {{host}}",
 		maxlen=4096)
 	
 	# Pushover app notifications
@@ -392,12 +392,12 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	pushover_subject: StringProperty(
 		name="Pushover Title",
 		description="Notification title that will be sent to Pushover devices",
-		default="{project} rendering completed",
+		default="{{project}} rendering completed",
 		maxlen=1024)
 	pushover_message: StringProperty(
 		name="Pushover Message",
 		description="Notification message that will be sent to Pushover devices",
-		default="{project} rendering completed in {rH}:{rM}:{rS} on {host}",
+		default="{{project}} rendering completed in {{rH}}:{{rM}}:{{rS}} on {{host}}",
 		maxlen=4096)
 	
 	# MacOS Siri text-to-speech announcement
@@ -412,7 +412,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	voice_message: StringProperty(
 		name="Siri Message",
 		description="Message that Siri will read out loud",
-		default="{project} rendering completed in {rH} hours, {rM} minutes, and {rS} seconds",
+		default="{{project}} rendering completed in {{rH}} hours, {{rM}} minutes, and {{rS}} seconds",
 		maxlen=2048)
 	
 	# Validate MacOS Say location on plugin registration
@@ -743,7 +743,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	file_name_custom: StringProperty(
 		name="Custom String",
 		description="Format a custom string using the variables listed below",
-		default="{project}-{serial}-{engine}-{duration}",
+		default="{{project}}-{{serial}}-{{engine}}-{{duration}}",
 		maxlen=4096)
 	file_serial: IntProperty(
 		name="Serial Number",
@@ -850,7 +850,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	autosave_video_prores_location: StringProperty(
 		name="Custom File Location",
 		description="Set ProRes file output location and name, use single forward slash to save alongside image sequence",
-		default="//../Renders/{project}",
+		default="//../Renders/{{project}}",
 		maxlen=4096,
 		subtype="DIR_PATH")
 	
@@ -871,7 +871,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	autosave_video_mp4_location: StringProperty(
 		name="Custom File Location",
 		description="Set MP4 file output location and name, use single forward slash to save alongside image sequence",
-		default="//../Previews/{project}",
+		default="//../Previews/{{project}}",
 		maxlen=4096,
 		subtype="DIR_PATH")
 	
@@ -882,17 +882,17 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		default=False)
 	autosave_video_custom_command: StringProperty(
 		name="Custom FFmpeg Command",
-		description="Custom FFmpeg command line string; {input} {fps} {output} variables must be included, but the command path is automatically prepended",
-		default='{fps} {input} -vf scale=-2:1080 -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -movflags +rtphint -movflags +faststart {output}_1080p.mp4',
-				#{fps} {input} -c:v hevc_videotoolbox -pix_fmt bgra -b:v 1M -alpha_quality 1 -allow_sw 1 -vtag hvc1 {output}_alpha.mov
-				#{fps} {input} -c:v hevc_videotoolbox -require_sw 1 -allow_sw 1 -alpha_quality 1.0 -vtag hvc1 {output}_alpha.mov
-				#{fps} {input} -pix_fmt yuva420p {output}_alpha.webm
-				#{fps} {input} -c:v libvpx -pix_fmt yuva420p -crf 16 -b:v 1M -auto-alt-ref 0 {output}_alpha.webm
+		description="Custom FFmpeg command line string; {{input}} {{fps}} {{output}} variables must be included, but the command path is automatically prepended",
+		default='{{fps}} {{input}} -vf scale=-2:1080 -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -movflags +rtphint -movflags +faststart {{output}}_1080p.mp4',
+				#{{fps}} {{input}} -c:v hevc_videotoolbox -pix_fmt bgra -b:v 1M -alpha_quality 1 -allow_sw 1 -vtag hvc1 {{output}}_alpha.mov
+				#{{fps}} {{input}} -c:v hevc_videotoolbox -require_sw 1 -allow_sw 1 -alpha_quality 1.0 -vtag hvc1 {{output}}_alpha.mov
+				#{{fps}} {{input}} -pix_fmt yuva420p {{output}}_alpha.webm
+				#{{fps}} {{input}} -c:v libvpx -pix_fmt yuva420p -crf 16 -b:v 1M -auto-alt-ref 0 {{output}}_alpha.webm
 		maxlen=4096)
 	autosave_video_custom_location: StringProperty(
 		name="Custom File Location",
 		description="Set custom command file output location and name, use single forward slash to save alongside image sequence",
-		default="//../Outputs/{project}",
+		default="//../Outputs/{{project}}",
 		maxlen=4096,
 		subtype="DIR_PATH")
 	
@@ -981,12 +981,12 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		default="Color")
 	node_filepath: StringProperty(
 		name="File Path",
-		default="//{project}",
+		default="//{{project}}",
 		maxlen=4096,
 		subtype="DIR_PATH")
 	node_filename: StringProperty(
 		name="File Name",
-		default="{item}-{material}-{node}-{socket}",
+		default="{{item}}-{{material}}-{{node}}-{{socket}}",
 		maxlen=4096)
 	node_overwrite: BoolProperty(
 		name="Allow Overwrite",

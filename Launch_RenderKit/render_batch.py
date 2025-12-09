@@ -446,7 +446,7 @@ class BATCH_PT_batch_render(bpy.types.Panel):
 	bl_region_type = 'WINDOW'
 	bl_context = "output"
 	bl_category = 'Batch'
-#	bl_options = {'DEFAULT_CLOSED'}
+	bl_options = {'DEFAULT_CLOSED'}
 	bl_order = 4
 	
 	@classmethod
