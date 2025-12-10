@@ -6,7 +6,7 @@ import json
 
 # Local imports
 from .render_variables import replaceVariables
-from .utility_ffmpeg import processFFmpeg
+from .utility_ffmpeg import process_ffmpeg
 from .utility_time import secondsToReadable
 
 ###########################################################################
@@ -37,7 +37,8 @@ def render_kit_frame_pre(scene):
 			scene.render.filepath = replaceVariables(settings.output_file_path)
 			
 		# Filter compositing node file paths
-		if scene.use_nodes and settings.output_file_nodes:
+		compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
+		if scene.render.use_compositing and compositing and settings.output_file_nodes:
 			# Get the JSON data from the preferences string where it was stashed
 			json_data = settings.output_file_nodes
 			
@@ -47,23 +48,44 @@ def render_kit_frame_pre(scene):
 				
 				# Get node data
 				for node_name, node_data in node_settings.items():
-					node = scene.node_tree.nodes.get(node_name)
+					node = compositing.nodes.get(node_name)
 					if isinstance(node, bpy.types.CompositorNodeOutputFile):
-						# Reset base path
-						node.base_path = node_data.get("base_path", node.base_path)
-						# Replace dynamic variables in the base path
-						node.base_path = replaceVariables(node.base_path)
+						if bpy.app.version < tuple([5,0,0]):
+							# Reset base path
+							node.base_path = node_data.get("directory", node.base_path)
+							# Replace dynamic variables in the base path
+							node.base_path = replaceVariables(node.base_path)
+						else:
+							# Reset base path
+							node.directory = node_data.get("directory", node.directory)
+							# Replace dynamic variables in the base path
+							node.directory = replaceVariables(node.directory)
 						
-						# Get slot data
-						file_slots_data = node_data.get("file_slots", {})
-						for i, slot_data in file_slots_data.items():
-							slot = node.file_slots[int(i)]
-							if slot:
-								# Reset slot path
-								slot.path = slot_data.get("path", slot.path)
-								# Replace dynamic variables in the slot path
-								slot.path = replaceVariables(slot.path)
-
+						# Get output port data
+						output_port_data = node_data.get("outputs", {})
+						for i, port_data in output_port_data.items():
+							if bpy.app.version < tuple([5,0,0]):
+								# --- Blender 4.x: still uses file_slots and ID properties ---
+								output_port = node.file_slots[int(i)]
+								if output_port:
+									# Reset slot path
+									output_port.path = port_data.get("path", output_port.path)
+									# Replace dynamic variables in the slot path
+									output_port.path = replaceVariables(output_port.path)
+							else:
+								# --- Blender 5.x: use JSON data instead of IDProperties on file_output_items ---
+								output_item = node.file_output_items[int(i)]
+								if output_item:
+									if isinstance(port_data, dict):
+										original_name = port_data.get("name", output_item.name)
+									else:
+										# allow outputs to be stored as plain strings too
+										# This should be revisited when 4.5 support is dropped
+										original_name = port_data or output_item.name
+									
+									# Re-apply variables on the original name,
+									# not on the already-expanded one
+									output_item.name = replaceVariables(original_name)
 
 
 @persistent
@@ -93,7 +115,7 @@ def render_kit_frame_post(scene):
 		# If path is different than previous, start a new FFmpeg process to compile the previous range of images
 		# Or if this is the last frame in the render range
 		if (settings.autosave_video_render_path and settings.autosave_video_render_path != scene.render.filepath) or scene.frame_current == scene.frame_end:
-			processFFmpeg(render_path=settings.autosave_video_render_path)
+			process_ffmpeg(render_path=settings.autosave_video_render_path)
 	
 	# Store processed render path for checking against during a video sequence
 	settings.autosave_video_render_path = scene.render.filepath

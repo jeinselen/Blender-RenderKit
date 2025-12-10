@@ -314,7 +314,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		name="Show Project Render Time",
 		description='Displays the total time spent rendering a project in the output panel',
 		default=True)
-	external_render_time: BoolProperty(
+	external_log_file: BoolProperty(
 		name="Save External Render Time Log",
 		description='Saves the total time spent rendering to an external log file',
 		default=True)
@@ -609,9 +609,9 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			input.enabled = False
 		input.prop(settings, 'total_render_time')
 		
-		grid2.prop(self, "external_render_time")
+		grid2.prop(self, "external_log_file")
 		input = grid2.column()
-		if not self.external_render_time:
+		if not self.external_log_file:
 			input.active = False
 			input.enabled = False
 		input.prop(self, "external_log_name", text='')

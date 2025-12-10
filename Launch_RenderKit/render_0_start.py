@@ -17,6 +17,7 @@ from .render_variables import replaceVariables
 def render_kit_start(scene):
 	prefs = bpy.context.preferences.addons[__package__].preferences
 	settings = scene.render_kit_settings
+	compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
 	
 	# Save start time in seconds as a string to the addon settings
 	settings.start_date = str(time.time())
@@ -54,27 +55,37 @@ def render_kit_start(scene):
 		settings.output_file_serial_used = True if '{serial}' in scene.render.filepath else False
 	
 	# Save compositing node file paths if turned on in the plugin settings and compositing is enabled
-	if prefs.render_variable_enable and scene.use_nodes:
+	if prefs.render_variable_enable and scene.render.use_compositing and compositing:
 		# Iterate through Compositor nodes, adding all file output node path and sub-path variables to a dictionary
 		node_settings = {}
-		for node in scene.node_tree.nodes:
+		for node in compositing.nodes:
 			# Check if the node is a File Output node
 			if isinstance(node, bpy.types.CompositorNodeOutputFile):
-				# Save the base_path property and the file_slots dictionary entry
+				directory = node.base_path if bpy.app.version < tuple([5,0,0]) else node.directory
+				
+				# Save the directory property and the output items dictionary entry
 				node_settings[node.name] = {
-					"base_path": node.base_path,
-					"file_slots": {}
+					"directory": directory,
+					"outputs": {}
 				}
 				# Check for serial number usage
-				settings.output_file_serial_used = True if '{serial}' in node.base_path else False
+				settings.output_file_serial_used = True if '{serial}' in directory else False
 				
-				# Save and then process the sub-path property of each file slot
-				for i, slot in enumerate(node.file_slots):
-					node_settings[node.name]["file_slots"][i] = {
-						"path": slot.path
-					}
-					# Check for serial number usage
-					settings.output_file_serial_used = True if '{serial}' in slot.path else False
+				# Save and then process the sub-path property of each file port
+				output_ports = node.file_slots if bpy.app.version < tuple([5,0,0]) else node.file_output_items
+				for i, output_port in enumerate(output_ports):
+					if bpy.app.version < tuple([5,0,0]):
+						node_settings[node.name]["outputs"][i] = {
+							"path": output_port.path
+						}
+						# Check for serial number usage
+						settings.output_file_serial_used = True if '{serial}' in output_port.path else False
+					else:
+						node_settings[node.name]["outputs"][i] = {
+							"name": output_port.name
+						}
+						# Check for serial number usage
+						settings.output_file_serial_used = True if '{serial}' in output_port.name else False
 					
 		# Convert the dictionary to JSON format and save to the plugin preferences for safekeeping while rendering
 		settings.output_file_nodes = json.dumps(node_settings)
@@ -91,7 +102,7 @@ def render_kit_start(scene):
 			scene.render.filepath = replaceVariables(settings.output_file_path)
 			
 		# Filter compositing node file paths
-		if scene.use_nodes and settings.output_file_nodes:
+		if scene.render.use_compositing and compositing and settings.output_file_nodes:
 			# Get the JSON data from the preferences string where it was stashed
 			json_data = settings.output_file_nodes
 			
@@ -101,19 +112,34 @@ def render_kit_start(scene):
 				
 				# Get node data
 				for node_name, node_data in node_settings.items():
-					node = scene.node_tree.nodes.get(node_name)
+					node = compositing.nodes.get(node_name)
 					if isinstance(node, bpy.types.CompositorNodeOutputFile):
-						# Reset base path
-						node.base_path = node_data.get("base_path", node.base_path)
-						# Replace dynamic variables in the base path
-						node.base_path = replaceVariables(node.base_path)
+						if bpy.app.version < tuple([5,0,0]):
+							# Reset base path
+							node.base_path = node_data.get("directory", node.base_path)
+							# Replace dynamic variables in the base path
+							node.base_path = replaceVariables(node.base_path)
+						else:
+							# Reset base path
+							node.directory = node_data.get("directory", node.directory)
+							# Replace dynamic variables in the base path
+							node.directory = replaceVariables(node.directory)
 						
-						# Get slot data
-						file_slots_data = node_data.get("file_slots", {})
-						for i, slot_data in file_slots_data.items():
-							slot = node.file_slots[int(i)]
-							if slot:
-								# Reset slot path
-								slot.path = slot_data.get("path", slot.path)
-								# Replace dynamic variables in the slot path
-								slot.path = replaceVariables(slot.path)
+						# Get output port data
+						output_port_data = node_data.get("outputs", {})
+						for i, port_data in output_port_data.items():
+							if bpy.app.version < tuple([5,0,0]):
+								output_port = node.file_slots[int(i)]
+								if output_port:
+									# Reset slot path
+									output_port.path = port_data.get("path", output_port.path)
+									# Replace dynamic variables in the slot path
+									output_port.path = replaceVariables(output_port.path)
+							else:
+								output_port = node.file_output_items[int(i)]
+								if output_port:
+									# Reset port path
+									output_port.name = port_data.get("name", output_port.name)
+									# Replace dynamic variables in the output port path
+									output_port.name = replaceVariables(output_port.name)
+								

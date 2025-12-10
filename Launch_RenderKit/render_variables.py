@@ -20,7 +20,7 @@ from .utility_time import secondsToStrings
 variableArray = ["title,Project,SCENE_DATA",
 					"{{project}}", "{{scene}}", "{{viewlayer}}", "{{collection}}", "{{camera}}", "{{item}}", "{{material}}", "{{node}}", "{{socket}}", "{{marker}}",
 				"title,Image,NODE_COMPOSITING",
-					"{{display}}", "{{colorspace}}", "{{look}}", "{{exposure}}", "{{gamma}}", "{{curves}}", "{{compositing}}",
+					"{{display}}", "{{space}}", "{{look}}", "{{exposure}}", "{{gamma}}", "{{curves}}", "{{compositing}}",
 				"title,Render,SCENE",
 					"{{engine}}", "{{device}}", "{{samples}}", "{{features}}", "{{duration}}", "{{rtime}}", "{{rH}},{{rM}},{{rS}}",
 				"title,System,DESKTOP",
@@ -73,42 +73,64 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 		renderSamples = str(scene.hydra_storm.final.max_lights)
 		renderFeatures = str(scene.hydra_storm.final.volume_raymarching_step_size) + '+' + str(scene.hydra_storm.final.volume_raymarching_step_size_lighting) + '+' + str(scene.hydra_storm.final.volume_max_texture_memory_per_field)
 	
-	elif bpy.context.engine == 'BLENDER_EEVEE':
+	elif bpy.context.engine in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT'):
 		renderEngine = 'Eevee'
 		renderDevice = 'GPU'
-		renderSamples = str(scene.eevee.taa_render_samples) + '+' + str(scene.eevee.sss_samples) + '+' + str(scene.eevee.volumetric_samples)
-		renderFeaturesArray = []
-		if scene.eevee.use_gtao:
-			renderFeaturesArray.append('AO')
-		if scene.eevee.use_bloom:
-			renderFeaturesArray.append('Bloom')
-		if scene.eevee.use_ssr:
-			renderFeaturesArray.append('SSR')
-		if scene.eevee.use_motion_blur:
-			renderFeaturesArray.append('MB' + str(scene.eevee.motion_blur_steps))
-		renderFeatures = 'none' if len(renderFeaturesArray) == 0 else '+'.join(renderFeaturesArray)
-	
-	elif bpy.context.engine == 'BLENDER_EEVEE':
-		renderEngine = 'Eevee'
-		renderDevice = 'GPU'
-		renderSamples = str(scene.eevee.taa_render_samples) + '+' + str(scene.eevee.shadow_ray_count) + '+' + str(scene.eevee.shadow_step_count) + '+' + str(scene.eevee.volumetric_shadow_samples) + '+' + str(scene.eevee.shadow_resolution_scale)# + '+' + str(scene.eevee.volumetric_samples)
-		renderFeaturesArray = []
-		if scene.eevee.use_gtao:
-			renderFeaturesArray.append('AO')
-		if scene.eevee.use_bloom:
-			renderFeaturesArray.append('Bloom')
-		if scene.eevee.use_ssr:
-			renderFeaturesArray.append('SSR')
-		if scene.eevee.use_motion_blur:
-			renderFeaturesArray.append('MB' + str(scene.eevee.motion_blur_steps))
-		renderFeatures = 'none' if len(renderFeaturesArray) == 0 else '+'.join(renderFeaturesArray)
-	
-	elif bpy.context.engine == 'BLENDER_EEVEE_NEXT':
-		renderEngine = 'EeveeNext'
-		renderDevice = 'GPU'
-		renderSamples = str(scene.eevee.taa_samples) + '+' + str(scene.eevee.use_taa_reprojection) + '+' + str(scene.eevee.use_shadow_jitter_viewport) + '+' + str(scene.eevee.volumetric_tile_size) + '+' + str(scene.eevee.volumetric_samples) + '+' + ("%.2f" % scene.eevee.volumetric_sample_distribution) + '+' + str(scene.eevee.volumetric_ray_depth)
+		
+		# General features
+		renderSamples = str(scene.eevee.taa_render_samples)
+		if scene.eevee.use_shadows:
+			renderSamples += '+Shadows'
+			renderSamples += '+' + str(scene.eevee.shadow_ray_count)
+			renderSamples += '+' + str(scene.eevee.shadow_step_count)
+			if scene.eevee.use_volumetric_shadows:
+				renderSamples += '+VolumeShadows'
+				renderSamples += '+' + str(scene.eevee.volumetric_shadow_samples)
+				renderSamples += '+' + str(scene.eevee.shadow_resolution_scale)
+		renderSamples += '+Volumes+' + str(scene.eevee.volumetric_tile_size)
+		renderSamples += '+' + str(scene.eevee.volumetric_samples)
+		renderSamples += '+' + str("%.2f" % scene.eevee.volumetric_sample_distribution)
+		renderSamples += '+' + str(scene.eevee.volumetric_ray_depth)
+		renderSamples += '+DOF+' + str("%.2f" % scene.eevee.bokeh_max_size) + 'px'
+		renderSamples += '+' + str("%.2f" % scene.eevee.bokeh_threshold)
+		renderSamples += '+' + str("%.2f" % scene.eevee.bokeh_neighbor_max)
+		if scene.eevee.use_bokeh_jittered:
+			renderSamples += '+JC+' + str("%.2f" % scene.eevee.bokeh_overblur)
+		if scene.render.use_motion_blur:
+			renderSamples += '+MB+' + scene.render.motion_blur_position
+			renderSamples += '+' + str("%.2f" % scene.render.motion_blur_shutter)
+			renderSamples += '+' + str("%.2f" % scene.eevee.motion_blur_depth_scale)
+			renderSamples += '+' + str(scene.eevee.motion_blur_max) + 'px'
+			renderSamples += '+' + str(scene.eevee.motion_blur_steps)
+		if scene.render.use_simplify:
+			renderSamples += '+Simplify'
+		if scene.render.use_high_quality_normals:
+			renderSamples += '+HQN'
+		
+		# Raytracing specific features
 		if scene.eevee.use_raytracing:
-			renderFeatures = 'RT+' + str(scene.eevee.ray_tracing_method) + '+' + str(scene.eevee.ray_tracing_options.resolution_scale) + '+' + ("%.2f" % scene.eevee.ray_tracing_options.trace_max_roughness) + '+' + str(scene.eevee.ray_tracing_options.use_denoise) + '+' + str(scene.eevee.ray_tracing_options.denoise_spatial) + '+' + str(scene.eevee.ray_tracing_options.denoise_temporal) + '+' + str(scene.eevee.ray_tracing_options.denoise_bilateral) + '+' + str(scene.eevee.fast_gi_method) + '+' + str(scene.eevee.fast_gi_resolution) + '+' + str(scene.eevee.fast_gi_ray_count) + '+' + str(scene.eevee.fast_gi_step_count) + '+' + ("%.2f" % scene.eevee.fast_gi_quality) + '+' + ("%.2f" % scene.eevee.fast_gi_distance) + '+' + ("%.2f" % (scene.eevee.fast_gi_thickness_far * 57.29577951)) + '+' + ("%.2f" % scene.eevee.fast_gi_bias)
+			renderFeatures = 'RT'
+			renderFeatures += '+' + str(scene.eevee.ray_tracing_method)
+			renderFeatures += '+' + str(scene.eevee.ray_tracing_options.resolution_scale)
+			renderFeatures += '+' + str("%.2f" % scene.eevee.ray_tracing_options.screen_trace_quality)
+			renderFeatures += '+' + str("%.2f" % scene.eevee.ray_tracing_options.screen_trace_thickness) + 'm'
+			if scene.eevee.ray_tracing_options.use_denoise:
+				renderFeatures += '+DN'
+				renderFeatures += '+DS' if scene.eevee.ray_tracing_options.denoise_spatial else ''
+				renderFeatures += '+DT' if scene.eevee.ray_tracing_options.denoise_temporal else ''
+				renderFeatures += '+DB' if scene.eevee.ray_tracing_options.denoise_bilateral else ''
+			if scene.eevee.use_fast_gi:
+				renderFeatures += '+FastGI'
+				renderFeatures += '+' + str("%.2f" % scene.eevee.ray_tracing_options.trace_max_roughness)
+				renderFeatures += '+' + str(scene.eevee.fast_gi_method)
+				renderFeatures += '+' + str(scene.eevee.fast_gi_resolution)
+				renderFeatures += '+' + str(scene.eevee.fast_gi_ray_count)
+				renderFeatures += '+' + str(scene.eevee.fast_gi_step_count)
+				renderFeatures += '+' + str("%.2f" % scene.eevee.fast_gi_quality)
+				renderFeatures += '+' + str("%.2f" % scene.eevee.fast_gi_distance) + 'm'
+				renderFeatures += '+' + str("%.2f" % scene.eevee.fast_gi_thickness_near) + 'm'
+				renderFeatures += '+' + str("%.2f" % (scene.eevee.fast_gi_thickness_far * 57.29577951)) + 'd'
+				renderFeatures += '+' + str("%.2f" % scene.eevee.fast_gi_bias)
 		else:
 			renderFeatures = 'NoRT'
 	
@@ -237,81 +259,87 @@ def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
 	
 	
 	
+	# Unescape variables
+	string = string.replace("{{", "{")
+	string = string.replace("}}", "}")
+	
+	
+	
 	# Project variables
-	string = string.replace("{{project}}", os.path.splitext(os.path.basename(bpy.data.filepath))[0])
-	string = string.replace("{{scene}}", scene.name)
-	string = string.replace("{{viewlayer}}", view_layer.name)
-	string = string.replace("{{collection}}", settings.batch_collection_name if len(settings.batch_collection_name) > 0 else bpy.context.collection.name)
-	string = string.replace("{{camera}}", scene.camera.name if scene.camera else 'none')
-	string = string.replace("{{object}}", "{{item}}") # Alternate variable naming convention
-	string = string.replace("{{item}}", projectItem)
-	string = string.replace("{{material}}", projectMaterial)
-	string = string.replace("{{node}}", projectNode)
+	string = string.replace("{project}", os.path.splitext(os.path.basename(bpy.data.filepath))[0])
+	string = string.replace("{scene}", scene.name)
+	string = string.replace("{viewlayer}", view_layer.name)
+	string = string.replace("{collection}", settings.batch_collection_name if len(settings.batch_collection_name) > 0 else bpy.context.collection.name)
+	string = string.replace("{camera}", scene.camera.name if scene.camera else 'none')
+	string = string.replace("{object}", "{item}") # Alternate variable naming convention
+	string = string.replace("{item}", projectItem)
+	string = string.replace("{material}", projectMaterial)
+	string = string.replace("{node}", projectNode)
 	if len(socket) > 0: # Only enabled if a value is supplied
-		string = string.replace("{{socket}}", str(socket))
-	string = string.replace("{{marker}}", markerName)
+		string = string.replace("{socket}", str(socket))
+	string = string.replace("{marker}", markerName)
 	
 	
 	
 	# Image variables
 	sceneOverride = scene.render.image_settings if bpy.context.scene.render.image_settings.color_management == "OVERRIDE" else scene
-	string = string.replace("{{display}}", sceneOverride.display_settings.display_device.replace(" ", "").replace(".", ""))
-	string = string.replace("{{space}}", sceneOverride.view_settings.view_transform.replace(" ", ""))
-	string = string.replace("{{look}}", sceneOverride.view_settings.look.replace(" ", "").replace("AgX-", "").replace("FalseColor-", ""))
-	string = string.replace("{{exposure}}", str(sceneOverride.view_settings.exposure))
-	string = string.replace("{{gamma}}", str(sceneOverride.view_settings.gamma))
-	string = string.replace("{{curves}}", "Curves" if sceneOverride.view_settings.use_curve_mapping else "none")
-	string = string.replace("{{compositing}}", "Compositing" if scene.use_nodes else "none")
+	string = string.replace("{display}", sceneOverride.display_settings.display_device.replace(" ", "").replace(".", ""))
+	string = string.replace("{space}", sceneOverride.view_settings.view_transform.replace(" ", ""))
+	string = string.replace("{look}", sceneOverride.view_settings.look.replace(" ", "").replace("AgX-", "").replace("FalseColor-", ""))
+	string = string.replace("{exposure}", str(sceneOverride.view_settings.exposure))
+	string = string.replace("{gamma}", str(sceneOverride.view_settings.gamma))
+	string = string.replace("{curves}", "Curves" if sceneOverride.view_settings.use_curve_mapping else "none")
+	string = string.replace("{compositing}", "Compositing" if scene.render.use_compositing else "none")
 	
 	
 	
 	# Rendering variables
-	string = string.replace("{{engine}}", renderEngine)
-	string = string.replace("{{device}}", renderDevice)
-	string = string.replace("{{samples}}", renderSamples)
-	string = string.replace("{{features}}", renderFeatures)
+	string = string.replace("{engine}", renderEngine)
+	string = string.replace("{device}", renderDevice)
+	string = string.replace("{samples}", renderSamples)
+	string = string.replace("{features}", renderFeatures)
 	if float(render_time) >= 0.0: # Only enabled if a zero or positive value is supplied
-		string = string.replace("{{duration}}", str(render_time) + 's')
+		string = string.replace("{duration}", str(render_time) + 's')
 		rH, rM, rS = secondsToStrings(render_time)
-		string = string.replace("{{rtime}}", rH + '-' + rM + '-' + rS)
-		string = string.replace("{{rH}}", rH)
-		string = string.replace("{{rM}}", rM)
-		string = string.replace("{{rS}}", rS)
+		string = string.replace("{rtime}", rH + '-' + rM + '-' + rS)
+		string = string.replace("{rH}", rH)
+		string = string.replace("{rM}", rM)
+		string = string.replace("{rS}", rS)
 	
 	
 	
 	# System variables
-	string = string.replace("{{host}}", platform.node().split('.')[0])
-	string = string.replace("{{processor}}", platform.processor()) # Alternate: platform.machine() provides the same information in many cases
-	string = string.replace("{{platform}}", platform.platform())
-	string = string.replace("{{system}}", platform.system().replace("Darwin", "macOS")) # Alternate: {os}
-	string = string.replace("{{release}}", platform.mac_ver()[0] if platform.system() == "Darwin" else platform.release()) # Alternate: {system}
-	string = string.replace("{{python}}", platform.python_version())
-	string = string.replace("{{blender}}", bpy.app.version_string + '-' + bpy.app.version_cycle)
+	string = string.replace("{host}", platform.node().split('.')[0])
+	string = string.replace("{processor}", platform.processor()) # Alternate: platform.machine() provides the same information in many cases
+	string = string.replace("{platform}", platform.platform())
+	string = string.replace("{system}", platform.system().replace("Darwin", "macOS")) # Alternate: {os}
+	string = string.replace("{release}", platform.mac_ver()[0] if platform.system() == "Darwin" else platform.release()) # Alternate: {system}
+	string = string.replace("{python}", platform.python_version())
+	string = string.replace("{blender}", bpy.app.version_string + '-' + bpy.app.version_cycle)
 	
 	
 	
 	# Identifier variables
-	string = string.replace("{{date}}", datetime.datetime.now().strftime('%Y-%m-%d'))
-	string = string.replace("{{year}}", "{{y}}") # Alternative variable
-	string = string.replace("{{y}}", datetime.datetime.now().strftime('%Y'))
-	string = string.replace("{{month}}", "{{m}}") # Alternative variable
-	string = string.replace("{{m}}", datetime.datetime.now().strftime('%m'))
-	string = string.replace("{{day}}", "{{d}}") # Alternative variable
-	string = string.replace("{{d}}", datetime.datetime.now().strftime('%d'))
-	string = string.replace("{{time}}", datetime.datetime.now().strftime('%H-%M-%S'))
-	string = string.replace("{{hour}}", "{{H}}") # Alternative variable
-	string = string.replace("{{H}}", datetime.datetime.now().strftime('%H'))
-	string = string.replace("{{minute}}", "{{M}}") # Alternative variable
-	string = string.replace("{{M}}", datetime.datetime.now().strftime('%M'))
-	string = string.replace("{{second}}", "{{S}}") # Alternative variable
-	string = string.replace("{{S}}", datetime.datetime.now().strftime('%S'))
+	string = string.replace("{date}", datetime.datetime.now().strftime('%Y-%m-%d'))
+	string = string.replace("{year}", "{y}") # Alternative variable
+	string = string.replace("{y}", datetime.datetime.now().strftime('%Y'))
+	string = string.replace("{month}", "{m}") # Alternative variable
+	string = string.replace("{m}", datetime.datetime.now().strftime('%m'))
+	string = string.replace("{day}", "{d}") # Alternative variable
+	string = string.replace("{d}", datetime.datetime.now().strftime('%d'))
+	string = string.replace("{time}", datetime.datetime.now().strftime('%H-%M-%S'))
+	string = string.replace("{hour}", "{H}") # Alternative variable
+	string = string.replace("{H}", datetime.datetime.now().strftime('%H'))
+	string = string.replace("{minute}", "{M}") # Alternative variable
+	string = string.replace("{M}", datetime.datetime.now().strftime('%M'))
+	string = string.replace("{second}", "{S}") # Alternative variable
+	string = string.replace("{S}", datetime.datetime.now().strftime('%S'))
 	if serial >= 0: # Only enabled if a value is supplied
-		string = string.replace("{{serial}}", format(serial, '04'))
-	string = string.replace("{{frame}}", format(scene_frame, '04'))
+		string = string.replace("{serial}", format(serial, '04'))
+	string = string.replace("{frame}", format(scene_frame, '04'))
 	# Consider adding hash-mark support for inserting frames: sub(r'#+(?!.*#)', "", absolute_path)
 	# Batch variables
-	string = string.replace("{{batch}}", format(settings.batch_index, '04'))
+	string = string.replace("{batch}", format(settings.batch_index, '04'))
 	
 	
 	
@@ -674,20 +702,32 @@ def RENDER_PT_output_path_variable_list(self, context):
 def NODE_PT_output_path_variable_list(self, context):
 	prefs = context.preferences.addons[__package__].preferences
 	settings = context.scene.render_kit_settings
+	compositing = context.scene.node_tree if bpy.app.version < tuple([5,0,0]) else context.scene.compositing_node_group
 	
-	if not (False) and prefs.render_variable_enable and context.scene.node_tree and context.scene.node_tree.type == 'COMPOSITING':
-		active_node = context.scene.node_tree.nodes.active
+	if not (False) and prefs.render_variable_enable and compositing:
+		True if tuple([5,0,0]) > bpy.app.version else False
+		active_node = compositing.nodes.active
 		if isinstance(active_node, bpy.types.CompositorNodeOutputFile):
 #		if active_node.type == 'OUTPUT_FILE':
 			# Get file path and all output file names from the current active node
-			paths = [context.scene.node_tree.nodes.active.base_path]
-			for slot in context.scene.node_tree.nodes.active.file_slots:
-				paths.append(slot.path)
-			paths = ''.join(paths)
+			# Blender 5.0 changes the naming conventions for compositing trees and file output nodes
+			# Old: bpy.context.scene.node_tree.nodes[5].file_slots[3].path
+			# New: bpy.context.scene.compositing_node_group.nodes[5].file_output_items[3].name
+			if bpy.app.version < tuple([5,0,0]):
+				paths = [compositing.nodes.active.base_path]
+				output_ports = compositing.nodes.active.file_slots
+				for output_port in output_ports:
+					paths.append(output_port.path)
+				paths = ''.join(paths)
+			else:
+				paths = [compositing.nodes.active.directory]
+				output_ports = compositing.nodes.active.file_output_items
+				for output_port in output_ports:
+					paths.append(output_port.name)
+				paths = ''.join(paths)
 			
 			# Variable list UI
 			renderkit_variable_ui(self.layout, context, paths=paths, postrender=False, noderender=False, autoclose=True)
-
 
 
 

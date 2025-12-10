@@ -677,10 +677,12 @@ class OutputFileMonitor:
 			outputs.append(main_output)
 		
 		# Compositor node outputs
-		if scene.use_nodes and scene.node_tree:
-			for node in scene.node_tree.nodes:
-				if node.type == 'OUTPUT_FILE' and node.base_path:
-					base_path = bpy.path.abspath(node.base_path)
+		compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
+		if scene.render.use_compositing and compositing:
+			for node in compositing.nodes:
+				directory = node.base_path if bpy.app.version < tuple([5,0,0]) else node.directory
+				if node.type == 'OUTPUT_FILE' and directory:
+					directory = bpy.path.abspath(directory)
 					
 					for input_socket in node.inputs:
 						if input_socket.is_linked:
@@ -702,7 +704,7 @@ class OutputFileMonitor:
 							else:
 								filename += '.png'
 								
-							output_path = os.path.join(base_path, filename)
+							output_path = os.path.join(directory, filename)
 							outputs.append(output_path)
 		
 		return outputs

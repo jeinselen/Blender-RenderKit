@@ -279,7 +279,6 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 		prefs = context.preferences.addons[__package__].preferences
 #		obj = context.active_object
 		return (prefs.rendernode_enable and context.space_data.tree_type == 'ShaderNodeTree' and context.object.active_material is not None and context.active_object and context.active_object.data and context.active_object.type == 'MESH' and context.active_node)
-		# context.scene.node_tree.type ?
 	
 	def draw(self, context):
 		settings = context.scene.render_kit_settings

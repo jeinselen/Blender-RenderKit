@@ -17,7 +17,7 @@ FFMPEG_FORMATS = (
 	'OPEN_EXR',
 	'TIFF')
 
-def processFFmpeg(render_path='', render_time=-1):
+def process_ffmpeg(render_path='', render_time=-1):
 	context = bpy.context
 	prefs = context.preferences.addons[__package__].preferences
 	scene = context.scene

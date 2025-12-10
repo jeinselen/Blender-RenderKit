@@ -12,45 +12,15 @@ from re import findall, M as multiline
 
 # Local imports
 from .render_variables import replaceVariables
+from .utility_image import save_image
+from .utility_log import save_log
 from .utility_notifications import render_notifications
-from .utility_time import secondsToReadable, readableToSeconds
-
-# Format validation lists
-IMAGE_FORMATS = (
-	'BMP',
-	'IRIS',
-	'PNG',
-	'JPEG',
-	'JPEG2000',
-	'TARGA',
-	'TARGA_RAW',
-	'CINEON',
-	'DPX',
-	'OPEN_EXR_MULTILAYER',
-	'OPEN_EXR',
-	'HDR',
-	'TIFF')
-
-IMAGE_EXTENSIONS = (
-	'bmp',
-	'rgb',
-	'png',
-	'jpg',
-	'jp2',
-	'tga',
-	'cin',
-	'dpx',
-	'exr',
-	'hdr',
-	'tif')
-
-
 
 ###########################################################################
 # Post-render function
-# •Autosave final rendered image
 # •Reset render status variables
 # •Reset output paths with original keywords
+# •Autosave final rendered image
 # •Send render complete alerts
 # •Save log file
 
@@ -59,19 +29,14 @@ def render_kit_end(scene):
 	prefs = bpy.context.preferences.addons[__package__].preferences
 	settings = scene.render_kit_settings
 	
-	# Set estimated render time active to false (render is complete or canceled, estimate display and FFmpeg check is no longer needed)
+	# Set estimated render time and sequence status to false (render is complete or canceled, estimate display and FFmpeg check is no longer needed)
 	settings.estimated_render_time_active = False
-	
-	# Calculate elapsed render time
-	render_time = round(time.time() - float(settings.start_date), 2)
-	
-	# Update total render time
-	settings.total_render_time = settings.total_render_time + render_time
-	
-	# FFmpeg processing is now handled in the render_kit_frame_pre function (render_1_frame.py) in order to properly support timeline segmentation
-	
-	# Set video sequence status to false (we're no longer rendering)
 	settings.sequence_rendering_status = False
+	# FFmpeg processing is handled in the render_kit_frame_post function (render_1_frame.py) in order to properly support timeline segmentation
+	
+	# Calculate elapsed render time and update total
+	render_time = round(time.time() - float(settings.start_date), 2)
+	settings.total_render_time = settings.total_render_time + render_time
 	
 	# Restore unprocessed file path if processing is enabled
 	if prefs.render_variable_enable and settings.output_file_path:
@@ -80,7 +45,8 @@ def render_kit_end(scene):
 		settings.output_file_path = ""
 	
 	# Restore unprocessed node output file path if processing is enabled, compositing is enabled, and a file output node exists with the default node name
-	if prefs.render_variable_enable and scene.use_nodes and len(settings.output_file_nodes) > 2:
+	compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
+	if prefs.render_variable_enable and scene.render.use_compositing and compositing and len(settings.output_file_nodes) > 2:
 		
 		# Get the JSON data from the preferences string where it was stashed
 		json_data = settings.output_file_nodes
@@ -89,185 +55,64 @@ def render_kit_end(scene):
 		if json_data:
 			node_settings = json.loads(json_data)
 			for node_name, node_data in node_settings.items():
-				node = scene.node_tree.nodes.get(node_name)
+				node = compositing.nodes.get(node_name)
 				if isinstance(node, bpy.types.CompositorNodeOutputFile):
-					# Reset base path
-					node.base_path = node_data.get("base_path", node.base_path)
+					if bpy.app.version < tuple([5,0,0]):
+						# Reset base path
+						node.base_path = node_data.get("directory", node.base_path)
+					else:
+						# Reset base path
+						node.directory = node_data.get("directory", node.directory)
 					
-					# Get slot data
-					file_slots_data = node_data.get("file_slots", {})
-					for i, slot_data in file_slots_data.items():
-						slot = node.file_slots[int(i)]
-						if slot:
-							# Reset slot path
-							slot.path = slot_data.get("path", slot.path)
+					# Get output port data
+					output_port_data = node_data.get("outputs", {})
+					for i, port_data in output_port_data.items():
+						if bpy.app.version < tuple([5,0,0]):
+							# --- Blender 4.x: restore from IDProperties on file_slots (existing behaviour) ---
+							output_port = node.file_slots[int(i)]
+							if output_port:
+								# Reset slot path
+								output_port.path = port_data.get("path", output_port.path)
+						else:
+							# --- Blender 5.x: restore from JSON for file_output_items ---
+							output_item = node.file_output_items[int(i)]
+							if output_item:
+								if isinstance(port_data, dict):
+									output_item.name = port_data.get("name", output_item.name)
+								else:
+									# Allow outputs to be stored as plain strings too
+									# This should be revisited when 4.5 support is dropped
+									output_item.name = port_data or output_item.name
 		
 		# Clear output node storage
 		settings.output_file_nodes = ""
 	
-	# Get project name (used by both autosave render and the external log file)
-	projectname = os.path.splitext(os.path.basename(bpy.data.filepath))[0]
-	
-	# Autosave render
-	if (prefs.enable_autosave_render) and bpy.data.filepath:
-		
-		# Save original file format settings
-		original_format = scene.render.image_settings.file_format
-		original_colormode = scene.render.image_settings.color_mode
-		original_colordepth = scene.render.image_settings.color_depth
-		
-		# Set up render output formatting with override
-		if prefs.override_autosave_render:
-			file_format = prefs.file_format_global
-		else:
-			file_format = settings.file_format
-		
-		if file_format == 'SCENE':
-			if original_format not in IMAGE_FORMATS:
-				print('Render Kit: {} is not an image format. Image not saved.'.format(original_format))
-				return {'CANCELLED'}
-		elif file_format == 'JPEG':
-			scene.render.image_settings.file_format = 'JPEG'
-		elif file_format == 'PNG':
-			scene.render.image_settings.file_format = 'PNG'
-		elif file_format == 'OPEN_EXR':
-			scene.render.image_settings.file_format = 'OPEN_EXR'
-		extension = scene.render.file_extension
-		
-		# Get location variable with override and project path replacement
-		if prefs.override_autosave_render:
-			filepath = prefs.file_location_global
-		else:
-			filepath = settings.file_location
-		
-		# If the file path contains one or fewer characters, replace it with the project path
-		if len(filepath) <= 1:
-			filepath = os.path.join(os.path.dirname(bpy.data.filepath), projectname)
-		
-		# Convert relative path into absolute path for Python compatibility
-		filepath = bpy.path.abspath(filepath)
-		
-		# Process elements that aren't available in the global variable replacement
-		# The autosave serial number and override are separate from the project serial number
-		serialUsedGlobal = False
-		serialUsed = False
-		serialNumber = -1
-		if '{serial}' in filepath:
-			if prefs.override_autosave_render:
-				serialNumber = prefs.file_serial_global
-				serialUsedGlobal = True
-			else:
-				serialNumber = settings.file_serial
-				serialUsed = True
-		
-		# Replace global variables in the output path string
-		filepath = replaceVariables(filepath, render_time=render_time, serial=serialNumber)
-		
-		# Create the project subfolder if it doesn't already exist (otherwise subsequent operations will fail)
-		if not os.path.exists(filepath):
-			os.makedirs(filepath)
-		
-		# Get file name type with override
-		if prefs.override_autosave_render:
-			file_name_type = prefs.file_name_type_global
-		else:
-			file_name_type = settings.file_name_type
-		
-		# Create the output file name string
-		if file_name_type == 'SERIAL':
-			# Generate dynamic serial number
-			# Finds all of the image files that start with projectname in the selected directory
-			files = [f for f in os.listdir(filepath) if f.startswith(projectname) and f.lower().endswith(IMAGE_EXTENSIONS)]
-			
-			# Searches the file collection and returns the next highest number as a 4 digit string
-			def save_number_from_files(files):
-				highest = -1
-				if files:
-					for f in files:
-						# find filenames that end with four or more digits
-						suffix = findall(r'\d{4,}$', os.path.splitext(f)[0].split(projectname)[-1], multiline)
-						if suffix:
-							if int(suffix[-1]) > highest:
-								highest = int(suffix[-1])
-				return format(highest+1, '04')
-			
-			# Create string with serial number
-			filename = '{{project}}-' + save_number_from_files(files)
-		elif file_name_type == 'DATE':
-			filename = '{{project}} {{date}} {{time}}'
-		elif file_name_type == 'RENDER':
-			filename = '{{project}} {{engine}} {{duration}}'
-		else:
-			# Load custom file name with override
-			if prefs.override_autosave_render:
-				filename = prefs.file_name_custom_global
-			else:
-				filename = settings.file_name_custom
-		
-		if '{serial}' in filename:
-			if prefs.override_autosave_render:
-				serialNumber = prefs.file_serial_global
-				serialUsedGlobal = True
-			else:
-				serialNumber = settings.file_serial
-				serialUsed = True
-		
-		# Replace global variables in the output name string
-		filename = replaceVariables(filename, render_time=render_time, serial=serialNumber)
-		
-		# Finish local and global serial number updates
-		if serialUsedGlobal:
-			prefs.file_serial_global += 1
-		if serialUsed:
-			settings.file_serial += 1
-		
-		# Combine file path and file name using system separator, add extension
-		filepath = os.path.join(filepath, filename) + extension
-		
-		# Save image file
-		image = bpy.data.images['Render Result']
-		if not image:
-			print('Render Kit: Render Result not found. Image not saved.')
-			return {'CANCELLED'}
-		
-		# Please note that multilayer EXR files are currently unsupported in the Python API - https://developer.blender.org/T71087
-		image.save_render(filepath, scene=None) # Consider using bpy.context.scene if different compression settings are desired per-scene
-		
-		# Restore original user settings for render output
-		scene.render.image_settings.file_format = original_format
-		scene.render.image_settings.color_mode = original_colormode
-		scene.render.image_settings.color_depth = original_colordepth
-	
 	# Render complete notifications
-	render_notifications(render_time)
+	if prefs.email_enable or prefs.pushover_enable or prefs.voice_enable:
+		render_notifications(render_time)
 	
-	# Save external log file
-	if prefs.external_render_time and bpy.data.filepath:
-		# Log file settings
-		logname = prefs.external_log_name
-		logname = logname.replace("{{project}}", projectname)
-		logpath = os.path.join(os.path.dirname(bpy.data.filepath), logname) # Limited to locations local to the project file
-		logtitle = 'Total Render Time: '
-		logtime = 0.00
+	# Features that require the project to be saved
+	if bpy.data.filepath:
 		
-		# Get previous time spent rendering, if log file exists, and convert formatted string into seconds
-		if os.path.exists(logpath):
-			with open(logpath) as filein:
-				logtime = filein.read().replace(logtitle, '')
-				logtime = readableToSeconds(logtime)
-		# Create log file directory location if it doesn't exist
-		elif not os.path.exists(os.path.dirname(logpath)): # Safety net just in case a folder was included in the file name entry
-			os.makedirs(os.path.dirname(logpath))
+		# Save external log file
+		if prefs.external_log_file:
+			save_log(render_time)
 		
-		# Add the latest render time
-		logtime += float(render_time)
-		
-		# Convert seconds into formatted string
-		logtime = secondsToReadable(logtime)
-		
-		# Write log file
-		with open(logpath, 'w') as fileout:
-			fileout.write(logtitle + logtime)
+		# Autosave rendered image
+		if (prefs.enable_autosave_render):
+			def _save_later():
+				# Don't attempt to save the output until the render process is completed
+				if bpy.app.is_job_running('RENDER'):
+					# Try again in 0.1 seconds
+					return 0.1
+				else:
+					# If finished, attempt to save the output
+					save_image(render_time)
+				# Stop timer
+				return None
+			
+			# Register timer function
+			bpy.app.timers.register(_save_later)
 	
 	# Increment the output serial number if it was used in any output path
 	if settings.output_file_serial_used:

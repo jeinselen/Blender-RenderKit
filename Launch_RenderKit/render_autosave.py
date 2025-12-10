@@ -67,7 +67,7 @@ class RENDER_PT_autosave_image(bpy.types.Panel):
 			layout.use_property_split = False
 			layout.prop(settings, 'file_location', text="")
 			layout.use_property_split = True
-			
+		
 		# File name with global override
 		if prefs.override_autosave_render:
 			override = layout.row()
@@ -81,7 +81,7 @@ class RENDER_PT_autosave_image(bpy.types.Panel):
 			layout.prop(settings, 'file_name_type', icon='FILE_TEXT')
 			if settings.file_name_type == 'CUSTOM':
 				layout.prop(settings, 'file_name_custom')
-				
+		
 		# File format with global override
 		if prefs.override_autosave_render:
 			override = layout.row()
@@ -89,7 +89,7 @@ class RENDER_PT_autosave_image(bpy.types.Panel):
 			override.prop(prefs, 'file_format_global', icon='FILE_IMAGE')
 		else:
 			layout.prop(settings, 'file_format', icon='FILE_IMAGE')
-			
+		
 		# Multilayer EXR warning
 		if context.scene.render.image_settings.file_format == 'OPEN_EXR_MULTILAYER' and (prefs.file_format_global == 'SCENE' and prefs.override_autosave_render or settings.file_format == 'SCENE' and not prefs.override_autosave_render):
 			error = layout.box()

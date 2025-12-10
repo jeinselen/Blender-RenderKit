@@ -24,7 +24,7 @@ class render_proxy_start(bpy.types.Operator):
 		original_resolutionMultiplier = bpy.context.scene.render.resolution_percentage
 		
 		# Save original nodal compositing settings
-		original_compositing = bpy.context.scene.use_nodes
+		original_compositing = bpy.context.scene.render.use_compositing
 		
 		# Override render engine settings
 		bpy.context.scene.render.engine = str(prefs.proxy_renderEngine)
@@ -43,9 +43,9 @@ class render_proxy_start(bpy.types.Operator):
 		
 		# Override original nodal compositing settings
 		if prefs.proxy_compositing == "ON":
-			bpy.context.scene.use_nodes = True
+			bpy.context.scene.render.use_compositing = True
 		elif prefs.proxy_compositing == "OFF":
-			bpy.context.scene.use_nodes = False
+			bpy.context.scene.render.use_compositing = False
 		
 		
 		
@@ -67,7 +67,7 @@ class render_proxy_start(bpy.types.Operator):
 		bpy.context.scene.render.resolution_percentage = original_resolutionMultiplier
 		
 		# Restore original nodal compositing settings
-		bpy.context.scene.use_nodes = original_compositing
+		bpy.context.scene.render.use_compositing = original_compositing
 		
 		return {'FINISHED'}
 
