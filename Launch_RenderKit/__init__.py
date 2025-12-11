@@ -144,7 +144,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	remote_enable: BoolProperty(
 		name='Render Remote',
 		description='Implements remote rendering on a target Blender instance over the local network',
-		default=True)
+		default=False)
 	remote_show_settings: BoolProperty(
 		name='Remote Settings   ',
 		description='Shows remote rendering options in the preferences panel',
