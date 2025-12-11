@@ -73,18 +73,15 @@ def process_ffmpeg(render_path='', render_time=-1):
 			ffmpeg_command += ' -vendor apl0 -an -sn'
 			# Output file path
 			ffmpeg_command += ' ' + output_path + '.mov'
-			# Remove any accidental double spaces
+			# Remove any accidental double+ spaces
 			ffmpeg_command = sub(r'\s{2,}', " ", ffmpeg_command)
 			
 			# Print command to the terminal
-			print('FFmpeg ProRes command:')
-			print(ffmpeg_command)
-			print('')
+			print(f'FFmpeg ProRes command: {ffmpeg_command}')
 			
 			# Run FFmpeg command
 			try:
 				subprocess.Popen(ffmpeg_command, shell=True)
-				print('')
 			except Exception as exc:
 				print(str(exc) + " | Error in Render Kit: failed to process FFmpeg ProRes command")
 		
@@ -117,18 +114,15 @@ def process_ffmpeg(render_path='', render_time=-1):
 			ffmpeg_command += ' -pix_fmt yuv420p -movflags rtphint'
 			# Output file path
 			ffmpeg_command += ' ' + output_path + '.mp4'
-			# Remove any accidental double or more spaces
+			# Remove any accidental double+ spaces
 			ffmpeg_command = sub(r'\s{2,}', " ", ffmpeg_command)
 			
 			# Print command to the terminal
-			print('FFmpeg MP4 command:')
-			print(ffmpeg_command)
-			print('')
+			print(f'FFmpeg MP4 command: {ffmpeg_command}')
 			
 			# Run FFmpeg command
 			try:
 				subprocess.Popen(ffmpeg_command, shell=True)
-				print('')
 			except Exception as exc:
 				print(str(exc) + " | Error in Render Kit: failed to process FFmpeg MP4 command")
 		
@@ -153,18 +147,15 @@ def process_ffmpeg(render_path='', render_time=-1):
 			ffmpeg_command = ffmpeg_command.replace("{{fps}}", fps_float)
 			ffmpeg_command = ffmpeg_command.replace("{{input}}", glob_pattern)
 			ffmpeg_command = ffmpeg_command.replace("{{output}}", output_path)
-			# Remove any accidental double spaces
+			# Remove any accidental double+ spaces
 			ffmpeg_command = sub(r'\s{2,}', " ", ffmpeg_command)
 			
 			# Print command to the terminal
-			print('FFmpeg custom command:')
-			print(ffmpeg_command)
-			print('')
+			print(f'FFmpeg custom command: {ffmpeg_command}')
 			
 			# Run FFmpeg command
 			try:
 				subprocess.Popen(ffmpeg_command, shell=True)
-				print('')
 			except Exception as exc:
 				print(str(exc) + " | Error in Render Kit: failed to process FFmpeg custom command")
 	

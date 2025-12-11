@@ -707,8 +707,9 @@ def NODE_PT_output_path_variable_list(self, context):
 	if not (False) and prefs.render_variable_enable and compositing:
 		True if tuple([5,0,0]) > bpy.app.version else False
 		active_node = compositing.nodes.active
+		
+		# Check if the node is a File Output node
 		if isinstance(active_node, bpy.types.CompositorNodeOutputFile):
-#		if active_node.type == 'OUTPUT_FILE':
 			# Get file path and all output file names from the current active node
 			# Blender 5.0 changes the naming conventions for compositing trees and file output nodes
 			# Old: bpy.context.scene.node_tree.nodes[5].file_slots[3].path

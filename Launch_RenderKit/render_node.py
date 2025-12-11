@@ -210,9 +210,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 			magick_command = sub(r'\s{2,}', " ", magick_command)
 			
 			# Print command to the terminal
-			print('ImageMagick command:')
-			print(magick_command)
-			print('')
+			print(f'ImageMagick command: {magick_command}')
 			
 			# Run ImageMagick command in a new process
 			try:

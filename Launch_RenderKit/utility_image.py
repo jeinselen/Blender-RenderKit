@@ -26,10 +26,9 @@ IMAGE_EXTENSIONS = (
 
 # Multilayer EXR files are unsupported via the Python API - https://developer.blender.org/T71087
 
-def save_image(render_time=-1.0, serial=-1):
+def save_image(scene, render_time=-1.0, serial=-1):
 	context = bpy.context
 	prefs = context.preferences.addons[__package__].preferences
-	scene = context.scene
 	settings = scene.render_kit_settings
 	
 	# Get project name
@@ -146,9 +145,11 @@ def save_image(render_time=-1.0, serial=-1):
 	filepath = os.path.join(filepath, filename) + extension
 	
 	# Get rendered output
-#	image = bpy.data.images['Render Result']
-#	image = bpy.data.images.get('Render Result')
 	image = next((img for img in bpy.data.images if img.type == 'RENDER_RESULT'), None)
+	if not image or not image.has_data:
+		image = bpy.data.images.get('Render Result')
+	if not image or not image.has_data:
+		image = bpy.data.images['Render Result']
 	
 #	if not image or not image.has_data:
 #		print('Render Kit: Render Result not found. Image not saved.')
@@ -177,7 +178,7 @@ def save_image(render_time=-1.0, serial=-1):
 		try:
 			# Pass scene for correct color management
 			image.save_render(filepath=filepath, scene=scene)
-			print("Image saved successfully")
+#			print("Image saved successfully")
 		except Exception as e:
 			print(f"ERROR - Failed to save image: {e}")
 			import traceback

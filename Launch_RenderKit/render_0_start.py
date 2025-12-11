@@ -38,29 +38,23 @@ def render_kit_start(scene):
 	settings.autosave_video_mp4_path = ""
 	settings.autosave_video_custom_path = ""
 	
-	# Track usage of output serial in FFmpeg outputs only if enabled
-	if prefs.ffmpeg_processing and prefs.ffmpeg_exists:
-		if settings.autosave_video_prores:
-			settings.output_file_serial_used = True if '{serial}' in settings.autosave_video_prores_location else False
-		if settings.autosave_video_mp4:
-			settings.output_file_serial_used = True if '{serial}' in settings.autosave_video_mp4_location else False
-		if settings.autosave_video_custom:
-			settings.output_file_serial_used = True if '{serial}' in settings.autosave_video_custom_location else False
-	
 	# If variable processing is turned on
 	if prefs.render_variable_enable:
 		# Save original output file path
 		settings.output_file_path = filepath = scene.render.filepath
+		
 		# Check for serial number usage
-		settings.output_file_serial_used = True if '{serial}' in scene.render.filepath else False
+		if '{serial}' in scene.render.filepath:
+			settings.output_file_serial_used = True
 	
 	# Save compositing node file paths if turned on in the plugin settings and compositing is enabled
 	if prefs.render_variable_enable and scene.render.use_compositing and compositing:
 		# Iterate through Compositor nodes, adding all file output node path and sub-path variables to a dictionary
 		node_settings = {}
 		for node in compositing.nodes:
-			# Check if the node is a File Output node
-			if isinstance(node, bpy.types.CompositorNodeOutputFile):
+			
+			# Check if the node is a File Output node and unmuted
+			if isinstance(node, bpy.types.CompositorNodeOutputFile) and not node.mute:
 				directory = node.base_path if bpy.app.version < tuple([5,0,0]) else node.directory
 				
 				# Save the directory property and the output items dictionary entry
@@ -68,8 +62,10 @@ def render_kit_start(scene):
 					"directory": directory,
 					"outputs": {}
 				}
+				
 				# Check for serial number usage
-				settings.output_file_serial_used = True if '{serial}' in directory else False
+				if '{serial}' in directory:
+					settings.output_file_serial_used = True
 				
 				# Save and then process the sub-path property of each file port
 				output_ports = node.file_slots if bpy.app.version < tuple([5,0,0]) else node.file_output_items
@@ -78,15 +74,20 @@ def render_kit_start(scene):
 						node_settings[node.name]["outputs"][i] = {
 							"path": output_port.path
 						}
+						
 						# Check for serial number usage
-						settings.output_file_serial_used = True if '{serial}' in output_port.path else False
+						if '{serial}' in output_port.path:
+							settings.output_file_serial_used = True
+						
 					else:
 						node_settings[node.name]["outputs"][i] = {
 							"name": output_port.name
 						}
+						
 						# Check for serial number usage
-						settings.output_file_serial_used = True if '{serial}' in output_port.name else False
-					
+						if '{serial}' in output_port.name:
+							settings.output_file_serial_used = True
+		
 		# Convert the dictionary to JSON format and save to the plugin preferences for safekeeping while rendering
 		settings.output_file_nodes = json.dumps(node_settings)
 	
@@ -113,7 +114,9 @@ def render_kit_start(scene):
 				# Get node data
 				for node_name, node_data in node_settings.items():
 					node = compositing.nodes.get(node_name)
-					if isinstance(node, bpy.types.CompositorNodeOutputFile):
+					
+					# Check if the node is a File Output node and unmuted
+					if isinstance(node, bpy.types.CompositorNodeOutputFile) and not node.mute:
 						if bpy.app.version < tuple([5,0,0]):
 							# Reset base path
 							node.base_path = node_data.get("directory", node.base_path)
@@ -142,4 +145,3 @@ def render_kit_start(scene):
 									output_port.name = port_data.get("name", output_port.name)
 									# Replace dynamic variables in the output port path
 									output_port.name = replaceVariables(output_port.name)
-								

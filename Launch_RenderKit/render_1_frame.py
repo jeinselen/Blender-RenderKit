@@ -49,7 +49,9 @@ def render_kit_frame_pre(scene):
 				# Get node data
 				for node_name, node_data in node_settings.items():
 					node = compositing.nodes.get(node_name)
-					if isinstance(node, bpy.types.CompositorNodeOutputFile):
+					
+					# Check if the node is a File Output node and unmuted
+					if isinstance(node, bpy.types.CompositorNodeOutputFile) and not node.mute:
 						if bpy.app.version < tuple([5,0,0]):
 							# Reset base path
 							node.base_path = node_data.get("directory", node.base_path)
@@ -88,6 +90,7 @@ def render_kit_frame_pre(scene):
 									output_item.name = replaceVariables(original_name)
 
 
+
 @persistent
 def render_kit_frame_post(scene):
 	prefs = bpy.context.preferences.addons[__package__].preferences
@@ -112,10 +115,21 @@ def render_kit_frame_post(scene):
 	
 	# If sequence rendering is ongoing, FFmpeg processing is enabled, and command path exists
 	if settings.sequence_rendering_status and prefs.ffmpeg_processing and prefs.ffmpeg_exists:
-		# If path is different than previous, start a new FFmpeg process to compile the previous range of images
-		# Or if this is the last frame in the render range
-		if (settings.autosave_video_render_path and settings.autosave_video_render_path != scene.render.filepath) or scene.frame_current == scene.frame_end:
-			process_ffmpeg(render_path=settings.autosave_video_render_path)
+		# If any of the FFmpeg options are enabled
+		if settings.autosave_video_prores or settings.autosave_video_mp4 or settings.autosave_video_custom:
+			# If path is different than previous, start a new FFmpeg process to compile the previous range of images
+			# Or if this is the last frame in the render range
+			if (settings.autosave_video_render_path and settings.autosave_video_render_path != scene.render.filepath) or (scene.frame_current == scene.frame_end):
+				# Process FFmpeg outputs
+				process_ffmpeg(render_path=settings.autosave_video_render_path)
+				
+				# Track usage of output serial in FFmpeg outputs
+				if settings.autosave_video_prores and '{serial}' in settings.autosave_video_prores_location:
+					settings.output_file_serial_used = True
+				if settings.autosave_video_mp4 and '{serial}' in settings.autosave_video_mp4_location:
+					settings.output_file_serial_used = True
+				if settings.autosave_video_custom and '{serial}' in settings.autosave_video_custom_location:
+					settings.output_file_serial_used = True
 	
 	# Store processed render path for checking against during a video sequence
 	settings.autosave_video_render_path = scene.render.filepath
