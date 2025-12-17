@@ -36,8 +36,11 @@ class batch_render_start(bpy.types.Operator):
 			print(str(exc) + ' | Error in Render Kit: Begin Batch Render confirmation header')
 	
 	def execute(self, context):
-		settings = context.scene.render_kit_settings
 		
+		# Get scene from context
+		scene = context.scene
+		# Get settings from scene
+		settings = scene.render_kit_settings
 		settings.batch_active = True
 		
 		# Preserve manually entered batch index and values
@@ -48,9 +51,9 @@ class batch_render_start(bpy.types.Operator):
 		# Batch render cameras
 		if settings.batch_type == 'cams':
 			# Preserve original active camera and render resolution
-			original_camera = context.scene.camera
-			original_resolution_x = context.scene.render.resolution_x
-			original_resolution_y = context.scene.render.resolution_y
+			original_camera = scene.camera
+			original_resolution_x = scene.render.resolution_x
+			original_resolution_y = scene.render.resolution_y
 			
 			# If cameras are selected
 			if len(context.selected_objects) > 0 and len([obj for obj in context.selected_objects if obj.type == 'CAMERA']) > 0:
@@ -79,19 +82,19 @@ class batch_render_start(bpy.types.Operator):
 				settings.batch_random = hash(settings.batch_factor * 0.9998 + 0.0001) / 1000000 % 1
 				
 				# Set rendering camera to current camera
-				context.scene.camera = cam
+				scene.camera = cam
 				
 				# Set scene resolution from camera name if appended "#x#" pattern is found
-				resolution_match = search(r'(\d+)x(\d+)$', context.scene.camera.name)
+				resolution_match = search(r'(\d+)x(\d+)$', scene.camera.name)
 				if resolution_match != None:
-					context.scene.render.resolution_x = int(resolution_match.group(1))
-					context.scene.render.resolution_y = int(resolution_match.group(2))
-					original_camera_name = context.scene.camera.name
-					context.scene.camera.name = original_camera_name.replace(resolution_match.group(0), "")
+					scene.render.resolution_x = int(resolution_match.group(1))
+					scene.render.resolution_y = int(resolution_match.group(2))
+					original_camera_name = scene.camera.name
+					scene.camera.name = original_camera_name.replace(resolution_match.group(0), "")
 				# If no resolution is supplied, reset to original settings (allows mixing of custom and default resolutions in a single batch render)
 				else:
-					context.scene.render.resolution_x = original_resolution_x
-					context.scene.render.resolution_y = original_resolution_y
+					scene.render.resolution_x = original_resolution_x
+					scene.render.resolution_y = original_resolution_y
 				
 				# Render
 				if settings.batch_range == 'img':
@@ -103,15 +106,15 @@ class batch_render_start(bpy.types.Operator):
 				
 				# Restore camera name if it was changed to remove the resolution
 				if resolution_match != None:
-					context.scene.camera.name = original_camera_name
+					scene.camera.name = original_camera_name
 				
 				# Increment index value
 				settings.batch_index += 1
-				
+			
 			# Restore original active camera and render resolution
-			context.scene.camera = original_camera
-			context.scene.render.resolution_x = original_resolution_x
-			context.scene.render.resolution_y = original_resolution_y
+			scene.camera = original_camera
+			scene.render.resolution_x = original_resolution_x
+			scene.render.resolution_y = original_resolution_y
 		
 		# Batch render collections
 		if settings.batch_type == 'cols':
@@ -138,11 +141,11 @@ class batch_render_start(bpy.types.Operator):
 				source_collections_excluded.append(col.exclude)
 				col.collection.hide_render = True
 				col.exclude = True
-				
-			print('hidden status:')
-			print(dir(source_collections_hidden))
-			print('excluded status:')
-			print(dir(source_collections_excluded))
+			
+#			print('hidden status:')
+#			print(dir(source_collections_hidden))
+#			print('excluded status:')
+#			print(dir(source_collections_excluded))
 			
 			# Reset batch index value
 			settings.batch_index = 0
@@ -211,10 +214,10 @@ class batch_render_start(bpy.types.Operator):
 			
 			# Store the render status of each object and disable rendering
 			source_items_hidden = []
-			for obj in source_items:
-				source_items_hidden.append(obj.hide_render)
-				obj.hide_render = True
-				obj.select_set(False)
+			for itm in source_items:
+				source_items_hidden.append(itm.hide_render)
+				itm.hide_render = True
+				itm.select_set(False)
 			
 			# Reset batch index value
 			settings.batch_index = 0
@@ -223,15 +226,15 @@ class batch_render_start(bpy.types.Operator):
 			batch_length = len(source_items) - 1
 			
 			# Render each item in the list
-			for obj in source_items:
+			for itm in source_items:
 				# Set batch values
 				settings.batch_factor = settings.batch_index / batch_length
 				settings.batch_random = hash(settings.batch_factor * 0.9998 + 0.0001) / 1000000 % 1
 				
 				# Set current object to selected, active, and renderable
-				obj.select_set(True)
-				context.view_layer.objects.active = obj
-				obj.hide_render = False
+				itm.select_set(True)
+				context.view_layer.objects.active = itm
+				itm.hide_render = False
 				
 				# Render
 				if settings.batch_range == 'img':
@@ -242,21 +245,21 @@ class batch_render_start(bpy.types.Operator):
 					bpy.ops.render.render(animation=True, use_viewport=True)
 				
 				# Disable the object again (don't worry about active, next loop will reset it)
-				obj.select_set(False)
-				obj.hide_render = True
+				itm.select_set(False)
+				itm.hide_render = True
 				
 				# Increment index value
 				settings.batch_index += 1
 			
 			# Restore render status
 			if len(source_items_hidden) > 0:
-				for i, obj in enumerate(source_items):
-					obj.hide_render = source_items_hidden[i]
+				for i, itm in enumerate(source_items):
+					itm.hide_render = source_items_hidden[i]
 			
 			# Restore original selection
 			if original_selection:
-				for obj in original_selection:
-					obj.select_set(True)
+				for itm in original_selection:
+					itm.select_set(True)
 			
 			# Restore original active item
 			if original_active:
@@ -291,7 +294,7 @@ class batch_render_start(bpy.types.Operator):
 			
 			# Save current image, if assigned
 			original_image = None
-			if target.image.has_data:
+			if target.image and target.image.has_data:
 				original_image = bpy.data.materials[target_material].node_tree.nodes.get(target_node).image
 			
 			# Reset batch index value
@@ -374,10 +377,11 @@ class batch_camera_update(bpy.types.Operator):
 		return True
 	
 	def execute(self, context):
-		settings = context.scene.render_kit_settings
+		scene = context.scene
+		settings = scene.render_kit_settings
 		
 		# Get current camera
-		target_camera = context.scene.camera
+		target_camera = scene.camera
 		
 		# If offset, get previous or next camera from selection or collection
 		if self.list_offset != 0:
@@ -418,14 +422,14 @@ class batch_camera_update(bpy.types.Operator):
 			settings.batch_random = hash(settings.batch_factor * 0.9998 + 0.0001) / 1000000 % 1
 		
 			# Set rendering camera to current camera and make the item active for editing
-			context.scene.camera = target_camera
+			scene.camera = target_camera
 			context.view_layer.objects.active = target_camera
 		
 		# Set scene resolution from camera name if appended "#x#" pattern is found
-		resolution_match = search(r'(\d+)x(\d+)$', context.scene.camera.name)
+		resolution_match = search(r'(\d+)x(\d+)$', scene.camera.name)
 		if resolution_match != None:
-			context.scene.render.resolution_x = int(resolution_match.group(1))
-			context.scene.render.resolution_y = int(resolution_match.group(2))
+			scene.render.resolution_x = int(resolution_match.group(1))
+			scene.render.resolution_y = int(resolution_match.group(2))
 		
 		return {'FINISHED'}
 
@@ -462,7 +466,9 @@ class BATCH_PT_batch_render(bpy.types.Panel):
 			
 	def draw(self, context):
 		if True:
-			settings = context.scene.render_kit_settings
+			prefs = context.preferences.addons[__package__].preferences
+			scene = context.scene
+			settings = scene.render_kit_settings
 			
 			# UI Layout
 			layout = self.layout
@@ -625,22 +631,58 @@ class BATCH_PT_batch_render(bpy.types.Panel):
 				feedback = input2.box()
 				feedback.label(text=feedback_text, icon=feedback_icon)
 			
-			# Not-really-read-only batch index and values
+			
+			
+			# Batch values, set during rendering
 			field = layout.column(align=True)
-			field.label(text="Batch values (set during rendering)")
+			field.label(text="Batch values")
 			field.prop(settings, 'batch_index', text='Index', icon='MODIFIER') # PREFERENCES MODIFIER
 			field.prop(settings, 'batch_factor', text='Factor', icon='MODIFIER') # PREFERENCES MODIFIER
 			field.prop(settings, 'batch_random', text='Random', icon='MODIFIER') # PREFERENCES MODIFIER
 			
-			# Final settings and start render
+			
+			
+			# Render variables and output path
 			input3 = layout.column(align=True)
+			input3.separator()
+			input3.label(text="Batch output")
+			
+			# Variable list UI
+			renderkit_variable_ui(input3, context, paths=bpy.context.scene.render.filepath, postrender=False, noderender=False, autoclose=True, customserial=False, align=True)
+			
+			# Output path
+			row = input3.row(align=True)
+			row.prop(context.scene.render, "filepath", text="")
+			
+			# Feedback
+			if not prefs.render_variable_enable:
+				box = input3.box()
+				box.label(text='Open Render Kit preferences and enable variables', icon='ERROR') # ERROR WARNING_LARGE
+			elif settings.batch_type == 'cams' and '{camera}' not in context.scene.render.filepath:
+				box = input3.box()
+				box.label(text='Add {{camera}} variable', icon='ERROR')
+			elif settings.batch_type == 'cols' and '{collection}' not in context.scene.render.filepath:
+				box = input3.box()
+				box.label(text='Add {{collection}} variable', icon='ERROR')
+			elif settings.batch_type == 'itms' and '{item}' not in context.scene.render.filepath:
+				box = input3.box()
+				box.label(text='Add {{item}} variable', icon='ERROR')
+			elif settings.batch_type == 'imgs' and '{node}' not in context.scene.render.filepath:
+				box = input3.box()
+				box.label(text='Add {{node}} variable', icon='ERROR')
+			
+			
+			
+			# Final settings and start render
+			input4 = layout.column(align=True)
+			input4.separator()
 			
 			# Batch range setting (still or sequence)
-			buttons = input3.row(align=True)
+			buttons = input4.row(align=True)
 			buttons.prop(settings, 'batch_range', expand = True)
 			
 			# Start Batch Render button with title feedback
-			button = input3.row(align=True)
+			button = input4.row(align=True)
 			if batch_count == 0 or batch_error:
 				button.active = False
 				button.enabled = False
