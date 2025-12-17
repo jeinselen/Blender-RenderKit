@@ -1,6 +1,8 @@
 import bpy
 import os
 import time
+
+# Internal imports
 from .render_variables import replaceVariables, renderkit_variable_ui
 from .utility_filecheck import checkExistingAndIncrement
 from .utility_notifications import render_notifications

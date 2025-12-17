@@ -4,7 +4,7 @@
 import bpy
 import os
 import subprocess
-from re import sub
+from re import findall, M as multiline
 
 # Local imports
 from .render_variables import replaceVariables
@@ -24,7 +24,7 @@ IMAGE_EXTENSIONS = (
 	'tga',
 	'tif')
 
-# Multilayer EXR files are unsupported via the Python API - https://developer.blender.org/T71087
+# Multilayer EXR files are not supported via the Python API - https://developer.blender.org/T71087
 
 def save_image(scene, render_time=-1.0, serial=-1):
 	context = bpy.context

@@ -646,7 +646,7 @@ class RENDER_PT_value_editor_3dview(bpy.types.Panel):
 ###########################################################################
 # Global variable and values button bar UI panels
 
-def renderkit_variable_ui(layout, context, paths="", postrender=True, noderender=True, autoclose=True, customserial=False):
+def renderkit_variable_ui(layout, context, paths="", postrender=True, noderender=True, autoclose=True, customserial=False, align=False):
 	prefs = context.preferences.addons[__package__].preferences
 	settings = context.scene.render_kit_settings
 	
@@ -654,7 +654,7 @@ def renderkit_variable_ui(layout, context, paths="", postrender=True, noderender
 #	layout = self.layout
 	
 	# VARIABLES BAR
-	bar = layout.row(align=False)
+	bar = layout.row(align=align)
 	
 	# Variable list popup button
 	ops = bar.operator(VariablePopup.bl_idname, text = "Variables", icon = "LINENUMBERS_OFF")

@@ -4,12 +4,6 @@ from bpy.app.handlers import persistent
 import time
 import json
 
-# File paths
-import os
-
-# Variable data
-from re import findall, M as multiline
-
 # Local imports
 from .render_variables import replaceVariables
 from .utility_image import save_image
@@ -26,6 +20,7 @@ from .utility_notifications import render_notifications
 
 @persistent
 def render_kit_end(scene):
+	passed_scene = scene
 	prefs = bpy.context.preferences.addons[__package__].preferences
 	settings = scene.render_kit_settings
 	
@@ -109,7 +104,7 @@ def render_kit_end(scene):
 				
 				# Autosave rendered image
 				if prefs.enable_autosave_render:
-					save_image(scene=scene, render_time=render_time)
+					save_image(scene=passed_scene, render_time=render_time)
 			
 			# Render complete notifications
 			if prefs.email_enable or prefs.pushover_enable or prefs.voice_enable:

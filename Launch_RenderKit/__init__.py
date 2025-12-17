@@ -170,9 +170,10 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	# Render remote settings
 	remote_cache_directory: StringProperty(
 		name="Cache Directory",
+		description="Local directory for caching remote projects",
 		subtype='DIR_PATH',
-		default="//remote_render_cache",
-		description="Local directory for caching remote projects"
+		options={'PATH_SUPPORTS_BLEND_RELATIVE'},
+		default="//remote_render_cache"
 	)
 	remote_discovery_port: IntProperty(
 		name="Discovery Port",
@@ -270,9 +271,10 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	file_location_global: StringProperty(
 		name="Global File Location",
 		description="Leave a single forward slash to auto generate folders alongside project files",
+		subtype="DIR_PATH",
+		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
 		default="/",
-		maxlen=4096,
-		subtype="DIR_PATH")
+		maxlen=4096)
 	file_name_type_global: EnumProperty(
 		name='Global File Name',
 		description='Autosaves files with the project name and serial number, project name and date, or custom naming pattern',
@@ -286,6 +288,8 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	file_name_custom_global: StringProperty(
 		name="Global Custom String",
 		description="Format a custom string using the variables listed below",
+		subtype="FILE_NAME",
+		options={'SUPPORTS_TEMPLATES'},
 		default="{{project}}-{{serial}}",
 		maxlen=4096)
 	file_serial_global: IntProperty(
@@ -727,9 +731,10 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	file_location: StringProperty(
 		name="File Location",
 		description="Leave a single forward slash to auto generate folders alongside project files",
+		subtype="DIR_PATH",
+		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
 		default="/",
-		maxlen=4096,
-		subtype="DIR_PATH")
+		maxlen=4096)
 	file_name_type: EnumProperty(
 		name='File Name',
 		description='Autosaves files with the project name and serial number, project name and date, or custom naming pattern',
@@ -743,6 +748,8 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	file_name_custom: StringProperty(
 		name="Custom String",
 		description="Format a custom string using the variables listed below",
+		subtype="FILE_NAME",
+		options={'SUPPORTS_TEMPLATES'},
 		default="{{project}}-{{serial}}-{{engine}}-{{duration}}",
 		maxlen=4096)
 	file_serial: IntProperty(
@@ -850,9 +857,10 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	autosave_video_prores_location: StringProperty(
 		name="Custom File Location",
 		description="Set ProRes file output location and name, use single forward slash to save alongside image sequence",
+		subtype="FILE_PATH",
+		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
 		default="//../Renders/{{project}}",
-		maxlen=4096,
-		subtype="DIR_PATH")
+		maxlen=4096)
 	
 	# MP4
 	autosave_video_mp4: BoolProperty(
@@ -871,9 +879,10 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	autosave_video_mp4_location: StringProperty(
 		name="Custom File Location",
 		description="Set MP4 file output location and name, use single forward slash to save alongside image sequence",
+		subtype="FILE_PATH",
+		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
 		default="//../Previews/{{project}}",
-		maxlen=4096,
-		subtype="DIR_PATH")
+		maxlen=4096)
 	
 	# Custom
 	autosave_video_custom: BoolProperty(
@@ -892,9 +901,10 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	autosave_video_custom_location: StringProperty(
 		name="Custom File Location",
 		description="Set custom command file output location and name, use single forward slash to save alongside image sequence",
+		subtype="FILE_PATH",
+		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
 		default="//../Outputs/{{project}}",
-		maxlen=4096,
-		subtype="DIR_PATH")
+		maxlen=4096)
 	
 	# Batch rendering options
 	batch_active: BoolProperty(
@@ -937,9 +947,10 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	batch_images_location: StringProperty(
 		name="Source Folder",
 		description="Source folder of images to be used in batch rendering",
+		subtype="DIR_PATH",
+		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
 		default="",
-		maxlen=4096,
-		subtype="DIR_PATH")
+		maxlen=4096)
 	batch_images_material: StringProperty(
 		name="Target Material",
 		description='Target material for batch rendering images',
@@ -981,11 +992,14 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		default="Color")
 	node_filepath: StringProperty(
 		name="File Path",
+		subtype="DIR_PATH",
+		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
 		default="//{{project}}",
-		maxlen=4096,
-		subtype="DIR_PATH")
+		maxlen=4096)
 	node_filename: StringProperty(
 		name="File Name",
+		subtype="FILE_NAME",
+		options={'SUPPORTS_TEMPLATES'},
 		default="{{item}}-{{material}}-{{node}}-{{socket}}",
 		maxlen=4096)
 	node_overwrite: BoolProperty(
