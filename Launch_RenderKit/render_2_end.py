@@ -21,12 +21,15 @@ from .utility_notifications import render_notifications
 @persistent
 def render_kit_end(scene):
 	passed_scene = scene
+	# Override passed context to see if this corrects context errors
+#	scene = bpy.context.scene
 	prefs = bpy.context.preferences.addons[__package__].preferences
 	settings = scene.render_kit_settings
 	
-	# Set estimated render time and sequence status to false (render is complete or canceled, estimate display and FFmpeg check is no longer needed)
-	settings.estimated_render_time_active = False
+	# Reset sequence tracking and start frame
 	settings.sequence_rendering_status = False
+	settings.estimated_render_start_frame = -1
+	
 	# FFmpeg processing is handled in the render_kit_frame_post function (render_1_frame.py) in order to properly support timeline segmentation
 	
 	# Calculate elapsed render time and update total
@@ -46,7 +49,8 @@ def render_kit_end(scene):
 		compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
 		if scene.render.use_compositing and compositing and len(settings.output_file_nodes) > 2:
 			
-			scene = bpy.context.scene
+			# Override passed context to see if this corrects context errors
+#			scene = bpy.context.scene
 			
 			# Get the JSON data from the preferences string where it was stashed
 			json_data = settings.output_file_nodes

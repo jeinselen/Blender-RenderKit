@@ -777,11 +777,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		default=0)
 	
 	# Variables for render time estimation
-	estimated_render_time_active: BoolProperty(
-		name="Render Active",
-		description="Indicates if rendering is currently active",
-		default=False)
-	estimated_render_time_frame: IntProperty(
+	estimated_render_start_frame: IntProperty(
 		name="Starting frame",
 		description="Saves the starting frame when render begins (helps correctly estimate partial renders)",
 		default=0)

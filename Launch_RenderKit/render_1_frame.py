@@ -16,26 +16,28 @@ from .utility_time import secondsToReadable
 
 @persistent
 def render_kit_frame_pre(scene):
-	prefs = bpy.context.preferences.addons[__package__].preferences
+	# Override passed context to see if this corrects context errors
+#	scene = bpy.context.scene
+	
 	settings = scene.render_kit_settings
 	
-	# Save starting frame (before setting active to true, this should only happen once during a sequence)
-	if not settings.estimated_render_time_active:
-		settings.estimated_render_time_frame = scene.frame_current
-	
 	# If video sequence is inactive and our current frame is not our starting frame, assume we're rendering a sequence
-	if not settings.sequence_rendering_status and settings.estimated_render_time_frame < scene.frame_current:
+	if not settings.sequence_rendering_status and settings.estimated_render_start_frame > -1 and settings.estimated_render_start_frame < scene.frame_current:
 		settings.sequence_rendering_status = True
+	
+	# Save starting frame (this should only happen once during a sequence)
+	if settings.estimated_render_start_frame < 0:
+		settings.estimated_render_start_frame = scene.frame_current
 	
 	# If file name processing is enabled and a sequence is underway, re-process output variables
 	# Note: {serial} usage is not checked here as it should have already been completed by the render_kit_start function
+	prefs = bpy.context.preferences.addons[__package__].preferences
 	if prefs.render_variable_enable:
-		
 		# Filter render output file path
 		if settings.output_file_path:
 			# Replace scene filepath output with the processed version from the original saved version
 			scene.render.filepath = replaceVariables(settings.output_file_path)
-			
+		
 		# Filter compositing node file paths
 		compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
 		if scene.render.use_compositing and compositing and settings.output_file_nodes:
@@ -93,43 +95,43 @@ def render_kit_frame_pre(scene):
 
 @persistent
 def render_kit_frame_post(scene):
-	prefs = bpy.context.preferences.addons[__package__].preferences
+	# Override passed context to see if this corrects context errors
+#	scene = bpy.context.scene
+	
 	settings = scene.render_kit_settings
 	
-	# If it's not the last frame, estimate time remaining
-	if scene.frame_current < scene.frame_end:
-		settings.estimated_render_time_active = True
-		# Elapsed time (Current - Render Start)
-		render_time = time.time() - float(settings.start_date)
-		# Divide by number of frames completed
-		render_time /= scene.frame_current - settings.estimated_render_time_frame + 1.0
-		# Multiply by number of frames assumed unrendered (does not account for previously completed frames beyond the current frame)
-		render_time *= scene.frame_end - scene.frame_current
-		# Convert to readable and store
-		settings.estimated_render_time_value = secondsToReadable(render_time)
-		# print('Estimated Time Remaining: ' + settings.estimated_render_time_value)
-	else:
-		settings.estimated_render_time_active = False
-	
-	
-	
-	# If sequence rendering is ongoing, FFmpeg processing is enabled, and command path exists
-	if settings.sequence_rendering_status and prefs.ffmpeg_processing and prefs.ffmpeg_exists:
-		# If any of the FFmpeg options are enabled
-		if settings.autosave_video_prores or settings.autosave_video_mp4 or settings.autosave_video_custom:
-			# If path is different than previous, start a new FFmpeg process to compile the previous range of images
-			# Or if this is the last frame in the render range
-			if (settings.autosave_video_render_path and settings.autosave_video_render_path != scene.render.filepath) or (scene.frame_current == scene.frame_end):
-				# Process FFmpeg outputs
-				process_ffmpeg(render_path=settings.autosave_video_render_path)
-				
-				# Track usage of output serial in FFmpeg outputs
-				if settings.autosave_video_prores and '{serial}' in settings.autosave_video_prores_location:
-					settings.output_file_serial_used = True
-				if settings.autosave_video_mp4 and '{serial}' in settings.autosave_video_mp4_location:
-					settings.output_file_serial_used = True
-				if settings.autosave_video_custom and '{serial}' in settings.autosave_video_custom_location:
-					settings.output_file_serial_used = True
+	# If sequence rendering is currently active
+	if settings.sequence_rendering_status:
+		# If it's not the last frame, estimate time remaining
+		if scene.frame_current < scene.frame_end:
+			# Elapsed time (Current - Render Start)
+			render_time = time.time() - float(settings.start_date)
+			# Divide by number of frames completed
+			render_time /= scene.frame_current - settings.estimated_render_start_frame + 1.0
+			# Multiply by number of frames assumed unrendered (does not account for previously completed frames beyond the current frame)
+			render_time *= scene.frame_end - scene.frame_current
+			# Convert to readable and store
+			settings.estimated_render_time_value = secondsToReadable(render_time)
+			# print('Estimated Time Remaining: ' + settings.estimated_render_time_value)
+		
+		# If FFmpeg processing is enabled and command path exists
+		prefs = bpy.context.preferences.addons[__package__].preferences
+		if prefs.ffmpeg_processing and prefs.ffmpeg_exists:
+			# If any of the FFmpeg options are enabled
+			if settings.autosave_video_prores or settings.autosave_video_mp4 or settings.autosave_video_custom:
+				# If path is different than previous, start a new FFmpeg process to compile the previous range of images
+				# Or if this is the last frame in the render range
+				if (settings.autosave_video_render_path and settings.autosave_video_render_path != scene.render.filepath) or (scene.frame_current == scene.frame_end):
+					# Process FFmpeg outputs
+					process_ffmpeg(render_path=settings.autosave_video_render_path)
+					
+					# Track usage of output serial in FFmpeg outputs
+					if settings.autosave_video_prores and '{serial}' in settings.autosave_video_prores_location:
+						settings.output_file_serial_used = True
+					if settings.autosave_video_mp4 and '{serial}' in settings.autosave_video_mp4_location:
+						settings.output_file_serial_used = True
+					if settings.autosave_video_custom and '{serial}' in settings.autosave_video_custom_location:
+						settings.output_file_serial_used = True
 	
 	# Store processed render path for checking against during a video sequence
 	settings.autosave_video_render_path = scene.render.filepath

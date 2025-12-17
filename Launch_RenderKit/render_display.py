@@ -22,7 +22,7 @@ def image_viewer_feedback_display(self, context):
 	prefs = context.preferences.addons[__package__].preferences
 	settings = context.scene.render_kit_settings
 	
-	if prefs.show_estimated_render_time and settings.estimated_render_time_active:
+	if prefs.show_estimated_render_time and settings.sequence_rendering_status:
 		self.layout.separator()
 		box = self.layout.box()
 		box.label(text="  Estimated Time Remaining: " + settings.estimated_render_time_value + " ")

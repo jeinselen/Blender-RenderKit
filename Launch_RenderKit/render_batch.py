@@ -37,6 +37,9 @@ class batch_render_start(bpy.types.Operator):
 	
 	def execute(self, context):
 		
+		# Alternatively, re-get context from scratch to see if it prevents errors?
+#		context = bpy.context
+		
 		# Get scene from context
 		scene = context.scene
 		# Get settings from scene
@@ -173,7 +176,6 @@ class batch_render_start(bpy.types.Operator):
 				else:
 					# Sequence
 					bpy.ops.render.render(animation=True, use_viewport=True)
-					
 				# Disable the collection again
 				col.collection.hide_render = True
 				col.exclude = True

@@ -15,6 +15,9 @@ from .render_variables import replaceVariables
 
 @persistent
 def render_kit_start(scene):
+	# Override passed context to see if this corrects context errors
+#	scene = bpy.context.scene
+	
 	prefs = bpy.context.preferences.addons[__package__].preferences
 	settings = scene.render_kit_settings
 	compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
@@ -22,11 +25,9 @@ def render_kit_start(scene):
 	# Save start time in seconds as a string to the addon settings
 	settings.start_date = str(time.time())
 	
-	# Set estimated render time active to false (must render at least one frame before estimating time remaining)
-	settings.estimated_render_time_active = False
-	
-	# Set video sequence tracking (separate from render active above)
+	# Reset sequence tracking and start frame
 	settings.sequence_rendering_status = False
+	settings.estimated_render_start_frame = -1
 	
 	# Track usage of the output serial usage globally to ensure it can be accessed before/after frame rendering
 	# Set it to false ahead of processing to ensure no errors occur (usually only if there's a crash of some sort)
