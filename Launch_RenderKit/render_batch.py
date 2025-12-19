@@ -660,18 +660,19 @@ class BATCH_PT_batch_render(bpy.types.Panel):
 			if not prefs.render_variable_enable:
 				box = input3.box()
 				box.label(text='Open Render Kit preferences and enable variables', icon='ERROR') # ERROR WARNING_LARGE
-			elif settings.batch_type == 'cams' and '{camera}' not in context.scene.render.filepath:
-				box = input3.box()
-				box.label(text='Add {{camera}} variable', icon='ERROR')
-			elif settings.batch_type == 'cols' and '{collection}' not in context.scene.render.filepath:
-				box = input3.box()
-				box.label(text='Add {{collection}} variable', icon='ERROR')
-			elif settings.batch_type == 'itms' and '{item}' not in context.scene.render.filepath:
-				box = input3.box()
-				box.label(text='Add {{item}} variable', icon='ERROR')
-			elif settings.batch_type == 'imgs' and '{node}' not in context.scene.render.filepath:
-				box = input3.box()
-				box.label(text='Add {{node}} variable', icon='ERROR')
+			elif '{batch}' not in context.scene.render.filepath:
+				if settings.batch_type == 'cams' and '{camera}' not in context.scene.render.filepath:
+					box = input3.box()
+					box.label(text='Add {{camera}} or {{batch}} variable', icon='ERROR')
+				elif settings.batch_type == 'cols' and '{collection}' not in context.scene.render.filepath:
+					box = input3.box()
+					box.label(text='Add {{collection}} or {{batch}} variable', icon='ERROR')
+				elif settings.batch_type == 'itms' and '{item}' not in context.scene.render.filepath:
+					box = input3.box()
+					box.label(text='Add {{item}} or {{batch}} variable', icon='ERROR')
+				elif settings.batch_type == 'imgs' and '{node}' not in context.scene.render.filepath:
+					box = input3.box()
+					box.label(text='Add {{node}} or {{batch}} variable', icon='ERROR')
 			
 			
 			

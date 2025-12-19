@@ -5,7 +5,6 @@ import time
 import json
 
 # Local imports
-from .render_variables import replaceVariables
 from .utility_image import save_image
 from .utility_log import save_log
 from .utility_notifications import render_notifications
@@ -20,9 +19,6 @@ from .utility_notifications import render_notifications
 
 @persistent
 def render_kit_end(scene):
-	passed_scene = scene
-	# Override passed context to see if this corrects context errors
-#	scene = bpy.context.scene
 	prefs = bpy.context.preferences.addons[__package__].preferences
 	settings = scene.render_kit_settings
 	
@@ -49,7 +45,7 @@ def render_kit_end(scene):
 		compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
 		if scene.render.use_compositing and compositing and len(settings.output_file_nodes) > 2:
 			
-			# Override passed context to see if this corrects context errors
+			# Try overriding the passed context if context errors occur
 #			scene = bpy.context.scene
 			
 			# Get the JSON data from the preferences string where it was stashed
@@ -93,37 +89,24 @@ def render_kit_end(scene):
 			# Clear output node storage
 			settings.output_file_nodes = ""
 	
-	# Timer function may be required to prevent render process conflicts in Blender 5.0
-	# Currently disabled via "and False" and seems to be working ok (spinning it off into a timer might have been enough?)
-	def _process_delay():
-		if bpy.app.is_job_running('RENDER') and False:
-			# Try again in 0.1 seconds
-			return 0.1
-		else:
-			# Features that require the project to be saved
-			if bpy.data.filepath:
-				# Save external log file
-				if prefs.external_log_file:
-					save_log(render_time)
-				
-				# Autosave rendered image
-				if prefs.enable_autosave_render:
-					save_image(scene=passed_scene, render_time=render_time)
-			
-			# Render complete notifications
-			if prefs.email_enable or prefs.pushover_enable or prefs.voice_enable:
-				render_notifications(render_time)
-			
-			# Increment the output serial number if it was used in any output path
-			# This must be done after all other steps are completed
-			if settings.output_file_serial_used:
-				settings.output_file_serial += 1
-				settings.output_file_serial_used = False
+	# Features that require the project to be saved
+	if bpy.data.filepath:
+		# Save external log file
+		if prefs.external_log_file:
+			save_log(render_time)
 		
-		# Stop timer
-		return None
+		# Autosave rendered image
+		if prefs.enable_autosave_render:
+			save_image(scene=scene, render_time=render_time)
 	
-	# Register timer function
-	bpy.app.timers.register(_process_delay)
+	# Render complete notifications
+	if prefs.email_enable or prefs.pushover_enable or prefs.voice_enable:
+		render_notifications(render_time)
+	
+	# Increment the output serial number if it was used in any output path
+	# This must be done after all other steps are completed
+	if settings.output_file_serial_used:
+		settings.output_file_serial += 1
+		settings.output_file_serial_used = False
 	
 	return {'FINISHED'}

@@ -12,6 +12,9 @@ import requests
 # Command line voice access
 import os
 
+# Variables
+from .render_variables import replaceVariables
+
 
 
 ###########################################################################

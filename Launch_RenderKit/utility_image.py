@@ -5,6 +5,7 @@ import bpy
 import os
 import subprocess
 from re import findall, M as multiline
+import traceback
 
 # Local imports
 from .render_variables import replaceVariables
@@ -144,48 +145,31 @@ def save_image(scene, render_time=-1.0, serial=-1):
 	# Combine file path and file name using system separator, add extension
 	filepath = os.path.join(filepath, filename) + extension
 	
-	# Get rendered output
-	image = next((img for img in bpy.data.images if img.type == 'RENDER_RESULT'), None)
-	if not image or not image.has_data:
-		image = bpy.data.images.get('Render Result')
-	if not image or not image.has_data:
-		image = bpy.data.images['Render Result']
-	
-#	if not image or not image.has_data:
-#		print('Render Kit: Render Result not found. Image not saved.')
-#		return {'CANCELLED'}
-	
-	# Check if directory exists
-#	dir_path = os.path.dirname(filepath)
-#	if not os.path.exists(dir_path):
-#		print(f"  Directory does not exist, attempting to create: {dir_path}")
-#		try:
-#			os.makedirs(dir_path)
-#		except Exception as e:
-#			print(f"  Failed to create directory: {e}")
-#			return {'CANCELLED'}
-	
-	# Check for invalid characters (beyond what's already sanitized)
-#	if not filepath or len(filepath) == 0:
-#		print("  Filepath is empty!")
-#		return {'CANCELLED'}
-	
-	# Check if the filepath is too long (platform-specific limits)
-#	if len(filepath) > 255:  # Most systems have a 255 character limit for filenames
-#		print(f"  Filepath may be too long ({len(filepath)} characters)")
-	
-	if image and image.has_data:
+	# Try multiple approaches to getting the render result image
+	# Don't test for image data, the Python API will return none regardless of actual content
+	try:
+		# Detect render output image by type
+		image = next((img for img in bpy.data.images if img.type == 'RENDER_RESULT'), None)
+		image.save_render(filepath=filepath, scene=scene)
+	except Exception as e:
+#		print(f"Render Kit autosave image error — failed to save render file via type: {e}")
+		traceback.print_exc()
 		try:
-			# Pass scene for correct color management
+			# Get render output image by name
+			image = bpy.data.images.get('Render Result')
 			image.save_render(filepath=filepath, scene=scene)
-#			print("Image saved successfully")
 		except Exception as e:
-			print(f"ERROR - Failed to save image: {e}")
-			import traceback
+#			print(f"Render Kit autosave image error — failed to save render file via get: {e}")
 			traceback.print_exc()
-	else:
-		print("ERROR - No image data found")
-		
+			try:
+				# Find render output image by name
+				image = bpy.data.images['Render Result']
+				image.save_render(filepath=filepath, scene=scene)
+			except Exception as e:
+#				print(f"Render Kit autosave image error — failed to save render file via find: {e}")
+				print(f"Render Kit autosave image error — failed to save render file {e}")
+				traceback.print_exc()
+	
 	# Restore original user settings for render output
 	scene.render.image_settings.file_format = original_format
 	scene.render.image_settings.color_mode = original_colormode

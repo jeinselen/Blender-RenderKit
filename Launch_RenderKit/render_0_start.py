@@ -15,9 +15,6 @@ from .render_variables import replaceVariables
 
 @persistent
 def render_kit_start(scene):
-	# Override passed context to see if this corrects context errors
-#	scene = bpy.context.scene
-	
 	prefs = bpy.context.preferences.addons[__package__].preferences
 	settings = scene.render_kit_settings
 	compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group

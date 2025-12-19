@@ -16,9 +16,6 @@ from .utility_time import secondsToReadable
 
 @persistent
 def render_kit_frame_pre(scene):
-	# Override passed context to see if this corrects context errors
-#	scene = bpy.context.scene
-	
 	settings = scene.render_kit_settings
 	
 	# If video sequence is inactive and our current frame is not our starting frame, assume we're rendering a sequence
@@ -95,9 +92,6 @@ def render_kit_frame_pre(scene):
 
 @persistent
 def render_kit_frame_post(scene):
-	# Override passed context to see if this corrects context errors
-#	scene = bpy.context.scene
-	
 	settings = scene.render_kit_settings
 	
 	# If sequence rendering is currently active
