@@ -7,6 +7,7 @@ from .render_variables import replaceVariables, renderkit_variable_ui
 from .utility_filecheck import checkExistingAndIncrement
 from .utility_notifications import render_notifications
 from .utility_time import secondsToReadable
+from . import utility_data
 
 # ImageMagick processing
 from re import sub
@@ -31,6 +32,10 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 	def execute(self, context):
 		prefs = context.preferences.addons[__package__].preferences
 		settings = context.scene.render_kit_settings
+		scene = context.scene
+		
+		# Reset serial tracking
+		utility_data.render_set_serial(False)
 		
 		# Check for active mesh object
 		obj = context.active_object
@@ -67,7 +72,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		# Get the file path and do the initial variable replacement
 		# Because mesh and texture data are generally organised in different locations, Delivery Kit location wasn't added here
 		file_path = os.path.join(settings.node_filepath, settings.node_filename) + '.' + settings.node_format.replace("OPEN_EXR", "EXR").lower()
-		file_path = replaceVariables(file_path) # Must be completed before the active nodes change
+		file_path = replaceVariables(scene, file_path) # Must be completed before the active nodes change
 		
 		# Get the output socket by name
 		original_node_output = {output.name: output for output in source_node.outputs}
@@ -164,24 +169,29 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 			image.colorspace_settings.name = 'Non-Color'
 		
 		# Start render time
-		settings.start_date = str(time.time())
+#		settings.start_time = str(time.time())
+		utility_data.render_set_start_time(time.time())
 		
 		# Render to image
 		bpy.ops.object.bake(type=output_type)
 		
 		# Check for serial number usage in the file path
-		settings.output_file_serial_used = True if '{serial}' in file_path else False
+#		settings.serial_used = True if '{serial}' in file_path else False
+		if '{serial}' in file_path:
+			utility_data.render_set_serial(True)
 		
 		# Calculate render
-		render_time = round(time.time() - float(settings.start_date), 2)
+#		render_time = round(time.time() - float(settings.start_time), 2)
+		render_time = round(time.time() - utility_data.render_get_start_time(), 2)
 		
 		# Replace variables (part two, this time with all of the custom elements)
-		file_path = replaceVariables(file_path, render_time=render_time, socket=settings.node_output)
+		file_path = replaceVariables(scene, file_path, render_time=render_time, socket=settings.node_output)
 		
 		# Increment the output serial number if it was used in the output path
-		if settings.output_file_serial_used:
+		if utility_data.render_get_serial():
 			settings.output_file_serial += 1
-			settings.output_file_serial_used = False
+#			settings.serial_used = False
+			utility_data.render_set_serial(False)
 		
 		# Check for existing directory and files
 		file_path = checkExistingAndIncrement(file_path, overwrite=settings.node_overwrite)
@@ -222,7 +232,8 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		
 		# Calculate render + processing time
 		# When enabled, the reported time below and the saved time above will differ
-		render_time = round(time.time() - float(settings.start_date), 2)
+#		render_time = round(time.time() - float(settings.start_time), 2)
+		render_time = round(time.time() - utility_data.render_get_start_time(), 2)
 		
 		# Remove temporary nodes and image data
 		# TODO: remove this block if we undo to remove elements

@@ -189,4 +189,26 @@ class RENDER_PT_autosave_video(bpy.types.Panel):
 			row1b.enabled = False
 			row2.active = False
 			row2.enabled = False
+
+
+
+###########################################################################
+# Addon registration functions
+# •Define classes being registered
+# •Registration function
+# •Unregistration function
 			
+classes = (RENDER_PT_autosave_image, RENDER_PT_autosave_video)
+
+def register():
+	# Register classes
+	for cls in classes:
+		bpy.utils.register_class(cls)
+
+def unregister():
+	# Deregister classes
+	for cls in reversed(classes):
+		bpy.utils.unregister_class(cls)
+
+if __package__ == "__main__":
+	register()

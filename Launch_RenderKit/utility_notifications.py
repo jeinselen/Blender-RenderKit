@@ -1,6 +1,5 @@
 # General features
 import bpy
-#import json
 
 # Email notifications
 import smtplib
@@ -10,7 +9,7 @@ from email.mime.text import MIMEText
 import requests
 
 # Command line voice access
-import os
+import subprocess
 
 # Variables
 from .render_variables import replaceVariables
@@ -23,46 +22,28 @@ from .render_variables import replaceVariables
 # •Send Pushover notification
 # •Speak audible message
 
-def render_notifications(render_time=-1.0):
+def render_notifications(scene, render_time=-1.0):
 	prefs = bpy.context.preferences.addons[__package__].preferences
 	
 	if render_time > float(prefs.minimum_time):
-		settings = bpy.context.scene.render_kit_settings
 		
 		# Send email notification
 		if bpy.app.online_access and prefs.email_enable:
-			# Subject line variable replacement
-			subject = replaceVariables(
-				prefs.email_subject,
-				render_time=render_time
-			)
-			# Body text variable replacement
-			message = replaceVariables(
-				prefs.email_message,
-				render_time=render_time
-			)
+			subject = replaceVariables(scene, prefs.email_subject, render_time=render_time)
+			message = replaceVariables(scene, prefs.email_message, render_time=render_time)
 			send_email(subject, message)
 		
 		# Send Pushover notification
 		if bpy.app.online_access and prefs.pushover_enable and len(prefs.pushover_key) == 30 and len(prefs.pushover_app) == 30:
-			subject = replaceVariables(
-				prefs.pushover_subject,
-				render_time=render_time
-			)
-			message = replaceVariables(
-				prefs.pushover_message,
-				render_time=render_time
-			)
+			subject = replaceVariables(scene, prefs.pushover_subject, render_time=render_time)
+			message = replaceVariables(scene, prefs.pushover_message, render_time=render_time)
 			send_pushover(subject, message)
 		
 		# MacOS Siri text-to-speech announcement
 		# Re-check voice location just to be extra-sure (otherwise this is only checked when the add-on is first enable)
-		bpy.context.preferences.addons[__package__].preferences.check_voice_location()
+		prefs.check_voice_location()
 		if prefs.voice_exists and prefs.voice_enable:
-			message = replaceVariables(
-				prefs.voice_message,
-				render_time=render_time
-			)
+			message = replaceVariables(scene, prefs.voice_message, render_time=render_time)
 			voice_say(message)
 
 
@@ -109,6 +90,6 @@ def send_pushover(subject, message):
 def voice_say(message):
 	# This can be expanded to support other systems if needed, but right now it's MacOS exclusive
 	try:
-		os.system('say "' + message + '"')
+		subprocess.Popen('say "' + message + '"', shell=True)
 	except Exception as exc:
 		print(str(exc) + " | Error in Render Kit Notifications: failed to send Pushover notification")

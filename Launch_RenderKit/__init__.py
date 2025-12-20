@@ -9,9 +9,9 @@ from shutil import which
 from .render_0_start import render_kit_start
 from .render_1_frame import render_kit_frame_pre, render_kit_frame_post
 from .render_2_end import render_kit_end
-from .render_autosave import RENDER_PT_autosave_video, RENDER_PT_autosave_image
+from . import render_autosave
 from . import render_batch
-from .render_display import RENDER_PT_total_render_time_display, image_viewer_feedback_display
+from . import render_display
 from . import render_node
 from .render_proxy import render_proxy_start, render_proxy_menu_item
 from .render_region import RENDER_PT_render_region
@@ -766,25 +766,33 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 			],
 		default='JPEG')
 	
-	# Variables for render time calculation
-	start_date: StringProperty(
-		name="Render Start Date",
-		description="Stores the date when rendering started in seconds as a string",
-		default="")
+	# Render total storage
 	total_render_time: FloatProperty(
 		name="Total Render Time",
 		description="Stores the total time spent rendering in seconds",
 		default=0)
 	
-	# Variables for render time estimation
-	estimated_render_start_frame: IntProperty(
-		name="Starting frame",
-		description="Saves the starting frame when render begins (helps correctly estimate partial renders)",
-		default=0)
-	estimated_render_time_value: StringProperty(
-		name="Estimated Render Time",
-		description="Stores the estimated time remaining to render",
-		default="0:00:00.00")
+	# VARIABLES THAT CAN BE REPLACED WITH GLOBAL THREAD-SAFE DATA VALUES
+#	start_time: StringProperty(
+#		name="Render Start Date",
+#		description="Stores the date when rendering started in seconds as a string",
+#		default="")
+#	start_frame: IntProperty(
+#		name="Starting frame",
+#		description="Saves the starting frame when render begins (helps correctly estimate partial renders)",
+#		default=0)
+#	estimated_time: StringProperty(
+#		name="Estimated Render Time",
+#		description="Stores the estimated time remaining to render",
+#		default="0:00:00.00")
+#	sequence_active: BoolProperty(
+#		name="Sequence Active",
+#		description="Indicates if a sequence is being rendering to ensure FFmpeg is enabled only when more than one frame has been rendered",
+#		default=False)
+#	serial_used: BoolProperty(
+#		name="Output Serial Number Used",
+#		description="Indicates if any of the output modules use the {serial} variable",
+#		default=False)
 	
 	# Variables for output file path processing
 	output_file_path: StringProperty(
@@ -798,10 +806,6 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	output_file_serial: IntProperty(
 		name="Serial Number",
 		description="Current serial number, automatically increments with every render")
-	output_file_serial_used: BoolProperty(
-		name="Output Serial Number Used",
-		description="Indicates if any of the output modules use the {serial} variable",
-		default=False)
 	output_marker_direction: EnumProperty(
 		name='Marker Direction',
 		description='Use previous or next marker name for the {marker} variable',
@@ -810,12 +814,6 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 			('NEXT', 'Next Marker', 'Look ahead; the nearest marker after the current frame number'),
 			],
 		default='NEXT')
-	
-	# Sequence rendering status (used by FFmpeg compilation and estimated time remaining)
-	sequence_rendering_status: BoolProperty(
-		name="Sequence Active",
-		description="Indicates if a sequence is being rendering to ensure FFmpeg is enabled only when more than one frame has been rendered",
-		default=False)
 	
 	# FFmpeg image sequence compilation
 	autosave_video_render_path: StringProperty(
@@ -1050,7 +1048,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 # •Registration function
 # •Unregistration function
 
-classes = (RenderKitPreferences, RenderKitSettings, RENDER_PT_autosave_video, RENDER_PT_autosave_image, render_proxy_start, RENDER_PT_render_region)
+classes = (RenderKitPreferences, RenderKitSettings, render_proxy_start, RENDER_PT_render_region)
 
 keymaps = []
 
@@ -1079,12 +1077,14 @@ def register():
 	bpy.app.handlers.render_cancel.append(render_kit_end)
 	bpy.app.handlers.render_complete.append(render_kit_end)
 	
-	# Add render time displays
-	bpy.types.RENDER_PT_output.append(RENDER_PT_total_render_time_display)
-	bpy.types.IMAGE_MT_editor_menus.append(image_viewer_feedback_display)
+	########## Render Autosave ##########
+	render_autosave.register()
 	
 	########## Render Batch ##########
 	render_batch.register()
+	
+	########## Render Display ##########
+	render_display.register()
 	
 	########## Render Node ##########
 	render_node.register()
@@ -1140,8 +1140,14 @@ def unregister():
 	########## Render Node ##########
 	render_node.unregister()
 	
+	########## Render Display ##########
+	render_display.unregister()
+	
 	########## Render Batch ##########
 	render_batch.unregister()
+	
+	########## Render Autosave ##########
+	render_autosave.unregister()
 	
 	# Remove proxy and batch render menu items
 	bpy.types.TOPBAR_MT_render.remove(render_proxy_menu_item)
@@ -1152,10 +1158,6 @@ def unregister():
 	bpy.app.handlers.render_post.remove(render_kit_frame_post)
 	bpy.app.handlers.render_cancel.remove(render_kit_end)
 	bpy.app.handlers.render_complete.remove(render_kit_end)
-	
-	# Remove render time displays
-	bpy.types.RENDER_PT_output.remove(RENDER_PT_total_render_time_display)
-	bpy.types.IMAGE_MT_editor_menus.remove(image_viewer_feedback_display)
 	
 	# Remove extension settings reference
 	del bpy.types.Scene.render_kit_settings

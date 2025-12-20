@@ -6,6 +6,7 @@ import json
 
 # Local imports
 from .render_variables import replaceVariables
+from . import utility_data
 
 ###########################################################################
 # Pre-render function
@@ -17,18 +18,16 @@ from .render_variables import replaceVariables
 def render_kit_start(scene):
 	prefs = bpy.context.preferences.addons[__package__].preferences
 	settings = scene.render_kit_settings
+	
+	# Get compositing nodes for either Blender 4.5 or 5.0
 	compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
 	
-	# Save start time in seconds as a string to the addon settings
-	settings.start_date = str(time.time())
-	
-	# Reset sequence tracking and start frame
-	settings.sequence_rendering_status = False
-	settings.estimated_render_start_frame = -1
-	
-	# Track usage of the output serial usage globally to ensure it can be accessed before/after frame rendering
-	# Set it to false ahead of processing to ensure no errors occur (usually only if there's a crash of some sort)
-	settings.output_file_serial_used = False
+	# Initial render data
+#	settings.start_time = str(time.time())
+#	settings.start_frame = -1
+#	settings.sequence_active = False
+#	settings.serial_used = False
+	utility_data.render_set_start(time.time())
 	
 	# Reset FFmpeg paths
 	settings.autosave_video_render_path = ""
@@ -43,7 +42,8 @@ def render_kit_start(scene):
 		
 		# Check for serial number usage
 		if '{serial}' in scene.render.filepath:
-			settings.output_file_serial_used = True
+#			settings.serial_used = True
+			utility_data.render_set_serial(True)
 	
 	# Save compositing node file paths if turned on in the plugin settings and compositing is enabled
 	if prefs.render_variable_enable and scene.render.use_compositing and compositing:
@@ -63,7 +63,8 @@ def render_kit_start(scene):
 				
 				# Check for serial number usage
 				if '{serial}' in directory:
-					settings.output_file_serial_used = True
+#					settings.serial_used = True
+					utility_data.render_set_serial(True)
 				
 				# Save and then process the sub-path property of each file port
 				output_ports = node.file_slots if bpy.app.version < tuple([5,0,0]) else node.file_output_items
@@ -75,7 +76,8 @@ def render_kit_start(scene):
 						
 						# Check for serial number usage
 						if '{serial}' in output_port.path:
-							settings.output_file_serial_used = True
+#							settings.serial_used = True
+							utility_data.render_set_serial(True)
 						
 					else:
 						node_settings[node.name]["outputs"][i] = {
@@ -84,7 +86,8 @@ def render_kit_start(scene):
 						
 						# Check for serial number usage
 						if '{serial}' in output_port.name:
-							settings.output_file_serial_used = True
+#							settings.serial_used = True
+							utility_data.render_set_serial(True)
 		
 		# Convert the dictionary to JSON format and save to the plugin preferences for safekeeping while rendering
 		settings.output_file_nodes = json.dumps(node_settings)
@@ -98,7 +101,7 @@ def render_kit_start(scene):
 		# Filter render output file path
 		if settings.output_file_path:
 			# Replace scene filepath output with the processed version from the original saved version
-			scene.render.filepath = replaceVariables(settings.output_file_path)
+			scene.render.filepath = replaceVariables(scene, settings.output_file_path)
 			
 		# Filter compositing node file paths
 		if scene.render.use_compositing and compositing and settings.output_file_nodes:
@@ -119,12 +122,12 @@ def render_kit_start(scene):
 							# Reset base path
 							node.base_path = node_data.get("directory", node.base_path)
 							# Replace dynamic variables in the base path
-							node.base_path = replaceVariables(node.base_path)
+							node.base_path = replaceVariables(scene, node.base_path)
 						else:
 							# Reset base path
 							node.directory = node_data.get("directory", node.directory)
 							# Replace dynamic variables in the base path
-							node.directory = replaceVariables(node.directory)
+							node.directory = replaceVariables(scene, node.directory)
 						
 						# Get output port data
 						output_port_data = node_data.get("outputs", {})
@@ -135,11 +138,11 @@ def render_kit_start(scene):
 									# Reset slot path
 									output_port.path = port_data.get("path", output_port.path)
 									# Replace dynamic variables in the slot path
-									output_port.path = replaceVariables(output_port.path)
+									output_port.path = replaceVariables(scene, output_port.path)
 							else:
 								output_port = node.file_output_items[int(i)]
 								if output_port:
 									# Reset port path
 									output_port.name = port_data.get("name", output_port.name)
 									# Replace dynamic variables in the output port path
-									output_port.name = replaceVariables(output_port.name)
+									output_port.name = replaceVariables(scene, output_port.name)

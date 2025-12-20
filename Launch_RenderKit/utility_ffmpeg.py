@@ -17,10 +17,9 @@ FFMPEG_FORMATS = (
 	'OPEN_EXR',
 	'TIFF')
 
-def process_ffmpeg(render_path='', render_time=-1):
-	context = bpy.context
-	prefs = context.preferences.addons[__package__].preferences
-	scene = context.scene
+def process_ffmpeg(scene, render_path='', render_time=-1):
+	prefs = bpy.context.preferences.addons[__package__].preferences
+#	scene = bpy.context.scene
 	settings = scene.render_kit_settings
 	format_compatible = True if scene.render.image_settings.file_format in FFMPEG_FORMATS else False
 	
@@ -49,7 +48,7 @@ def process_ffmpeg(render_path='', render_time=-1):
 			# Set FFmpeg processing to true so the Image View window can display status
 			if len(settings.autosave_video_prores_path) > 1:
 				# Replace dynamic variables
-				output_path = replaceVariables(settings.autosave_video_prores_path, render_time=render_time)
+				output_path = replaceVariables(scene, settings.autosave_video_prores_path, render_time=render_time)
 				# Convert relative path into absolute path for Python and CLI compatibility
 				output_path = bpy.path.abspath(output_path)
 				# Create the project subfolder if it doesn't already exist
@@ -90,7 +89,7 @@ def process_ffmpeg(render_path='', render_time=-1):
 			# Set FFmpeg processing to true so the Image View window can display status
 			if len(settings.autosave_video_mp4_path) > 1:
 				# Replace dynamic variables
-				output_path = replaceVariables(settings.autosave_video_mp4_path, render_time=render_time)
+				output_path = replaceVariables(scene, settings.autosave_video_mp4_path, render_time=render_time)
 				# Convert relative path into absolute path for Python and CLI compatibility
 				output_path = bpy.path.abspath(output_path)
 				# Create the project subfolder if it doesn't already exist
@@ -131,7 +130,7 @@ def process_ffmpeg(render_path='', render_time=-1):
 			# Set FFmpeg processing to true so the Image View window can display status
 			if len(settings.autosave_video_custom_path) > 1:
 				# Replace dynamic variables
-				output_path = replaceVariables(settings.autosave_video_custom_path, render_time=render_time)
+				output_path = replaceVariables(scene, settings.autosave_video_custom_path, render_time=render_time)
 				# Convert relative path into absolute path for Python and CLI compatibility
 				output_path = bpy.path.abspath(output_path)
 				# Create the project subfolder if it doesn't already exist

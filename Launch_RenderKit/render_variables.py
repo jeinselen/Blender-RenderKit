@@ -54,10 +54,10 @@ valueName = "RenderKit_Value_"
 # 	•Replaces {duration}{rtime}{rH}{rM}{rS} only if valid 0.0+ float is provided
 # 	•Replaces {serial} only if valid 0+ integer is provided
 
-def replaceVariables(string, render_time=-1.0, serial=-1, socket=''):
+def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 	context = bpy.context
 	view_layer = context.view_layer
-	scene = context.scene
+#	scene = context.scene
 	settings = scene.render_kit_settings
 	
 	# Get render engine feature sets

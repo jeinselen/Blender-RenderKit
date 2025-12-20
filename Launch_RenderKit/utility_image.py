@@ -28,8 +28,8 @@ IMAGE_EXTENSIONS = (
 # Multilayer EXR files are not supported via the Python API - https://developer.blender.org/T71087
 
 def save_image(scene, render_time=-1.0, serial=-1):
-	context = bpy.context
-	prefs = context.preferences.addons[__package__].preferences
+	prefs = bpy.context.preferences.addons[__package__].preferences
+#	scene = bpy.context.scene
 	settings = scene.render_kit_settings
 	
 	# Get project name
@@ -82,7 +82,7 @@ def save_image(scene, render_time=-1.0, serial=-1):
 			serialUsed = True
 	
 	# Replace global variables in the output path string
-	filepath = replaceVariables(filepath, render_time=render_time, serial=serialNumber)
+	filepath = replaceVariables(scene, filepath, render_time=render_time, serial=serialNumber)
 	
 	# Create the project subfolder if it doesn't already exist (otherwise subsequent operations will fail)
 	if not os.path.exists(filepath):
@@ -134,7 +134,7 @@ def save_image(scene, render_time=-1.0, serial=-1):
 			serialUsed = True
 			
 	# Replace global variables in the output name string
-	filename = replaceVariables(filename, render_time=render_time, serial=serialNumber)
+	filename = replaceVariables(scene, filename, render_time=render_time, serial=serialNumber)
 	
 	# Finish local and global serial number updates
 	if serialUsedGlobal:

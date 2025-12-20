@@ -8,6 +8,7 @@ import json
 from .utility_image import save_image
 from .utility_log import save_log
 from .utility_notifications import render_notifications
+from . import utility_data
 
 ###########################################################################
 # Post-render function
@@ -23,14 +24,15 @@ def render_kit_end(scene):
 	settings = scene.render_kit_settings
 	
 	# Reset sequence tracking and start frame
-	settings.sequence_rendering_status = False
-	settings.estimated_render_start_frame = -1
+#	settings.sequence_active = False
+#	settings.start_frame = -1
+	utility_data.render_set_end()
 	
 	# FFmpeg processing is handled in the render_kit_frame_post function (render_1_frame.py) in order to properly support timeline segmentation
 	
 	# Calculate elapsed render time and update total
-	render_time = round(time.time() - float(settings.start_date), 2)
-	settings.total_render_time = settings.total_render_time + render_time
+	render_time = round(time.time() - utility_data.render_get_start_time(), 2)
+	settings.total_render_time += render_time
 	
 	# If render variables are enabled, reset all output paths after rendering completes
 	if prefs.render_variable_enable:
@@ -40,13 +42,12 @@ def render_kit_end(scene):
 			scene.render.filepath = settings.output_file_path
 			# Clear output file path storage
 			settings.output_file_path = ""
-	
-		# Restore unprocessed node output file path if compositing is enabled and a file output node exists with the default node name
+		
+		# Get compositing nodes using thread lock
 		compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
+		
+		# Restore unprocessed node output file path if compositing is enabled and a file output node exists with the default node name
 		if scene.render.use_compositing and compositing and len(settings.output_file_nodes) > 2:
-			
-			# Try overriding the passed context if context errors occur
-#			scene = bpy.context.scene
 			
 			# Get the JSON data from the preferences string where it was stashed
 			json_data = settings.output_file_nodes
@@ -101,12 +102,13 @@ def render_kit_end(scene):
 	
 	# Render complete notifications
 	if prefs.email_enable or prefs.pushover_enable or prefs.voice_enable:
-		render_notifications(render_time)
+		render_notifications(scene, render_time)
 	
 	# Increment the output serial number if it was used in any output path
 	# This must be done after all other steps are completed
-	if settings.output_file_serial_used:
+	if utility_data.render_get_serial():
 		settings.output_file_serial += 1
-		settings.output_file_serial_used = False
+#		settings.serial_used = False
+		utility_data.render_set_serial(False)
 	
 	return {'FINISHED'}

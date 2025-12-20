@@ -2,6 +2,14 @@
 
 ![3D render of an abstract R-shaped logo made up of blocks with some rounded corners in soft reds and oranges, text in the image reads Render Kit from the Mograph team at Launch by NTT DATA](images/RenderKit.jpg)
 
+## Known Issue Notice:
+
+We're running into some sporadic and unpredictable issues with sequence rendering in Blender 4.5.5 and 5.0. Hundreds or thousands of frames will render just fine, then suddenly `ERROR: Python context internal state bug. this should not happen!` will start spamming the terminal output, or a fatal crash will occur with `Blender(37970,0x345fff000) malloc: *** error **for** object 0xc1e791400: pointer being freed was **not** allocated` or similar.
+
+From everything tested so far, it does appear to be tied to this extension and usage of render event handlers, but it's possible it's not the python itself, instead something deeper in the Blender rendering system. Refactoring some the code has not helped so far.
+
+This is an ongoing challenge, and will not be solved by the end of 2025. Planning to get back to it in the new year!
+
 ## Features:
 
 - ### Render Variables
