@@ -26,7 +26,7 @@ def render_kit_end(scene):
 	# Reset sequence tracking and start frame
 #	settings.sequence_active = False
 #	settings.start_frame = -1
-	utility_data.render_set_end()
+	# UTILITY DATA RESET MOVED TO VERY END OF SCRIPT!
 	
 	# FFmpeg processing is handled in the render_kit_frame_post function (render_1_frame.py) in order to properly support timeline segmentation
 	
@@ -110,5 +110,8 @@ def render_kit_end(scene):
 		settings.output_file_serial += 1
 #		settings.serial_used = False
 		utility_data.render_set_serial(False)
+	
+	# Reset all render state values
+	utility_data.render_set_end()
 	
 	return {'FINISHED'}
