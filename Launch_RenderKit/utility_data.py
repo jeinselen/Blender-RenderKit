@@ -27,7 +27,7 @@ def render_set_end():
 		_state["sequence_active"] = False
 		_state["estimated_time"] = -1.0
 
-# Set data elements
+# Set individual data elements
 
 def render_set_start_time(time: float):
 	with _lock:
@@ -59,7 +59,7 @@ def render_get_data():
 	with _lock:
 		return dict(_state)
 
-# Get data elements
+# Get individual data elements
 
 def render_get_start_time():
 	with _lock:
