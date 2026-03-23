@@ -208,12 +208,12 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 			# Mip flooding reference: https://www.artstation.com/blogs/secarri/XOBq/the-god-of-war-texture-optimization-algorithm-mip-flooding
 			magick_command = prefs.magick_location + ' "' + absolute_path + '" -channel alpha -threshold 99% +channel'
 			if settings.node_postprocess == "BLEND":
-				magick_command += ' \( +clone -filter Gaussian -resize 50% -channel alpha -threshold 1% +channel \)' * 10
+				magick_command += r' \( +clone -filter Gaussian -resize 50% -channel alpha -threshold 1% +channel \)' * 10
 				magick_command += ' -layers RemoveDups -filter Gaussian'
 			else:
-				magick_command += ' \( +clone -filter Gaussian -resize 50% -channel alpha -threshold 12.5% +channel \)' * 10
+				magick_command += r' \( +clone -filter Gaussian -resize 50% -channel alpha -threshold 12.5% +channel \)' * 10
 				magick_command += ' -layers RemoveDups -filter Point'
-			magick_command += ' -resize ' + str(settings.node_resolution_x) + 'x' + str(settings.node_resolution_y) + '\! -reverse'
+			magick_command += ' -resize ' + str(settings.node_resolution_x) + 'x' + str(settings.node_resolution_y) + r'\! -reverse'
 			if settings.node_postprocess == "BLEND":
 				magick_command += ' -channel alpha -gamma 4 +channel'
 			magick_command += ' -background None -flatten -alpha off "' + absolute_path + '"'
