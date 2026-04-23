@@ -520,7 +520,8 @@ class REMOTERENDER_OT_ConnectNode(Operator):
 		)
 
 		if not auth_token:
-			self.report({'ERROR'}, "Authentication failed - check password")
+			detail = sanitize_ui_message(network_manager.last_error)
+			self.report({'ERROR'}, detail or "Authentication failed - check password")
 			return {'CANCELLED'}
 
 		# Test connection
@@ -584,7 +585,8 @@ class REMOTERENDER_OT_ConnectManual(Operator):
 		)
 
 		if not auth_token:
-			self.report({'ERROR'}, "Authentication failed - check password")
+			detail = sanitize_ui_message(network_manager.last_error)
+			self.report({'ERROR'}, detail or "Authentication failed - check password")
 			return {'CANCELLED'}
 
 		if network_manager.test_connection(props.manual_ip, props.manual_port, auth_token):

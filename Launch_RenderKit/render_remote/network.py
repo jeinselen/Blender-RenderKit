@@ -42,6 +42,11 @@ class NetworkManager:
 		self._shutdown_requested = False
 		self._rendering_event = threading.Event()
 		self._cached_cache_root = None
+		self._discovery_ready_event = threading.Event()
+		self._communication_ready_event = threading.Event()
+		self._discovery_start_error = None
+		self._communication_start_error = None
+		self.last_error = ""
 
 	@property
 	def is_rendering(self):
@@ -151,12 +156,21 @@ class NetworkManager:
 			ssl_sock = ssl_ctx.wrap_socket(sock, server_hostname=None)
 			self.security.verify_peer_fingerprint(ssl_sock, f"{ip}:{port}")
 			return ssl_sock
-		except (ssl.SSLError, ProtocolError):
+		except ProtocolError:
 			try:
 				sock.close()
 			except OSError:
 				pass
 			raise
+		except (ssl.SSLError, ConnectionResetError, OSError) as e:
+			try:
+				sock.close()
+			except OSError:
+				pass
+			raise ProtocolError(
+				f"TLS connection to {ip}:{port} failed: {e}. "
+				"Confirm the target Render Remote service is running and updated."
+			)
 		except Exception as e:
 			try:
 				sock.close()
@@ -171,13 +185,23 @@ class NetworkManager:
 			return False
 
 		if self.discovery_active:
-			return True
+			if self.communication_active:
+				return True
+			self.discovery_active = False
 
 		if not self.configure_authentication(passcode):
 			print("Remote render target service requires an authentication passcode")
 			return False
 
 		self._shutdown_requested = False
+
+		# Start TCP/TLS first so discovery never advertises a target that cannot accept jobs.
+		if not self.start_communication_server():
+			self.clear_authentication()
+			return False
+
+		self._discovery_ready_event.clear()
+		self._discovery_start_error = None
 		self.discovery_active = True
 		self.discovery_thread = threading.Thread(
 			target=self._discovery_server_loop,
@@ -186,8 +210,19 @@ class NetworkManager:
 		)
 		self.discovery_thread.start()
 
-		# Also start communication server
-		self.start_communication_server()
+		if not self._discovery_ready_event.wait(timeout=2):
+			print("Render Remote: discovery server did not start in time")
+			self.discovery_active = False
+			self.stop_communication_server(force=True)
+			self.clear_authentication()
+			return False
+
+		if self._discovery_start_error:
+			print(f"Render Remote: discovery server failed to start: {self._discovery_start_error}")
+			self.discovery_active = False
+			self.stop_communication_server(force=True)
+			self.clear_authentication()
+			return False
 
 		print(f"Discovery server started for node: {node_name}")
 		return True
@@ -237,7 +272,7 @@ class NetworkManager:
 
 		if self.communication_active:
 			print("Communication server already active")
-			return
+			return True
 
 		self.update_ports_from_preferences()
 
@@ -249,9 +284,11 @@ class NetworkManager:
 		except Exception as e:
 			print(f"Render Remote: TLS setup failed — cannot start communication server: {e}")
 			self.communication_active = False
-			return
+			return False
 
 		print(f"Starting communication server on port {self.communication_port}...")
+		self._communication_ready_event.clear()
+		self._communication_start_error = None
 		self.communication_active = True
 		self.communication_thread = threading.Thread(
 			target=self._communication_server_loop,
@@ -259,9 +296,18 @@ class NetworkManager:
 		)
 		self.communication_thread.start()
 
-		# Give the server a moment to start
-		time.sleep(0.5)
+		if not self._communication_ready_event.wait(timeout=2):
+			print("Render Remote: communication server did not start in time")
+			self.communication_active = False
+			return False
+
+		if self._communication_start_error:
+			print(f"Render Remote: communication server failed to start: {self._communication_start_error}")
+			self.communication_active = False
+			return False
+
 		print(f"Communication server thread started")
+		return True
 
 	def stop_communication_server(self, force=False):
 		"""Stop communication server"""
@@ -305,6 +351,7 @@ class NetworkManager:
 			sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			sock.bind(('', self.discovery_port))
 			sock.settimeout(DISCOVERY_REPLY_TIMEOUT)
+			self._discovery_ready_event.set()
 
 			while self.discovery_active and not self._shutdown_requested:
 				try:
@@ -338,6 +385,9 @@ class NetworkManager:
 						print(f"Discovery server error: {e}")
 
 		except Exception as e:
+			self._discovery_start_error = str(e)
+			self.discovery_active = False
+			self._discovery_ready_event.set()
 			print(f"Failed to start discovery server: {e}")
 		finally:
 			if sock:
@@ -368,11 +418,15 @@ class NetworkManager:
 					continue
 
 			if not bound:
+				self._communication_start_error = f"Could not bind port {self.communication_port}"
+				self.communication_active = False
+				self._communication_ready_event.set()
 				print(f"Failed to bind communication server to any address on port {self.communication_port}")
 				return
 
 			server_sock.listen(10)  # Increased queue size for multiple file transfers
 			server_sock.settimeout(DISCOVERY_REPLY_TIMEOUT)
+			self._communication_ready_event.set()
 
 			print(f"Communication server listening, ready to accept connections")
 
@@ -416,6 +470,9 @@ class NetworkManager:
 						print(f"Communication server error: {e}")
 
 		except Exception as e:
+			self._communication_start_error = str(e)
+			self.communication_active = False
+			self._communication_ready_event.set()
 			print(f"Failed to start communication server: {e}")
 		finally:
 			if server_sock:
@@ -891,23 +948,44 @@ class NetworkManager:
 	def _get_broadcast_addresses(self):
 		"""Enumerate host network interfaces and return their broadcast addresses."""
 		addrs = set()
+
+		def add_class_c_broadcast(ip_str):
+			try:
+				ip_obj = parse_ip_address(ip_str)
+			except ValueError:
+				return
+			if ip_obj.version != 4 or not self._is_allowed_peer(str(ip_obj)) or ip_obj.is_loopback:
+				return
+			parts = str(ip_obj).split('.')
+			if len(parts) == 4:
+				addrs.add(f"{parts[0]}.{parts[1]}.{parts[2]}.255")
+
+		add_class_c_broadcast(self._get_local_ip())
+
 		try:
 			for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
 				ip_str = info[4][0]
-				if ip_str.startswith('127.'):
-					continue
-				try:
-					import ipaddress
-					ip_obj = ipaddress.ip_address(ip_str)
-					for net in LAN_ALLOWED_NETWORKS:
-						if net.version == 4 and ip_obj in net:
-							parts = ip_str.split('.')
-							addrs.add(f"{parts[0]}.{parts[1]}.{parts[2]}.255")
-							break
-				except ValueError:
-					pass
+				add_class_c_broadcast(ip_str)
 		except Exception:
 			pass
+
+		try:
+			import subprocess
+			result = subprocess.run(
+				['ifconfig'],
+				check=False,
+				capture_output=True,
+				text=True,
+				timeout=2
+			)
+			for match in re.finditer(r'\binet\s+(\d+\.\d+\.\d+\.\d+).*?\bbroadcast\s+(\d+\.\d+\.\d+\.\d+)', result.stdout):
+				ip_str, broadcast_str = match.groups()
+				if self._is_allowed_peer(ip_str):
+					addrs.add(broadcast_str)
+					add_class_c_broadcast(ip_str)
+		except Exception:
+			pass
+
 		addrs.add('255.255.255.255')  # fallback global broadcast
 		return sorted(addrs)
 
@@ -1006,6 +1084,7 @@ class NetworkManager:
 	def authenticate(self, ip, port, password):
 		"""Authenticate with a remote node"""
 		from .constants import AUTH_PBKDF2_ITERATIONS
+		self.last_error = ""
 		try:
 			challenge_request = {
 				'type': 'auth_challenge',
@@ -1040,8 +1119,10 @@ class NetworkManager:
 			response = self._send_request(ip, port, auth_message, timeout=5)
 			if response.get('status') == 'success':
 				return response.get('auth_token')
+			self.last_error = response.get('message', 'Authentication failed')
 
 		except Exception as e:
+			self.last_error = str(e)
 			print(f"Authentication failed: {e}")
 
 		return None
