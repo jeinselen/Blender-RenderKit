@@ -886,11 +886,13 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	autosave_video_custom_command: StringProperty(
 		name="Custom FFmpeg Command",
 		description="Custom FFmpeg command line string; {{input}} {{fps}} {{output}} variables must be included, but the command path is automatically prepended",
-		default='{{fps}} {{input}} -vf scale=-2:1080 -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -movflags +rtphint -movflags +faststart {{output}}_1080p.mp4',
-				#{{fps}} {{input}} -c:v hevc_videotoolbox -pix_fmt bgra -b:v 1M -alpha_quality 1 -allow_sw 1 -vtag hvc1 {{output}}_alpha.mov
-				#{{fps}} {{input}} -c:v hevc_videotoolbox -require_sw 1 -allow_sw 1 -alpha_quality 1.0 -vtag hvc1 {{output}}_alpha.mov
-				#{{fps}} {{input}} -pix_fmt yuva420p {{output}}_alpha.webm
-				#{{fps}} {{input}} -c:v libvpx -pix_fmt yuva420p -crf 16 -b:v 1M -auto-alt-ref 0 {{output}}_alpha.webm
+		default='{{fps}} {{input}} -c:v qtrle -pix_fmt argb {{output}}_alpha.mov',
+			#{{fps}} {{input}} -vf scale=-2:1080 -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -movflags +rtphint -movflags +faststart {{output}}_1080p.mp4
+			#{{fps}} {{input}} -c:v hevc_videotoolbox -pix_fmt bgra -b:v 1M -alpha_quality 1 -allow_sw 1 -vtag hvc1 {{output}}_alpha.mov
+			#{{fps}} {{input}} -c:v hevc_videotoolbox -require_sw 1 -allow_sw 1 -alpha_quality 1.0 -vtag hvc1 {{output}}_alpha.mov
+			#{{fps}} {{input}} -pix_fmt yuva420p {{output}}_alpha.webm
+			#{{fps}} {{input}} -c:v libvpx -pix_fmt yuva420p -crf 16 -b:v 1M -auto-alt-ref 0 {{output}}_alpha.webm
+			#{{fps}} {{input}} -c:v qtrle -pix_fmt argb {{output}}_alpha.mov
 		maxlen=4096)
 	autosave_video_custom_location: StringProperty(
 		name="Custom File Location",
