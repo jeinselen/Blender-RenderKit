@@ -946,10 +946,16 @@ class NetworkManager:
 		
 		print(f"Discovery server started for node: {node_name}")
 	
-	def stop_discovery_server(self):
+	def clear_authentication(self):
+		"""Clear active authentication state for stopped services"""
+		self.security.auth_tokens.clear()
+		self.stored_password_hash = None
+		self.stored_salt = None
+
+	def stop_discovery_server(self, force=False):
 		"""Stop discovery server"""
 		# Don't stop if we're actively rendering
-		if self.is_rendering:
+		if self.is_rendering and not force:
 			print("Skipping discovery server stop - rendering in progress")
 			return
 			
@@ -959,7 +965,8 @@ class NetworkManager:
 		if self.discovery_thread and self.discovery_thread.is_alive():
 			self.discovery_thread.join(timeout=2)
 			
-		self.stop_communication_server()
+		self.stop_communication_server(force=force)
+		self.clear_authentication()
 		print("Discovery server stopped")
 	
 	def start_communication_server(self):
@@ -982,10 +989,10 @@ class NetworkManager:
 		time.sleep(0.5)
 		print(f"Communication server thread started")
 	
-	def stop_communication_server(self):
+	def stop_communication_server(self, force=False):
 		"""Stop communication server"""
 		# Don't stop if we're actively rendering
-		if self.is_rendering:
+		if self.is_rendering and not force:
 			print("Skipping communication server stop - rendering in progress")
 			return
 			
@@ -993,6 +1000,28 @@ class NetworkManager:
 		if self.communication_thread and self.communication_thread.is_alive():
 			self.communication_thread.join(timeout=2)
 		print("Communication server stopped")
+
+	def shutdown(self, force=False):
+		"""Stop all network activity and clear network-owned state"""
+		if self.is_rendering and not force:
+			print("Skipping network shutdown - rendering in progress")
+			return
+
+		self._shutdown_requested = True
+		self.discovery_active = False
+		self.communication_active = False
+
+		if self.discovery_thread and self.discovery_thread.is_alive():
+			self.discovery_thread.join(timeout=2)
+		if self.communication_thread and self.communication_thread.is_alive():
+			self.communication_thread.join(timeout=2)
+
+		self.discovery_thread = None
+		self.communication_thread = None
+		self.discovered_nodes.clear()
+		self.clear_authentication()
+		self.is_rendering = False
+		print("Network manager shut down")
 	
 	def _discovery_server_loop(self, node_name, requires_auth):
 		"""Discovery server main loop"""
@@ -2377,9 +2406,6 @@ class REMOTERENDER_OT_ConnectNode(Operator):
 			target_node.auth_token = auth_token or ""
 			props.selected_node = self.node_id
 			
-			if not network_manager.communication_active:
-				network_manager.start_communication_server()
-			
 			self.report({'INFO'}, f"Connected to {target_node.name}")
 		else:
 			self.report({'ERROR'}, f"Failed to connect to {target_node.name}")
@@ -2444,9 +2470,6 @@ class REMOTERENDER_OT_ConnectManual(Operator):
 			manual_node.requires_auth = bool(props.connection_password)
 			
 			props.selected_node = manual_node.node_id
-			
-			if not network_manager.communication_active:
-				network_manager.start_communication_server()
 			
 			self.report({'INFO'}, f"Connected to {props.manual_ip}")
 		else:
@@ -2665,12 +2688,6 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 		if not target_node:
 			self.report({'ERROR'}, "Remote node not connected")
 			return {'CANCELLED'}
-		
-		# Ensure source communication server is running for output file sync
-		if not network_manager.communication_active:
-			print("Starting communication server for output file sync...")
-			network_manager.start_communication_server()
-			time.sleep(1.0)  # Give it time to start
 		
 		print(f"Info: Render started on remote computer")
 		
@@ -3286,32 +3303,16 @@ def _render_write_handler(scene, depsgraph):
 @persistent
 def cleanup_on_exit(dummy):
 	"""Clean up network connections on Blender exit"""
-	global network_manager, render_manager, timer_manager
-	
-	print("Cleaning up remote render resources")
-	
-	try:
-		if network_manager:
-			network_manager.stop_discovery_server()
-	except Exception as e:
-		print(f"Error stopping network manager: {e}")
-	
-	try:
-		if render_manager:
-			render_manager.cleanup()
-	except Exception as e:
-		print(f"Error cleaning up render manager: {e}")
-	
-	try:
-		if timer_manager:
-			timer_manager.cleanup_all()
-	except Exception as e:
-		print(f"Error cleaning up timer manager: {e}")
+	shutdown(force=False)
 
 @persistent
 def cleanup_on_load_pre(dummy):
 	"""Clean up before loading files"""
-	global render_manager, timer_manager
+	global render_manager, timer_manager, network_manager
+
+	if network_manager and network_manager.is_rendering:
+		print("Skipping load cleanup - remote render is preparing a file")
+		return
 	
 	try:
 		# Only cleanup render manager if not actively rendering
@@ -3358,6 +3359,8 @@ def reset_connection_status_on_load(dummy):
 # Registration
 # ----
 
+_is_registered = False
+
 classes = (
 	SyncFileInfo,
 	RemoteNodeProperties,
@@ -3379,15 +3382,59 @@ classes = (
 	REMOTERENDER_PT_MainPanel,
 )
 
+def shutdown(force=False):
+	"""Stop all Render Remote runtime activity."""
+	global network_manager, render_manager, timer_manager
+
+	rendering_active = bool(
+		(network_manager and network_manager.is_rendering) or
+		(render_manager and render_manager.active_render)
+	)
+	if rendering_active and not force:
+		print("Skipping remote render shutdown - rendering in progress")
+		return
+
+	print("Cleaning up remote render resources")
+
+	try:
+		if render_manager:
+			render_manager.cleanup()
+	except Exception as e:
+		print(f"Error cleaning up render manager: {e}")
+
+	try:
+		if network_manager:
+			network_manager.shutdown(force=force)
+	except Exception as e:
+		print(f"Error stopping network manager: {e}")
+
+	try:
+		if timer_manager:
+			timer_manager.cleanup_all()
+	except Exception as e:
+		print(f"Error cleaning up timer manager: {e}")
+
 def register():
+	global _is_registered
+
+	if _is_registered:
+		return
+
 	# Register all classes
 	for cls in classes:
-		bpy.utils.register_class(cls)
+		try:
+			bpy.utils.register_class(cls)
+		except (RuntimeError, ValueError) as e:
+			if "already registered" not in str(e):
+				raise
 		
 	# Register property groups
-	bpy.types.Scene.remote_render_props = bpy.props.PointerProperty(type=RemoteRenderProperties)
-	bpy.types.Scene.discovered_nodes = bpy.props.CollectionProperty(type=RemoteNodeProperties)
-	bpy.types.Scene.sync_files = bpy.props.CollectionProperty(type=SyncFileInfo)
+	if not hasattr(bpy.types.Scene, 'remote_render_props'):
+		bpy.types.Scene.remote_render_props = bpy.props.PointerProperty(type=RemoteRenderProperties)
+	if not hasattr(bpy.types.Scene, 'discovered_nodes'):
+		bpy.types.Scene.discovered_nodes = bpy.props.CollectionProperty(type=RemoteNodeProperties)
+	if not hasattr(bpy.types.Scene, 'sync_files'):
+		bpy.types.Scene.sync_files = bpy.props.CollectionProperty(type=SyncFileInfo)
 	
 	# Register cleanup handlers
 	if cleanup_on_exit not in bpy.app.handlers.load_pre:
@@ -3399,22 +3446,13 @@ def register():
 	if reset_connection_status_on_load not in bpy.app.handlers.load_post:
 		bpy.app.handlers.load_post.append(reset_connection_status_on_load)
 	
+	_is_registered = True
 	print("Remote Render Sync add-on registered")
 
 def unregister():
-	# Cleanup network manager
-	global network_manager, render_manager, timer_manager
+	global _is_registered
 	
-	if network_manager:
-		network_manager.stop_discovery_server()
-	
-	# Cleanup render manager
-	if render_manager:
-		render_manager.cleanup()
-	
-	# Cleanup timer manager
-	if timer_manager:
-		timer_manager.cleanup_all()
+	shutdown(force=True)
 	
 	# Remove handlers
 	if cleanup_on_exit in bpy.app.handlers.load_pre:
@@ -3428,7 +3466,12 @@ def unregister():
 		
 	# Unregister classes
 	for cls in reversed(classes):
-		bpy.utils.unregister_class(cls)
+		try:
+			bpy.utils.unregister_class(cls)
+		except RuntimeError:
+			pass
+		except ValueError:
+			pass
 		
 	# Remove properties
 	if hasattr(bpy.types.Scene, 'remote_render_props'):
@@ -3438,4 +3481,5 @@ def unregister():
 	if hasattr(bpy.types.Scene, 'sync_files'):
 		del bpy.types.Scene.sync_files
 	
+	_is_registered = False
 	print("Remote Render Sync add-on unregistered")

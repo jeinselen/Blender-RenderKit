@@ -141,10 +141,20 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		default='OFF')
 	
 	# Render remote
+	def update_remote_enable(self, context):
+		try:
+			if self.remote_enable:
+				render_remote.register()
+			else:
+				render_remote.shutdown(force=True)
+		except Exception as e:
+			print(f"Remote render enable update failed: {e}")
+
 	remote_enable: BoolProperty(
 		name='Render Remote',
 		description='Implements remote rendering on a target Blender instance over the local network',
-		default=False)
+		default=False,
+		update=update_remote_enable)
 	remote_show_settings: BoolProperty(
 		name='Remote Settings   ',
 		description='Shows remote rendering options in the preferences panel',
