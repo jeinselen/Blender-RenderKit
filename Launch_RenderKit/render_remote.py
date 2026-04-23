@@ -1,6 +1,7 @@
 import bpy
 import socket
 import ssl
+import subprocess
 import json
 import hashlib
 import hmac
@@ -26,6 +27,8 @@ AUTH_PBKDF2_ITERATIONS = 200_000
 AUTH_CHALLENGE_TIMEOUT = 60
 AUTH_TOKEN_TIMEOUT = 60 * 60
 AUTH_MAX_CHALLENGES = 256
+AUTH_RATE_LIMIT_WINDOW = 60   # seconds in which failures are counted
+AUTH_RATE_LIMIT_MAX = 5       # max failures per window before IP is temporarily blocked
 PROJECT_ID_HASH_LENGTH = 12
 PROJECT_ID_SLUG_LENGTH = 60
 INPUT_MANIFEST_FILENAME = ".render_remote_input_manifest.json"
@@ -218,6 +221,21 @@ def error_response(code, message):
 	"""Build a structured error without local filesystem details"""
 	return {'status': 'error', 'code': code, 'message': message}
 
+def validate_message(msg, schema):
+	"""Check that msg contains all required fields with the correct types.
+
+	schema: {field_name: type_or_tuple_of_types}
+	Returns a list of human-readable error strings; empty means valid.
+	"""
+	errors = []
+	for field, expected in schema.items():
+		if field not in msg:
+			errors.append(f"missing required field '{field}'")
+		elif not isinstance(msg[field], expected):
+			type_desc = expected.__name__ if isinstance(expected, type) else repr(expected)
+			errors.append(f"field '{field}' must be {type_desc}")
+	return errors
+
 def validate_file_size(file_size):
 	"""Normalize and validate file payload sizes"""
 	try:
@@ -318,24 +336,28 @@ def resolve_under_root(root_path, relative_path):
 	root = Path(root_path).expanduser().resolve()
 	rel_path = normalize_relative_path(relative_path)
 	candidate = root.joinpath(*rel_path.split('/')).resolve(strict=False)
-	try:
-		common_root = os.path.commonpath([str(root), str(candidate)])
-	except ValueError:
+	if not candidate.is_relative_to(root):
 		raise PathSecurityError("Path escapes allowed root")
-	if common_root != str(root):
-		raise PathSecurityError("Path escapes allowed root")
+	# Belt-and-suspenders: ensure no existing symlink in the path escapes root
+	check = candidate
+	while check != root and check != check.parent:
+		if check.is_symlink() and not check.resolve().is_relative_to(root):
+			raise PathSecurityError("Path escapes allowed root via symlink")
+		check = check.parent
 	return str(candidate)
 
 def relative_path_under_root(file_path, root_path):
 	"""Return a POSIX relative path if file_path is inside root_path"""
 	root = Path(root_path).expanduser().resolve()
 	candidate = Path(file_path).expanduser().resolve(strict=False)
-	try:
-		common_root = os.path.commonpath([str(root), str(candidate)])
-	except ValueError:
+	if not candidate.is_relative_to(root):
 		raise PathSecurityError("Path escapes allowed root")
-	if common_root != str(root):
-		raise PathSecurityError("Path escapes allowed root")
+	# Belt-and-suspenders: ensure no existing symlink in the path escapes root
+	check = candidate
+	while check != root and check != check.parent:
+		if check.is_symlink() and not check.resolve().is_relative_to(root):
+			raise PathSecurityError("Path escapes allowed root via symlink")
+		check = check.parent
 	return candidate.relative_to(root).as_posix()
 
 def recv_exact(sock, byte_count):
@@ -694,7 +716,7 @@ class FileSyncManager:
 				for chunk in iter(lambda: f.read(4096), b""):
 					hash_sha256.update(chunk)
 			return hash_sha256.hexdigest()
-		except:
+		except OSError:
 			return None
 	
 	def get_referenced_files_manifest(self, project_root, dependencies):
@@ -868,17 +890,145 @@ class SecureConnection:
 		self.auth_tokens = {}
 		self.auth_challenges = {}
 		self.connection_timeout = 300  # 5 minutes
-	
+		self._auth_failures = {}       # ip -> [timestamp, ...]
+		self._cert_path = None
+		self._key_path = None
+		self._tls_ready = False
+
+	# ---- TLS certificate management ----
+
+	def prepare_tls(self, cert_dir):
+		"""Generate or load the node TLS cert. Must be called from the main thread before starting servers."""
+		cert_path = os.path.join(cert_dir, 'server.crt')
+		key_path = os.path.join(cert_dir, 'server.key')
+		if not (os.path.exists(cert_path) and os.path.exists(key_path)):
+			try:
+				subprocess.run(
+					['openssl', 'req', '-x509', '-newkey', 'rsa:2048',
+					 '-keyout', key_path, '-out', cert_path,
+					 '-days', '3650', '-nodes', '-subj', '/CN=render-remote'],
+					check=True, capture_output=True
+				)
+				if os.name != 'nt':
+					os.chmod(key_path, 0o600)
+					os.chmod(cert_path, 0o600)
+			except (subprocess.CalledProcessError, FileNotFoundError) as e:
+				raise RuntimeError(
+					f"Cannot generate TLS certificate — ensure openssl is installed and on PATH: {e}"
+				)
+		with self._lock:
+			self._cert_path = cert_path
+			self._key_path = key_path
+			self._tls_ready = True
+
+	def get_cert_fingerprint(self):
+		"""Return the SHA-256 hex fingerprint of this node's TLS certificate."""
+		with self._lock:
+			cert_path = self._cert_path
+		if not cert_path or not os.path.exists(cert_path):
+			return None
+		try:
+			import base64
+			with open(cert_path, 'rb') as f:
+				pem_data = f.read().decode('ascii', errors='replace')
+			lines = pem_data.strip().splitlines()
+			der_b64 = ''.join(l for l in lines if not l.startswith('-----'))
+			der_bytes = base64.b64decode(der_b64)
+			return hashlib.sha256(der_bytes).hexdigest()
+		except Exception:
+			return None
+
+	def regenerate_cert(self):
+		"""Delete and regenerate the TLS certificate. Call from main thread only."""
+		with self._lock:
+			cert_path, key_path = self._cert_path, self._key_path
+			self._tls_ready = False
+		for path in (cert_path, key_path):
+			if path and os.path.exists(path):
+				try:
+					os.remove(path)
+				except OSError:
+					pass
+		if cert_path:
+			self.prepare_tls(os.path.dirname(cert_path))
+
+	def server_ssl_context(self):
+		"""Return a TLS server context loaded with this node's certificate."""
+		with self._lock:
+			ready, cert_path, key_path = self._tls_ready, self._cert_path, self._key_path
+		if not ready:
+			raise RuntimeError("TLS is not ready — call prepare_tls() from the main thread first")
+		ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+		ctx.load_cert_chain(cert_path, key_path)
+		return ctx
+
+	def client_ssl_context(self):
+		"""Return a TLS client context that skips CA validation (fingerprint verified separately)."""
+		ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+		ctx.check_hostname = False
+		ctx.verify_mode = ssl.CERT_NONE  # fingerprint-pinning done post-handshake; see verify_peer_fingerprint
+		return ctx
+
+	def _fingerprint_store_path(self):
+		with self._lock:
+			cert_path = self._cert_path
+		if cert_path:
+			return os.path.join(os.path.dirname(cert_path), 'known_nodes.json')
+		return None
+
+	def verify_peer_fingerprint(self, ssl_sock, node_id):
+		"""TOFU fingerprint check: auto-pin first connection; reject mismatches."""
+		peer_cert_der = ssl_sock.getpeercert(binary_form=True)
+		if peer_cert_der is None:
+			raise ProtocolError("Peer provided no TLS certificate")
+		fingerprint = hashlib.sha256(peer_cert_der).hexdigest()
+
+		store_path = self._fingerprint_store_path()
+		if store_path is None:
+			return fingerprint  # TLS not fully configured; skip pinning
+
+		try:
+			with open(store_path, 'r', encoding='utf-8') as f:
+				store = json.load(f)
+		except (FileNotFoundError, json.JSONDecodeError):
+			store = {}
+
+		pinned = store.get(node_id)
+		if pinned is None:
+			store[node_id] = fingerprint
+			try:
+				with open(store_path, 'w', encoding='utf-8') as f:
+					json.dump(store, f, indent=2)
+			except OSError as e:
+				print(f"Render Remote: Could not save TLS fingerprint pin: {e}")
+			print(f"Render Remote: TOFU pinned fingerprint for {node_id}: {fingerprint[:16]}...")
+		elif not hmac.compare_digest(pinned, fingerprint):
+			raise ProtocolError(
+				f"TLS fingerprint mismatch for {node_id} — connection refused. "
+				f"If the remote certificate changed legitimately, clear the pin in preferences."
+			)
+		return fingerprint
+
+	# ---- Rate-limit helpers ----
+
+	def _record_auth_failure(self, ip):
+		now = time.time()
+		with self._lock:
+			bucket = self._auth_failures.setdefault(ip, [])
+			bucket.append(now)
+			self._auth_failures[ip] = [t for t in bucket if now - t < AUTH_RATE_LIMIT_WINDOW]
+
+	def _is_auth_blocked(self, ip):
+		now = time.time()
+		with self._lock:
+			recent = [t for t in self._auth_failures.get(ip, []) if now - t < AUTH_RATE_LIMIT_WINDOW]
+			return len(recent) >= AUTH_RATE_LIMIT_MAX
+
+	# ---- Token generation ----
+
 	def generate_auth_token(self):
 		"""Generate a secure authentication token"""
 		return secrets.token_urlsafe(32)
-	
-	def create_ssl_context(self, is_server=False):
-		"""Create SSL context for secure connections"""
-		context = ssl.create_default_context()
-		context.check_hostname = False
-		context.verify_mode = ssl.CERT_NONE
-		return context
 	
 	def hash_password(self, password, salt=None):
 		"""Hash password with salt for secure storage"""
@@ -950,7 +1100,7 @@ class SecureConnection:
 			token_info = self.auth_tokens.get(auth_token)
 			if not token_info:
 				return False
-			if token_info.get('ip') != ip:
+			if not hmac.compare_digest(token_info.get('ip', ''), ip):
 				return False
 			if token_info.get('expires', 0) < time.time():
 				self.auth_tokens.pop(auth_token, None)
@@ -1524,7 +1674,24 @@ class NetworkManager:
 		port = int(port)
 		if port < 1 or port > 65535:
 			raise ProtocolError("Invalid remote port")
-		return socket.create_connection((ip, port), timeout=timeout)
+		sock = socket.create_connection((ip, port), timeout=timeout)
+		try:
+			ssl_ctx = self.security.client_ssl_context()
+			ssl_sock = ssl_ctx.wrap_socket(sock, server_hostname=None)
+			self.security.verify_peer_fingerprint(ssl_sock, f"{ip}:{port}")
+			return ssl_sock
+		except (ssl.SSLError, ProtocolError):
+			try:
+				sock.close()
+			except OSError:
+				pass
+			raise
+		except Exception as e:
+			try:
+				sock.close()
+			except OSError:
+				pass
+			raise ProtocolError(f"TLS connection to {ip}:{port} failed: {e}")
 	
 	def start_discovery_server(self, node_name, passcode=""):
 		"""Start discovery server to announce this node"""
@@ -1600,9 +1767,19 @@ class NetworkManager:
 		if self.communication_active:
 			print("Communication server already active")
 			return
-		
+
 		self.update_ports_from_preferences()
-		
+
+		# Set up TLS certificate on the main thread before spawning the server daemon
+		try:
+			cert_dir = bpy.utils.user_resource('CONFIG', path='render_remote')
+			os.makedirs(cert_dir, exist_ok=True)
+			self.security.prepare_tls(cert_dir)
+		except Exception as e:
+			print(f"Render Remote: TLS setup failed — cannot start communication server: {e}")
+			self.communication_active = False
+			return
+
 		print(f"Starting communication server on port {self.communication_port}...")
 		self.communication_active = True
 		self.communication_thread = threading.Thread(
@@ -1676,6 +1853,7 @@ class NetworkManager:
 							'blender_version': bpy.app.version_string,
 							'plugin_version': ADDON_VERSION,
 							'requires_auth': requires_auth,
+							'fingerprint': self.security.get_cert_fingerprint(),
 							'timestamp': time.time()
 						}
 
@@ -1694,9 +1872,9 @@ class NetworkManager:
 			if sock:
 				try:
 					sock.close()
-				except:
+				except OSError:
 					pass
-	
+
 	def _communication_server_loop(self):
 		"""Communication server main loop for handling connections"""
 		server_sock = None
@@ -1732,10 +1910,25 @@ class NetworkManager:
 					client_sock, addr = server_sock.accept()
 					if not self._is_allowed_peer(addr[0]):
 						print(f"Rejected non-LAN connection from {addr[0]}")
-						client_sock.close()
+						try:
+							client_sock.close()
+						except OSError:
+							pass
 						continue
 
-					print(f"Accepted connection from {addr[0]}:{addr[1]}")
+					# Upgrade to TLS before handing off to handler thread
+					try:
+						ssl_ctx = self.security.server_ssl_context()
+						client_sock = ssl_ctx.wrap_socket(client_sock, server_side=True)
+					except ssl.SSLError as e:
+						print(f"TLS handshake failed from {addr[0]}: {e}")
+						try:
+							client_sock.close()
+						except OSError:
+							pass
+						continue
+
+					print(f"Accepted TLS connection from {addr[0]}:{addr[1]}")
 
 					# Handle client in separate thread
 					client_thread = threading.Thread(
@@ -1757,7 +1950,7 @@ class NetworkManager:
 			if server_sock:
 				try:
 					server_sock.close()
-				except:
+				except OSError:
 					pass
 			print("Communication server stopped")
 	
@@ -1802,9 +1995,9 @@ class NetworkManager:
 		finally:
 			try:
 				client_sock.close()
-			except:
+			except OSError:
 				pass
-	
+
 	def _process_message(self, message, addr, client_sock):
 		"""Process incoming messages from clients"""
 		msg_type = message.get('type')
@@ -1854,6 +2047,9 @@ class NetworkManager:
 
 	def _handle_auth_challenge(self, message, addr):
 		"""Create a challenge for passcode proof authentication"""
+		if self.security._is_auth_blocked(addr[0]):
+			return error_response('auth_blocked', 'Too many failed authentication attempts; try again later')
+
 		if not self.stored_password_hash or not self.stored_salt:
 			return error_response('auth_not_configured', 'Authentication is not configured')
 
@@ -1865,15 +2061,20 @@ class NetworkManager:
 
 	def _handle_authenticate(self, message, addr):
 		"""Verify a challenge response and issue an auth token"""
-		client_nonce = message.get('client_nonce')
-		server_nonce = message.get('server_nonce')
-		proof = message.get('proof')
+		schema_errors = validate_message(message, {'client_nonce': str, 'server_nonce': str, 'proof': str})
+		if schema_errors:
+			return error_response('auth_failed', '; '.join(schema_errors))
 
-		if not client_nonce or not server_nonce or not proof:
-			return error_response('auth_failed', 'Invalid authentication response')
+		if self.security._is_auth_blocked(addr[0]):
+			return error_response('auth_blocked', 'Too many failed authentication attempts; try again later')
+
+		client_nonce = message['client_nonce']
+		server_nonce = message['server_nonce']
+		proof = message['proof']
 
 		challenge = self.security.consume_challenge(client_nonce, server_nonce, addr[0])
 		if not challenge:
+			self.security._record_auth_failure(addr[0])
 			return error_response('auth_failed', 'Invalid or expired authentication challenge')
 
 		expected_proof = self.security.build_auth_proof(
@@ -1882,6 +2083,7 @@ class NetworkManager:
 			server_nonce
 		)
 		if not hmac.compare_digest(proof, expected_proof):
+			self.security._record_auth_failure(addr[0])
 			return error_response('auth_failed', 'Invalid authentication response')
 
 		auth_token = self.security.issue_auth_token(addr[0])
@@ -2096,30 +2298,83 @@ class NetworkManager:
 			print(f"Obsolete input delete failed: {e}")
 			return error_response('delete_failed', 'Failed to delete obsolete inputs')
 			
+	def _validate_render_settings(self, settings):
+		"""Validate remote-supplied render settings. Raises ValueError listing all violations."""
+		errors = []
+
+		for key in ('resolution_x', 'resolution_y'):
+			if key in settings:
+				val = settings[key]
+				if not isinstance(val, int) or not (1 <= val <= 16384):
+					errors.append(f"{key} must be an integer in [1, 16384]")
+
+		if 'resolution_percentage' in settings:
+			val = settings['resolution_percentage']
+			if not isinstance(val, int) or not (1 <= val <= 100):
+				errors.append("resolution_percentage must be an integer in [1, 100]")
+
+		if 'engine' in settings:
+			engine = settings['engine']
+			if not isinstance(engine, str) or not re.match(r'^[A-Z][A-Z0-9_]*$', engine):
+				errors.append("engine must be a valid uppercase identifier (e.g. 'CYCLES')")
+
+		for key in ('frame_start', 'frame_end', 'frame_current'):
+			if key in settings:
+				val = settings[key]
+				if not isinstance(val, int) or not (-1_000_000 <= val <= 1_000_000):
+					errors.append(f"{key} must be an integer in [-1000000, 1000000]")
+
+		if 'frame_step' in settings:
+			val = settings['frame_step']
+			if not isinstance(val, int) or not (1 <= val <= 10_000):
+				errors.append("frame_step must be a positive integer in [1, 10000]")
+
+		if 'output_path' in settings:
+			errors.append("'output_path' is not allowed; use 'output_relative_path'")
+
+		if 'output_relative_path' in settings:
+			try:
+				normalize_relative_path(settings['output_relative_path'])
+			except PathSecurityError as e:
+				errors.append(f"output_relative_path: {e}")
+
+		if errors:
+			raise ValueError("; ".join(errors))
+
 	def _handle_render_request(self, message, addr):
 		"""Handle render request from source computer"""
 		try:
+			schema_errors = validate_message(message, {'blend_file': str})
+			if schema_errors:
+				return error_response('invalid_request', '; '.join(schema_errors))
+
+			if self.is_rendering:
+				return error_response('render_in_progress', 'A render is already in progress')
+
 			render_settings = message.get('render_settings', {})
+			if not isinstance(render_settings, dict):
+				return error_response('invalid_request', 'render_settings must be an object')
+
+			try:
+				self._validate_render_settings(render_settings)
+			except ValueError as e:
+				return error_response('invalid_render_settings', str(e))
+
 			project_name = message.get('project_name', 'default')
-			blend_file = message.get('blend_file')
+			blend_file = message['blend_file']
 			source_project_root = message.get('source_project_root')
-			
-			if not blend_file:
-				return {'status': 'error', 'message': 'Blend file path required'}
 
 			blend_file_rel = normalize_relative_path(blend_file)
 			project_cache_dir, _project_id = self._get_project_cache_dir(project_name)
 			blend_file_path = resolve_under_root(project_cache_dir, blend_file_rel)
-			
-			# Add source project root to render settings for output monitoring
+
 			if source_project_root:
 				render_settings['source_project_root'] = source_project_root
-			
-			# Start render
+
 			self.is_rendering = True
 			result = render_manager.start_render(blend_file_path, render_settings, source_project_root)
 			return result
-			
+
 		except PathSecurityError:
 			return {'status': 'error', 'message': 'Invalid render path'}
 		except Exception as e:
@@ -2152,8 +2407,30 @@ class NetworkManager:
 			with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
 				s.connect(("8.8.8.8", 80))
 				return s.getsockname()[0]
-		except:
+		except Exception:
 			return "127.0.0.1"
+
+	def _get_broadcast_addresses(self):
+		"""Enumerate host network interfaces and return their broadcast addresses."""
+		addrs = set()
+		try:
+			for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+				ip_str = info[4][0]
+				if ip_str.startswith('127.'):
+					continue
+				try:
+					ip_obj = ipaddress.ip_address(ip_str)
+					for net in LAN_ALLOWED_NETWORKS:
+						if net.version == 4 and ip_obj in net:
+							parts = ip_str.split('.')
+							addrs.add(f"{parts[0]}.{parts[1]}.{parts[2]}.255")
+							break
+				except ValueError:
+					pass
+		except Exception:
+			pass
+		addrs.add('255.255.255.255')  # fallback global broadcast
+		return sorted(addrs)
 	
 	# Client-side methods for source computer
 	def discover_nodes(self, timeout=3):
@@ -2176,18 +2453,12 @@ class NetworkManager:
 			
 			request_data = json.dumps(request).encode()
 			
-			# Broadcast to common network ranges
-			broadcast_addresses = [
-				'255.255.255.255',
-				'192.168.1.255',
-				'192.168.0.255',
-				'10.0.0.255'
-			]
+			broadcast_addresses = self._get_broadcast_addresses()
 			
 			for broadcast_addr in broadcast_addresses:
 				try:
 					sock.sendto(request_data, (broadcast_addr, self.discovery_port))
-				except:
+				except OSError:
 					continue
 				
 			# Collect responses
@@ -2212,6 +2483,7 @@ class NetworkManager:
 							'blender_version': response['blender_version'],
 							'plugin_version': response['plugin_version'],
 							'requires_auth': response['requires_auth'],
+							'fingerprint': response.get('fingerprint'),
 							'last_seen': time.time()
 						}
 
@@ -2225,9 +2497,9 @@ class NetworkManager:
 		finally:
 			try:
 				sock.close()
-			except:
+			except OSError:
 				pass
-				
+
 		self.discovered_nodes = discovered
 		return discovered
 
@@ -2634,8 +2906,6 @@ class RenderManager:
 		if 'output_relative_path' in settings:
 			project_root = os.path.dirname(os.path.dirname(bpy.data.filepath))
 			scene.render.filepath = resolve_under_root(project_root, settings['output_relative_path'])
-		elif 'output_path' in settings:
-			scene.render.filepath = settings['output_path']
 		if 'file_format' in settings:
 			scene.render.image_settings.file_format = settings['file_format']
 		if 'resolution_x' in settings:
@@ -2742,7 +3012,7 @@ class RenderManager:
 					self.render_status = "cancelled"
 					self.active_render = False
 					network_manager.is_rendering = False
-				except:
+				except Exception:
 					self.render_status = "cancelled"
 					self.active_render = False
 					network_manager.is_rendering = False
@@ -3907,7 +4177,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 	def poll(cls, context):
 		try:
 			return context.preferences.addons[__package__].preferences.remote_enable
-		except:
+		except (AttributeError, KeyError):
 			return False
 	
 	def draw(self, context):
