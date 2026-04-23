@@ -42,8 +42,8 @@ license = ["SPDX:GPL-3.0-or-later"]
 ## For each permission it is important to also specify the reason why it is required.
 ## Keep this a single short sentence without a period (.) at the end.
 ## For longer explanations use the documentation or detail page.
-#
-# [permissions]
-# network = "Need to sync motion-capture data to server"
+
+[permissions]
+network = "Discovery and render coordination with other Blender instances on the LAN"
 files = "Saving videos, incremental images, and render time logs"
 clipboard = "Copy and paste output variables"

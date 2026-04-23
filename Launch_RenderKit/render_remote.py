@@ -18,11 +18,6 @@ from bpy.props import StringProperty, EnumProperty, BoolProperty, IntProperty, F
 from bpy.types import Operator, Panel, AddonPreferences, PropertyGroup
 from bpy.app.handlers import persistent
 
-# Add bl_info for version reference
-bl_info = {
-	'version': (1, 0, 2),
-}
-
 PROTOCOL_MAX_MESSAGE_SIZE = 1024 * 1024  # 1MB JSON envelope limit
 PROTOCOL_MAX_FILE_SIZE = 128 * 1024 * 1024 * 1024  # 128GB file transfer limit
 AUTH_PBKDF2_ITERATIONS = 200_000
@@ -1058,7 +1053,7 @@ class OutputFileMonitor:
 
 	def _iter_output_file_nodes(self, scene):
 		"""Yield compositor file output nodes when compositing is enabled"""
-		compositing = scene.node_tree if bpy.app.version < tuple([5, 0, 0]) else scene.compositing_node_group
+		compositing = getattr(scene, 'compositing_node_group', None) or getattr(scene, 'node_tree', None)
 		if not scene.render.use_compositing or not compositing:
 			return
 
@@ -1081,7 +1076,7 @@ class OutputFileMonitor:
 				output_roots.add(output_root)
 
 		for index, node in enumerate(self._iter_output_file_nodes(scene) or []):
-			path_attr = 'base_path' if bpy.app.version < tuple([5, 0, 0]) else 'directory'
+			path_attr = 'directory' if hasattr(node, 'directory') else 'base_path'
 			configured_directory = getattr(node, path_attr, '')
 			fallback_relative = f"renders/compositor/{self._make_safe_segment(node.name, f'node-{index + 1}')}"
 			target_directory = self._resolve_output_path_under_workspace(
@@ -1289,7 +1284,7 @@ class OutputFileMonitor:
 			outputs.append(main_output)
 
 		for node in self._iter_output_file_nodes(scene) or []:
-			directory = node.base_path if bpy.app.version < tuple([5, 0, 0]) else node.directory
+			directory = getattr(node, 'directory', None) or getattr(node, 'base_path', None)
 			if not directory:
 				continue
 			directory = bpy.path.abspath(directory)
@@ -1488,6 +1483,8 @@ class NetworkManager:
 
 	def _create_connection(self, ip, port, timeout=10):
 		"""Create an outbound connection only to an allowed LAN target"""
+		if not bpy.app.online_access:
+			raise ProtocolError("Network access is disabled in Blender preferences")
 		if not self._is_allowed_peer(ip):
 			raise ProtocolError("Remote address is not LAN-local")
 		port = int(port)
@@ -1497,9 +1494,13 @@ class NetworkManager:
 	
 	def start_discovery_server(self, node_name, passcode=""):
 		"""Start discovery server to announce this node"""
+		if not bpy.app.online_access:
+			print("Render Remote: network access is disabled in Blender preferences — cannot start discovery server")
+			return False
+
 		if self.discovery_active:
 			return True
-		
+
 		if not self.configure_authentication(passcode):
 			print("Remote render target service requires an authentication passcode")
 			return False
@@ -1558,6 +1559,10 @@ class NetworkManager:
 	
 	def start_communication_server(self):
 		"""Start communication server for handling connections"""
+		if not bpy.app.online_access:
+			print("Render Remote: network access is disabled in Blender preferences — cannot start communication server")
+			return
+
 		if self.communication_active:
 			print("Communication server already active")
 			return
@@ -2119,8 +2124,12 @@ class NetworkManager:
 	# Client-side methods for source computer
 	def discover_nodes(self, timeout=3):
 		"""Discover available nodes on the network"""
+		if not bpy.app.online_access:
+			print("Render Remote: network access is disabled in Blender preferences — cannot discover nodes")
+			return {}
+
 		discovered = {}
-		
+
 		try:
 			sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 			sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
