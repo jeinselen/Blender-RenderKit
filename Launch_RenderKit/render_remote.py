@@ -1,3 +1,4 @@
+import atexit
 import bpy
 import socket
 import ssl
@@ -29,6 +30,9 @@ AUTH_TOKEN_TIMEOUT = 60 * 60
 AUTH_MAX_CHALLENGES = 256
 AUTH_RATE_LIMIT_WINDOW = 60   # seconds in which failures are counted
 AUTH_RATE_LIMIT_MAX = 5       # max failures per window before IP is temporarily blocked
+DISCOVERY_REPLY_TIMEOUT = 1.0
+CLIENT_READ_TIMEOUT = 30.0
+DISCOVERY_BROADCAST_TIMEOUT = 0.5
 PROJECT_ID_HASH_LENGTH = 12
 PROJECT_ID_SLUG_LENGTH = 60
 INPUT_MANIFEST_FILENAME = ".render_remote_input_manifest.json"
@@ -1833,8 +1837,8 @@ class NetworkManager:
 			sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 			sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			sock.bind(('', self.discovery_port))
-			sock.settimeout(1.0)
-			
+			sock.settimeout(DISCOVERY_REPLY_TIMEOUT)
+
 			while self.discovery_active and not self._shutdown_requested:
 				try:
 					data, addr = sock.recvfrom(1024)
@@ -1901,7 +1905,7 @@ class NetworkManager:
 				return
 			
 			server_sock.listen(10)  # Increased queue size for multiple file transfers
-			server_sock.settimeout(1.0)
+			server_sock.settimeout(DISCOVERY_REPLY_TIMEOUT)
 			
 			print(f"Communication server listening, ready to accept connections")
 			
@@ -1961,7 +1965,7 @@ class NetworkManager:
 				print(f"Rejected non-LAN client from {addr[0]}")
 				return
 
-			client_sock.settimeout(30.0)
+			client_sock.settimeout(CLIENT_READ_TIMEOUT)
 			while not self._shutdown_requested:
 				try:
 					message = recv_message(client_sock)
@@ -2220,7 +2224,10 @@ class NetworkManager:
 			
 			recv_file(client_sock, target_file_path, file_size)
 
-			stat = os.stat(target_file_path)
+			try:
+				stat = os.stat(target_file_path)
+			except FileNotFoundError:
+				return error_response('file_sync_failed', 'File vanished after receive')
 			manifest_entry['size'] = stat.st_size
 			manifest_entry.setdefault('mtime', stat.st_mtime)
 			if not manifest_entry.get('hash'):
@@ -2444,7 +2451,7 @@ class NetworkManager:
 		try:
 			sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 			sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-			sock.settimeout(0.5)
+			sock.settimeout(DISCOVERY_BROADCAST_TIMEOUT)
 			
 			request = {
 				'type': 'discovery_request',
@@ -2712,61 +2719,69 @@ class NetworkManager:
 	
 	def request_file_from_target(self, ip, port, auth_token, relative_path, manifest_entry=None):
 		"""Request and verify a specific output file from the target computer"""
-		try:
-			relative_path = normalize_relative_path(relative_path)
-			manifest_entry = manifest_entry or {}
-			with self._create_connection(ip, port, timeout=30) as sock:
-				request = {
-					'type': 'request_file',
-					'auth_token': auth_token,
-					'relative_path': relative_path,
-					'timestamp': time.time()
-				}
+		relative_path = normalize_relative_path(relative_path)
+		manifest_entry = manifest_entry or {}
+		delays = [0, 1, 2, 4]
+		last_error = None
+		for attempt, delay in enumerate(delays):
+			if delay:
+				time.sleep(delay)
+			try:
+				with self._create_connection(ip, port, timeout=30) as sock:
+					request = {
+						'type': 'request_file',
+						'auth_token': auth_token,
+						'relative_path': relative_path,
+						'timestamp': time.time()
+					}
 
-				send_message(sock, request)
-				response = recv_message(sock)
+					send_message(sock, request)
+					response = recv_message(sock)
 
-				if response.get('status') != 'success':
-					print(f"File request failed: {response.get('message', 'Unknown error')}")
-					return False
-
-				file_size = validate_file_size(response.get('file_size', 0))
-				target_relative_path = normalize_relative_path(response.get('relative_path', relative_path))
-				expected_hash = manifest_entry.get('hash') or response.get('hash')
-				
-				print(f"Receiving file: {target_relative_path} ({file_size} bytes)")
-				
-				# Determine where to save the file on source
-				source_project_root = file_sync_manager.get_project_root()
-				if not source_project_root:
-					raise PathSecurityError("Could not determine source project root")
-
-				target_path = resolve_under_root(source_project_root, target_relative_path)
-				
-				# Create directory structure if needed
-				target_dir = os.path.dirname(target_path)
-				os.makedirs(target_dir, exist_ok=True)
-
-				download_path = f"{target_path}.download"
-				recv_file(sock, download_path, file_size)
-
-				if expected_hash:
-					download_hash = file_sync_manager.calculate_file_hash(download_path)
-					if download_hash != expected_hash:
-						try:
-							os.remove(download_path)
-						except OSError:
-							pass
-						print(f"Downloaded file hash mismatch: {target_relative_path}")
+					if response.get('status') != 'success':
+						print(f"File request failed: {response.get('message', 'Unknown error')}")
 						return False
 
-				os.replace(download_path, target_path)
-				print(f"✓ Successfully received: {target_relative_path}")
-				return True
-				
-		except Exception as e:
-			print(f"File request failed: {e}")
-			return False
+					file_size = validate_file_size(response.get('file_size', 0))
+					target_relative_path = normalize_relative_path(response.get('relative_path', relative_path))
+					expected_hash = manifest_entry.get('hash') or response.get('hash')
+
+					print(f"Receiving file: {target_relative_path} ({file_size} bytes)")
+
+					source_project_root = file_sync_manager.get_project_root()
+					if not source_project_root:
+						raise PathSecurityError("Could not determine source project root")
+
+					target_path = resolve_under_root(source_project_root, target_relative_path)
+
+					target_dir = os.path.dirname(target_path)
+					os.makedirs(target_dir, exist_ok=True)
+
+					download_path = f"{target_path}.download"
+					recv_file(sock, download_path, file_size)
+
+					if expected_hash:
+						download_hash = file_sync_manager.calculate_file_hash(download_path)
+						if download_hash != expected_hash:
+							try:
+								os.remove(download_path)
+							except OSError:
+								pass
+							print(f"Downloaded file hash mismatch: {target_relative_path}")
+							return False
+
+					os.replace(download_path, target_path)
+					print(f"✓ Successfully received: {target_relative_path}")
+					return True
+
+			except (PathSecurityError, ProtocolError):
+				raise
+			except Exception as e:
+				last_error = e
+				print(f"File request attempt {attempt + 1} failed: {e}")
+
+		print(f"File request failed after {len(delays)} attempts: {last_error}")
+		return False
 	
 	def cancel_remote_render(self, ip, port, auth_token):
 		"""Cancel render on remote node"""
@@ -2851,20 +2866,25 @@ class RenderManager:
 		# Ensure blend file exists
 		if not os.path.exists(blend_file_path):
 			raise Exception(f'Blend file not found: {blend_file_path}')
-		
+
+		if bpy.data.is_dirty:
+			raise Exception("Cannot load remote blend file: current file has unsaved changes")
+
 		try:
 			print(f"Loading blend file: {blend_file_path}")
 			# Temporarily disable cleanup during file loading
 			global network_manager
 			was_rendering = network_manager.is_rendering
 			network_manager.is_rendering = True
-			
+
 			bpy.ops.wm.open_mainfile(filepath=blend_file_path)
-			
+
 			# Keep rendering flag set if it was set before
 			network_manager.is_rendering = was_rendering
-			
+
 			print("Blend file loaded successfully")
+		except RuntimeError as e:
+			raise Exception(f"Failed to load blend file: {e}")
 		except Exception as e:
 			raise Exception(f"Failed to load blend file: {e}")
 		
@@ -4567,6 +4587,8 @@ def cleanup_on_load_pre(dummy):
 @persistent
 def reset_connection_status_on_load(dummy):
 	"""Reset connection status when loading new projects"""
+	if network_manager and network_manager.is_rendering:
+		return
 	try:
 		# Clear previous connection data when opening a new project
 		context = bpy.context
@@ -4684,15 +4706,20 @@ def register():
 	
 	if reset_connection_status_on_load not in bpy.app.handlers.load_post:
 		bpy.app.handlers.load_post.append(reset_connection_status_on_load)
-	
+
+	atexit.register(shutdown)
+
 	_is_registered = True
 	print("Remote Render Sync add-on registered")
 
 def unregister():
 	global _is_registered
-	
+
+	if render_manager:
+		render_manager._clear_render_handlers()
+
 	shutdown(force=True)
-	
+
 	# Remove handlers
 	if cleanup_on_exit in bpy.app.handlers.load_pre:
 		bpy.app.handlers.load_pre.remove(cleanup_on_exit)
