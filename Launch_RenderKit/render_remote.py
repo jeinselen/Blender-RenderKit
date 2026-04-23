@@ -20,6 +20,9 @@ bl_info = {
 	'version': (1, 0, 2),
 }
 
+PROTOCOL_MAX_MESSAGE_SIZE = 1024 * 1024  # 1MB JSON envelope limit
+PROTOCOL_MAX_FILE_SIZE = 128 * 1024 * 1024 * 1024  # 128GB file transfer limit
+
 # ----
 # File Filtering Utilities
 # ----
@@ -187,6 +190,103 @@ class TimerManager:
 timer_manager = TimerManager()
 
 # ----
+# Protocol Helpers
+# ----
+
+class ProtocolError(Exception):
+	"""Raised when a network message or file payload violates protocol limits"""
+	pass
+
+def error_response(code, message):
+	"""Build a structured error without local filesystem details"""
+	return {'status': 'error', 'code': code, 'message': message}
+
+def validate_file_size(file_size):
+	"""Normalize and validate file payload sizes"""
+	try:
+		file_size = int(file_size)
+	except (TypeError, ValueError):
+		raise ProtocolError("Invalid file size")
+	if file_size < 0:
+		raise ProtocolError("Invalid file size")
+	if file_size > PROTOCOL_MAX_FILE_SIZE:
+		raise ProtocolError("File is too large")
+	return file_size
+
+def recv_exact(sock, byte_count):
+	"""Read exactly byte_count bytes from a socket"""
+	if byte_count < 0:
+		raise ProtocolError("Invalid byte count")
+	chunks = []
+	remaining = byte_count
+	while remaining > 0:
+		chunk = sock.recv(min(remaining, 64 * 1024))
+		if not chunk:
+			raise ProtocolError("Connection closed")
+		chunks.append(chunk)
+		remaining -= len(chunk)
+	return b''.join(chunks)
+
+def send_message(sock, message):
+	"""Send a bounded length-prefixed JSON message"""
+	try:
+		message_data = json.dumps(message).encode('utf-8')
+	except (TypeError, ValueError):
+		raise ProtocolError("Message is not JSON serializable")
+	if len(message_data) > PROTOCOL_MAX_MESSAGE_SIZE:
+		raise ProtocolError("Message is too large")
+	sock.sendall(struct.pack('!I', len(message_data)))
+	sock.sendall(message_data)
+
+def recv_message(sock):
+	"""Receive a bounded length-prefixed JSON message"""
+	length_data = recv_exact(sock, 4)
+	message_length = struct.unpack('!I', length_data)[0]
+	if message_length <= 0:
+		raise ProtocolError("Invalid message size")
+	if message_length > PROTOCOL_MAX_MESSAGE_SIZE:
+		raise ProtocolError("Message is too large")
+	message_data = recv_exact(sock, message_length)
+	try:
+		return json.loads(message_data.decode('utf-8'))
+	except (UnicodeDecodeError, json.JSONDecodeError):
+		raise ProtocolError("Invalid JSON message")
+
+def send_file(sock, file_path, file_size=None):
+	"""Send a bounded file payload"""
+	if file_size is None:
+		file_size = os.path.getsize(file_path)
+	file_size = validate_file_size(file_size)
+	bytes_sent = 0
+	with open(file_path, 'rb') as f:
+		while bytes_sent < file_size:
+			chunk = f.read(min(file_sync_manager.chunk_size, file_size - bytes_sent))
+			if not chunk:
+				raise ProtocolError("Incomplete file read")
+			sock.sendall(chunk)
+			bytes_sent += len(chunk)
+
+def recv_file(sock, target_file_path, file_size):
+	"""Receive a bounded file payload into a temporary sibling path"""
+	file_size = validate_file_size(file_size)
+	temp_file_path = f"{target_file_path}.part"
+	bytes_received = 0
+	try:
+		with open(temp_file_path, 'wb') as f:
+			while bytes_received < file_size:
+				chunk = recv_exact(sock, min(file_sync_manager.chunk_size, file_size - bytes_received))
+				f.write(chunk)
+				bytes_received += len(chunk)
+		os.replace(temp_file_path, target_file_path)
+	except Exception:
+		try:
+			if os.path.exists(temp_file_path):
+				os.remove(temp_file_path)
+		except OSError:
+			pass
+		raise
+
+# ----
 # File Synchronization Manager
 # ----
 
@@ -195,7 +295,7 @@ class FileSyncManager:
 	
 	def __init__(self):
 		self.chunk_size = 64 * 1024  # 64KB chunks for file transfer
-		self.max_file_size = 500 * 1024 * 1024  # 500MB max file size
+		self.max_file_size = PROTOCOL_MAX_FILE_SIZE
 		
 	def get_project_root(self, blend_file_path=None):
 		"""Get the project root directory (parent of blend file directory)"""
@@ -1131,54 +1231,32 @@ class NetworkManager:
 		"""Handle individual client connections"""
 		try:
 			client_sock.settimeout(30.0)
-			
 			while not self._shutdown_requested:
 				try:
-					length_data = client_sock.recv(4)
-					if not length_data:
-						break
-					
-					message_length = struct.unpack('!I', length_data)[0]
-					
-					# Receive full message
-					message_data = b''
-					bytes_received = 0
-					while bytes_received < message_length:
-						chunk = client_sock.recv(min(message_length - bytes_received, 4096))
-						if not chunk:
-							break
-						message_data += chunk
-						bytes_received += len(chunk)
-					
-					if bytes_received != message_length:
-						break
-					
-					message = json.loads(message_data.decode())
-					
-					# Debug: Log what type of message we're receiving
+					message = recv_message(client_sock)
 					msg_type = message.get('type', 'unknown')
 					print(f"Received message type: {msg_type} from {addr[0]}")
 					
 					response = self._process_message(message, addr, client_sock)
 					
-					# Send response (if not None - file transfers handle their own response)
+					# Send response if file transfers have not already handled it.
 					if response is not None:
-						response_data = json.dumps(response).encode()
-						client_sock.send(struct.pack('!I', len(response_data)))
-						client_sock.sendall(response_data)
-						
-						# Log the response status
+						send_message(client_sock, response)
 						print(f"Sent response: {response.get('status', 'unknown')} for {msg_type}")
-				
-				except json.JSONDecodeError as e:
-					print(f"JSON decode error from {addr[0]}: {e}")
-					error_response = {'status': 'error', 'message': 'Invalid JSON'}
-					response_data = json.dumps(error_response).encode()
-					client_sock.send(struct.pack('!I', len(response_data)))
-					client_sock.sendall(response_data)
+
+				except ProtocolError as e:
+					print(f"Protocol error from {addr[0]}: {e}")
+					try:
+						send_message(client_sock, error_response('protocol_error', str(e)))
+					except Exception:
+						pass
 					break
 				except Exception as e:
 					print(f"Client handler error from {addr[0]}: {e}")
+					try:
+						send_message(client_sock, error_response('server_error', 'Request failed'))
+					except Exception:
+						pass
 					break
 		
 		except Exception as e:
@@ -1260,7 +1338,7 @@ class NetworkManager:
 					pending_files = render_manager.output_file_monitor.get_pending_files()
 					
 					# Validate JSON can be encoded properly
-					test_json = json.dumps(pending_files)
+					json.dumps(pending_files)
 					
 					return {'status': 'success', 'pending_files': pending_files}
 				except (UnicodeDecodeError, UnicodeEncodeError) as e:
@@ -1290,7 +1368,7 @@ class NetworkManager:
 				
 		except Exception as e:
 			print(f"Get pending files request failed: {e}")
-			return {'status': 'error', 'message': f'Failed to get pending files: {e}'}
+			return error_response('pending_files_failed', 'Failed to get pending files')
 	
 	def _handle_request_file(self, message, client_sock):
 		"""Handle request for a specific file - with better error handling"""
@@ -1309,30 +1387,21 @@ class NetworkManager:
 				print(f"File not found for request: {file_path}")
 				return {'status': 'error', 'message': 'File not found'}
 			
-			file_size = os.path.getsize(file_path)
-			
+			file_size = validate_file_size(os.path.getsize(file_path))
+
 			# Send file info first
 			response = {
-				'status': 'success', 
+				'status': 'success',
 				'message': 'Sending file',
 				'file_size': file_size,
 				'relative_path': original_relative_path  # Use original path for destination
 			}
-			
-			response_data = json.dumps(response).encode()
-			client_sock.send(struct.pack('!I', len(response_data)))
-			client_sock.sendall(response_data)
-			
+
+			send_message(client_sock, response)
+
 			# Send file data
 			print(f"Sending file: {original_relative_path} ({file_size} bytes)")
-			with open(file_path, 'rb') as f:
-				bytes_sent = 0
-				while bytes_sent < file_size:
-					chunk = f.read(file_sync_manager.chunk_size)
-					if not chunk:
-						break
-					client_sock.sendall(chunk)
-					bytes_sent += len(chunk)
+			send_file(client_sock, file_path, file_size)
 			
 			print(f"File sent successfully: {original_relative_path}")
 			
@@ -1343,9 +1412,12 @@ class NetworkManager:
 			
 			return None  # Response already sent
 			
+		except ProtocolError as e:
+			print(f"File request protocol failed: {e}")
+			return error_response('protocol_error', str(e))
 		except Exception as e:
 			print(f"File request failed: {e}")
-			return {'status': 'error', 'message': f'File request failed: {e}'}
+			return error_response('file_request_failed', 'File request failed')
 	
 	def _handle_get_manifest(self, message):
 		"""Handle request for project manifest"""
@@ -1370,7 +1442,7 @@ class NetworkManager:
 				
 		except Exception as e:
 			print(f"Manifest request failed: {e}")
-			return {'status': 'error', 'message': f'Failed to get manifest: {e}'}
+			return error_response('manifest_failed', 'Failed to get manifest')
 	
 	def _handle_sync_file(self, message, client_sock):
 		"""Handle file synchronization request"""
@@ -1385,7 +1457,7 @@ class NetworkManager:
 			cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
 			project_name = message.get('project_name', 'default')
 			file_path = message.get('file_path')
-			file_size = message.get('file_size', 0)
+			file_size = validate_file_size(message.get('file_size', 0))
 			
 			if not file_path:
 				return {'status': 'error', 'message': 'File path required'}
@@ -1400,25 +1472,15 @@ class NetworkManager:
 			# Create directory if needed
 			os.makedirs(os.path.dirname(target_file_path), exist_ok=True)
 			
-			# Receive file data
-			bytes_received = 0
-			with open(target_file_path, 'wb') as f:
-				while bytes_received < file_size:
-					chunk_size = min(file_sync_manager.chunk_size, file_size - bytes_received)
-					chunk = client_sock.recv(chunk_size)
-					if not chunk:
-						break
-					f.write(chunk)
-					bytes_received += len(chunk)
-			
-			if bytes_received == file_size:
-				return {'status': 'success', 'message': 'File received'}
-			else:
-				return {'status': 'error', 'message': 'Incomplete file transfer'}
-				
+			recv_file(client_sock, target_file_path, file_size)
+			return {'status': 'success', 'message': 'File received'}
+
+		except ProtocolError as e:
+			print(f"File sync protocol failed: {e}")
+			return error_response('protocol_error', str(e))
 		except Exception as e:
 			print(f"File sync failed: {e}")
-			return {'status': 'error', 'message': f'File sync failed: {e}'}
+			return error_response('file_sync_failed', 'File sync failed')
 			
 	def _handle_render_request(self, message, addr):
 		"""Handle render request from source computer"""
@@ -1449,7 +1511,7 @@ class NetworkManager:
 		except Exception as e:
 			print(f"Render request failed: {e}")
 			self.is_rendering = False
-			return {'status': 'error', 'message': f'Render request failed: {e}'}
+			return error_response('render_request_failed', 'Render request failed')
 			
 	def _handle_render_status_request(self, message):
 		"""Handle request for render status"""
@@ -1457,7 +1519,8 @@ class NetworkManager:
 			status = render_manager.get_render_status()
 			return {'status': 'success', 'render_status': status}
 		except Exception as e:
-			return {'status': 'error', 'message': f'Status request failed: {e}'}
+			print(f"Status request failed: {e}")
+			return error_response('status_request_failed', 'Status request failed')
 			
 	def _handle_render_cancel(self, message):
 		"""Handle render cancellation request"""
@@ -1466,7 +1529,8 @@ class NetworkManager:
 			self.is_rendering = False
 			return {'status': 'success', 'message': 'Render cancelled'}
 		except Exception as e:
-			return {'status': 'error', 'message': f'Cancel request failed: {e}'}
+			print(f"Cancel request failed: {e}")
+			return error_response('cancel_request_failed', 'Cancel request failed')
 	
 	def _get_local_ip(self):
 		"""Get local IP address"""
@@ -1542,31 +1606,24 @@ class NetworkManager:
 				
 		self.discovered_nodes = discovered
 		return discovered
-	
+
+	def _send_request(self, ip, port, request, timeout=10):
+		"""Send a request message and receive a response message"""
+		with socket.create_connection((ip, port), timeout=timeout) as sock:
+			send_message(sock, request)
+			return recv_message(sock)
+
 	def test_connection(self, ip, port, auth_token=None):
 		"""Test connection to a remote node"""
 		try:
-			with socket.create_connection((ip, port), timeout=5) as sock:
-				test_message = {
-					'type': 'connection_test',
-					'auth_token': auth_token,
-					'timestamp': time.time()
-				}
-				
-				message_data = json.dumps(test_message).encode()
-				sock.send(struct.pack('!I', len(message_data)))
-				sock.sendall(message_data)
-				
-				length_data = sock.recv(4)
-				if len(length_data) != 4:
-					return False
-					
-				response_length = struct.unpack('!I', length_data)[0]
-				response_data = sock.recv(response_length)
-				response = json.loads(response_data.decode())
-				
-				return response.get('status') == 'success'
-			
+			test_message = {
+				'type': 'connection_test',
+				'auth_token': auth_token,
+				'timestamp': time.time()
+			}
+			response = self._send_request(ip, port, test_message, timeout=5)
+			return response.get('status') == 'success'
+
 		except Exception as e:
 			print(f"Connection test failed: {e}")
 			return False
@@ -1574,28 +1631,15 @@ class NetworkManager:
 	def authenticate(self, ip, port, password):
 		"""Authenticate with a remote node"""
 		try:
-			with socket.create_connection((ip, port), timeout=5) as sock:
-				auth_message = {
-					'type': 'authenticate',
-					'password': password,
-					'timestamp': time.time()
-				}
-				
-				message_data = json.dumps(auth_message).encode()
-				sock.send(struct.pack('!I', len(message_data)))
-				sock.sendall(message_data)
-				
-				length_data = sock.recv(4)
-				if len(length_data) != 4:
-					return None
-					
-				response_length = struct.unpack('!I', length_data)[0]
-				response_data = sock.recv(response_length)
-				response = json.loads(response_data.decode())
-				
-				if response.get('status') == 'success':
-					return response.get('auth_token')
-					
+			auth_message = {
+				'type': 'authenticate',
+				'password': password,
+				'timestamp': time.time()
+			}
+			response = self._send_request(ip, port, auth_message, timeout=5)
+			if response.get('status') == 'success':
+				return response.get('auth_token')
+
 		except Exception as e:
 			print(f"Authentication failed: {e}")
 			
@@ -1604,38 +1648,16 @@ class NetworkManager:
 	def get_remote_manifest(self, ip, port, auth_token, project_name):
 		"""Get project manifest from remote node"""
 		try:
-			with socket.create_connection((ip, port), timeout=10) as sock:
-				request = {
-					'type': 'get_project_manifest',
-					'auth_token': auth_token,
-					'project_name': project_name,
-					'timestamp': time.time()
-				}
-				
-				message_data = json.dumps(request).encode()
-				sock.send(struct.pack('!I', len(message_data)))
-				sock.sendall(message_data)
-				
-				length_data = sock.recv(4)
-				if len(length_data) != 4:
-					return None
-					
-				response_length = struct.unpack('!I', length_data)[0]
-				
-				response_data = b''
-				bytes_received = 0
-				while bytes_received < response_length:
-					chunk = sock.recv(min(response_length - bytes_received, 4096))
-					if not chunk:
-						break
-					response_data += chunk
-					bytes_received += len(chunk)
-				
-				response = json.loads(response_data.decode())
-				
-				if response.get('status') == 'success':
-					return response.get('manifest', {})
-					
+			request = {
+				'type': 'get_project_manifest',
+				'auth_token': auth_token,
+				'project_name': project_name,
+				'timestamp': time.time()
+			}
+			response = self._send_request(ip, port, request, timeout=10)
+			if response.get('status') == 'success':
+				return response.get('manifest', {})
+
 		except Exception as e:
 			print(f"Failed to get remote manifest: {e}")
 			
@@ -1644,8 +1666,8 @@ class NetworkManager:
 	def sync_file_to_remote(self, ip, port, auth_token, project_name, file_path, local_file_path):
 		"""Sync a file to remote node"""
 		try:
-			file_size = os.path.getsize(local_file_path)
-			
+			file_size = validate_file_size(os.path.getsize(local_file_path))
+
 			with socket.create_connection((ip, port), timeout=30) as sock:
 				request = {
 					'type': 'sync_file',
@@ -1655,32 +1677,13 @@ class NetworkManager:
 					'file_size': file_size,
 					'timestamp': time.time()
 				}
-				
-				message_data = json.dumps(request).encode()
-				sock.send(struct.pack('!I', len(message_data)))
-				sock.sendall(message_data)
-				
-				# Send file data
-				with open(local_file_path, 'rb') as f:
-					bytes_sent = 0
-					while bytes_sent < file_size:
-						chunk = f.read(file_sync_manager.chunk_size)
-						if not chunk:
-							break
-						sock.sendall(chunk)
-						bytes_sent += len(chunk)
-				
-				# Receive response
-				length_data = sock.recv(4)
-				if len(length_data) != 4:
-					return False
-					
-				response_length = struct.unpack('!I', length_data)[0]
-				response_data = sock.recv(response_length)
-				response = json.loads(response_data.decode())
-				
+
+				send_message(sock, request)
+				send_file(sock, local_file_path, file_size)
+				response = recv_message(sock)
+
 				return response.get('status') == 'success'
-				
+
 		except Exception as e:
 			print(f"File sync failed: {e}")
 			return False
@@ -1688,61 +1691,33 @@ class NetworkManager:
 	def send_render_request(self, ip, port, auth_token, project_name, blend_file, render_settings, source_project_root=None):
 		"""Send render request to remote node"""
 		try:
-			with socket.create_connection((ip, port), timeout=30) as sock:
-				request = {
-					'type': 'render_request',
-					'auth_token': auth_token,
-					'project_name': project_name,
-					'blend_file': blend_file,
-					'render_settings': render_settings,
-					'source_project_root': source_project_root,
-					'timestamp': time.time()
-				}
-				
-				message_data = json.dumps(request).encode()
-				sock.send(struct.pack('!I', len(message_data)))
-				sock.sendall(message_data)
-				
-				# Receive response
-				length_data = sock.recv(4)
-				if len(length_data) != 4:
-					return None
-					
-				response_length = struct.unpack('!I', length_data)[0]
-				response_data = sock.recv(response_length)
-				response = json.loads(response_data.decode())
-				
-				return response
-				
+			request = {
+				'type': 'render_request',
+				'auth_token': auth_token,
+				'project_name': project_name,
+				'blend_file': blend_file,
+				'render_settings': render_settings,
+				'source_project_root': source_project_root,
+				'timestamp': time.time()
+			}
+			return self._send_request(ip, port, request, timeout=30)
+
 		except Exception as e:
 			print(f"Render request failed: {e}")
-			return None
+		return None
 			
 	def get_render_status(self, ip, port, auth_token):
 		"""Get render status from remote node"""
 		try:
-			with socket.create_connection((ip, port), timeout=10) as sock:
-				request = {
-					'type': 'render_status',
-					'auth_token': auth_token,
-					'timestamp': time.time()
-				}
-				
-				message_data = json.dumps(request).encode()
-				sock.send(struct.pack('!I', len(message_data)))
-				sock.sendall(message_data)
-				
-				length_data = sock.recv(4)
-				if len(length_data) != 4:
-					return None
-					
-				response_length = struct.unpack('!I', length_data)[0]
-				response_data = sock.recv(response_length)
-				response = json.loads(response_data.decode())
-				
-				if response.get('status') == 'success':
-					return response.get('render_status')
-					
+			request = {
+				'type': 'render_status',
+				'auth_token': auth_token,
+				'timestamp': time.time()
+			}
+			response = self._send_request(ip, port, request, timeout=10)
+			if response.get('status') == 'success':
+				return response.get('render_status')
+
 		except Exception as e:
 			print(f"Render status request failed: {e}")
 			
@@ -1751,28 +1726,15 @@ class NetworkManager:
 	def get_pending_files(self, ip, port, auth_token):
 		"""Get list of files pending sync from remote node"""
 		try:
-			with socket.create_connection((ip, port), timeout=10) as sock:
-				request = {
-					'type': 'get_pending_files',
-					'auth_token': auth_token,
-					'timestamp': time.time()
-				}
-				
-				message_data = json.dumps(request).encode()
-				sock.send(struct.pack('!I', len(message_data)))
-				sock.sendall(message_data)
-				
-				length_data = sock.recv(4)
-				if len(length_data) != 4:
-					return None
-					
-				response_length = struct.unpack('!I', length_data)[0]
-				response_data = sock.recv(response_length)
-				response = json.loads(response_data.decode())
-				
-				if response.get('status') == 'success':
-					return response.get('pending_files', [])
-					
+			request = {
+				'type': 'get_pending_files',
+				'auth_token': auth_token,
+				'timestamp': time.time()
+			}
+			response = self._send_request(ip, port, request, timeout=10)
+			if response.get('status') == 'success':
+				return response.get('pending_files', [])
+
 		except Exception as e:
 			print(f"Get pending files request failed: {e}")
 			
@@ -1793,25 +1755,15 @@ class NetworkManager:
 					'original_relative_path': original_relative_path,
 					'timestamp': time.time()
 				}
-				
-				message_data = json.dumps(request).encode()
-				sock.send(struct.pack('!I', len(message_data)))
-				sock.sendall(message_data)
-				
-				# Receive response with file info
-				length_data = sock.recv(4)
-				if len(length_data) != 4:
-					return False
-					
-				response_length = struct.unpack('!I', length_data)[0]
-				response_data = sock.recv(response_length)
-				response = json.loads(response_data.decode())
-				
+
+				send_message(sock, request)
+				response = recv_message(sock)
+
 				if response.get('status') != 'success':
 					print(f"File request failed: {response.get('message', 'Unknown error')}")
 					return False
-				
-				file_size = response.get('file_size', 0)
+
+				file_size = validate_file_size(response.get('file_size', 0))
 				target_relative_path = response.get('relative_path', relative_path)
 				
 				print(f"Receiving file: {target_relative_path} ({file_size} bytes)")
@@ -1829,23 +1781,9 @@ class NetworkManager:
 				target_dir = os.path.dirname(target_path)
 				os.makedirs(target_dir, exist_ok=True)
 				
-				# Receive file data
-				bytes_received = 0
-				with open(target_path, 'wb') as f:
-					while bytes_received < file_size:
-						chunk_size = min(file_sync_manager.chunk_size, file_size - bytes_received)
-						chunk = sock.recv(chunk_size)
-						if not chunk:
-							break
-						f.write(chunk)
-						bytes_received += len(chunk)
-				
-				if bytes_received == file_size:
-					print(f"✓ Successfully received: {target_relative_path}")
-					return True
-				else:
-					print(f"✗ Incomplete transfer for: {target_relative_path} ({bytes_received}/{file_size} bytes)")
-					return False
+				recv_file(sock, target_path, file_size)
+				print(f"✓ Successfully received: {target_relative_path}")
+				return True
 				
 		except Exception as e:
 			print(f"File request failed: {e}")
@@ -1854,27 +1792,14 @@ class NetworkManager:
 	def cancel_remote_render(self, ip, port, auth_token):
 		"""Cancel render on remote node"""
 		try:
-			with socket.create_connection((ip, port), timeout=10) as sock:
-				request = {
-					'type': 'render_cancel',
-					'auth_token': auth_token,
-					'timestamp': time.time()
-				}
-				
-				message_data = json.dumps(request).encode()
-				sock.send(struct.pack('!I', len(message_data)))
-				sock.sendall(message_data)
-				
-				length_data = sock.recv(4)
-				if len(length_data) != 4:
-					return False
-					
-				response_length = struct.unpack('!I', length_data)[0]
-				response_data = sock.recv(response_length)
-				response = json.loads(response_data.decode())
-				
-				return response.get('status') == 'success'
-				
+			request = {
+				'type': 'render_cancel',
+				'auth_token': auth_token,
+				'timestamp': time.time()
+			}
+			response = self._send_request(ip, port, request, timeout=10)
+			return response.get('status') == 'success'
+
 		except Exception as e:
 			print(f"Render cancel failed: {e}")
 			return False
