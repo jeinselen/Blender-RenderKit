@@ -2753,6 +2753,17 @@ network_manager = NetworkManager()
 # Property Groups for UI State
 # ----
 
+def update_remote_mode(self, context):
+	"""Ensure source mode does not keep a listening target service running"""
+	try:
+		if self.mode != 'TARGET':
+			if network_manager.discovery_active:
+				network_manager.stop_discovery_server(force=True)
+			elif network_manager.communication_active:
+				network_manager.stop_communication_server(force=True)
+	except Exception as e:
+		print(f"Remote mode update failed: {e}")
+
 class SyncFileInfo(PropertyGroup):
 	"""Information about a file that needs syncing"""
 	file_path: StringProperty()
@@ -3130,17 +3141,6 @@ def format_render_status_label(status):
 		return mapping[status_key]
 	text = str(status or "").strip()
 	return text.replace('_', ' ').title() if text else 'Unknown'
-
-def update_remote_mode(self, context):
-	"""Ensure source mode does not keep a listening target service running"""
-	try:
-		if self.mode != 'TARGET':
-			if network_manager.discovery_active:
-				network_manager.stop_discovery_server(force=True)
-			elif network_manager.communication_active:
-				network_manager.stop_communication_server(force=True)
-	except Exception as e:
-		print(f"Remote mode update failed: {e}")
 
 # ----
 # Operators (keeping existing ones but simplifying some logic)
