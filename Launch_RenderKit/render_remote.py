@@ -4,6 +4,8 @@ import ssl
 import json
 import hashlib
 import hmac
+import ipaddress
+import re
 import secrets
 import threading
 import time
@@ -11,7 +13,7 @@ import os
 import shutil
 import struct
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from bpy.props import StringProperty, EnumProperty, BoolProperty, IntProperty, FloatProperty, CollectionProperty
 from bpy.types import Operator, Panel, AddonPreferences, PropertyGroup
 from bpy.app.handlers import persistent
@@ -27,6 +29,19 @@ AUTH_PBKDF2_ITERATIONS = 200_000
 AUTH_CHALLENGE_TIMEOUT = 60
 AUTH_TOKEN_TIMEOUT = 60 * 60
 AUTH_MAX_CHALLENGES = 256
+PROJECT_ID_HASH_LENGTH = 12
+PROJECT_ID_SLUG_LENGTH = 60
+
+LAN_ALLOWED_NETWORKS = tuple(ipaddress.ip_network(network) for network in (
+	'10.0.0.0/8',
+	'172.16.0.0/12',
+	'192.168.0.0/16',
+	'169.254.0.0/16',
+	'127.0.0.0/8',
+	'::1/128',
+	'fc00::/7',
+	'fe80::/10',
+))
 
 # ----
 # File Filtering Utilities
@@ -202,6 +217,10 @@ class ProtocolError(Exception):
 	"""Raised when a network message or file payload violates protocol limits"""
 	pass
 
+class PathSecurityError(Exception):
+	"""Raised when a network-supplied path escapes an allowed root"""
+	pass
+
 def error_response(code, message):
 	"""Build a structured error without local filesystem details"""
 	return {'status': 'error', 'code': code, 'message': message}
@@ -217,6 +236,86 @@ def validate_file_size(file_size):
 	if file_size > PROTOCOL_MAX_FILE_SIZE:
 		raise ProtocolError("File is too large")
 	return file_size
+
+def parse_ip_address(ip):
+	"""Parse an IP address string, including scoped IPv6 addresses"""
+	ip_string = str(ip).strip()
+	if '%' in ip_string:
+		ip_string = ip_string.split('%', 1)[0]
+	address = ipaddress.ip_address(ip_string)
+	if getattr(address, 'ipv4_mapped', None):
+		return address.ipv4_mapped
+	return address
+
+def is_allowed_lan_ip(ip):
+	"""Return True only for loopback, private, and link-local peers"""
+	try:
+		address = parse_ip_address(ip)
+	except ValueError:
+		return False
+	return any(address in network for network in LAN_ALLOWED_NETWORKS)
+
+def normalize_project_id(project_name):
+	"""Convert a user-facing project name into a bounded cache directory id"""
+	raw_name = str(project_name or "default").strip() or "default"
+	digest = hashlib.sha256(raw_name.encode('utf-8')).hexdigest()[:PROJECT_ID_HASH_LENGTH]
+	slug = re.sub(r'[^A-Za-z0-9_.-]+', '-', raw_name).strip('._-')
+	slug = slug[:PROJECT_ID_SLUG_LENGTH].strip('._-') or "project"
+	return f"{slug}-{digest}"
+
+def normalize_relative_path(relative_path):
+	"""Normalize a project-relative POSIX path and reject traversal"""
+	if relative_path is None:
+		raise PathSecurityError("Relative path is required")
+
+	path_text = str(relative_path).replace('\\', '/').strip()
+	if not path_text:
+		raise PathSecurityError("Relative path is required")
+	if '\x00' in path_text:
+		raise PathSecurityError("Invalid relative path")
+	if re.match(r'^[A-Za-z]:', path_text):
+		raise PathSecurityError("Absolute paths are not allowed")
+
+	path = PurePosixPath(path_text)
+	if path.is_absolute():
+		raise PathSecurityError("Absolute paths are not allowed")
+
+	parts = []
+	for part in path.parts:
+		if part in ('', '.'):
+			continue
+		if part == '..':
+			raise PathSecurityError("Path traversal is not allowed")
+		parts.append(part)
+
+	if not parts:
+		raise PathSecurityError("Relative path is required")
+	return '/'.join(parts)
+
+def resolve_under_root(root_path, relative_path):
+	"""Resolve a normalized relative path under an allowed root"""
+	root = Path(root_path).expanduser().resolve()
+	rel_path = normalize_relative_path(relative_path)
+	candidate = root.joinpath(*rel_path.split('/')).resolve(strict=False)
+	try:
+		common_root = os.path.commonpath([str(root), str(candidate)])
+	except ValueError:
+		raise PathSecurityError("Path escapes allowed root")
+	if common_root != str(root):
+		raise PathSecurityError("Path escapes allowed root")
+	return str(candidate)
+
+def relative_path_under_root(file_path, root_path):
+	"""Return a POSIX relative path if file_path is inside root_path"""
+	root = Path(root_path).expanduser().resolve()
+	candidate = Path(file_path).expanduser().resolve(strict=False)
+	try:
+		common_root = os.path.commonpath([str(root), str(candidate)])
+	except ValueError:
+		raise PathSecurityError("Path escapes allowed root")
+	if common_root != str(root):
+		raise PathSecurityError("Path escapes allowed root")
+	return candidate.relative_to(root).as_posix()
 
 def recv_exact(sock, byte_count):
 	"""Read exactly byte_count bytes from a socket"""
@@ -321,12 +420,9 @@ class FileSyncManager:
 			return False
 			
 		try:
-			abs_file_path = os.path.abspath(file_path)
-			abs_project_root = os.path.abspath(project_root)
-			
-			# Check if file is within project root
-			return abs_file_path.startswith(abs_project_root)
-		except:
+			relative_path_under_root(file_path, project_root)
+			return True
+		except (PathSecurityError, OSError, ValueError):
 			return False
 	
 	def scan_blend_dependencies(self, blend_file_path=None):
@@ -439,13 +535,8 @@ class FileSyncManager:
 			for file_path in dependencies['internal']:
 				if os.path.exists(file_path):
 					try:
-						rel_path = os.path.relpath(file_path, project_root)
-						
-						# Skip files that would go outside project root
-						if rel_path.startswith('..'):
-							print(f"Skipping file outside project root: {file_path}")
-							continue
-						
+						rel_path = relative_path_under_root(file_path, project_root)
+
 						# Additional filter for files that shouldn't be in manifest
 						if FileFilter.should_ignore_file(file_path):
 							print(f"Skipping filtered file: {file_path}")
@@ -465,13 +556,13 @@ class FileSyncManager:
 						else:
 							print(f"Could not hash file: {file_path}")
 							
-					except ValueError as e:
+					except (PathSecurityError, ValueError) as e:
 						print(f"Path error for {file_path}: {e}")
 					except Exception as e:
 						print(f"Error processing file {file_path}: {e}")
 				else:
 					print(f"Referenced file not found: {file_path}")
-						
+
 		except Exception as e:
 			print(f"Error creating referenced files manifest: {e}")
 			
@@ -494,8 +585,11 @@ class FileSyncManager:
 					if FileFilter.should_ignore_file(file_path):
 						continue
 					
-					rel_path = os.path.relpath(file_path, directory_path)
-					
+					try:
+						rel_path = relative_path_under_root(file_path, directory_path)
+					except PathSecurityError:
+						continue
+
 					try:
 						stat = os.stat(file_path)
 						file_hash = self.calculate_file_hash(file_path)
@@ -1104,6 +1198,29 @@ class NetworkManager:
 			self.communication_port = prefs.remote_communication_port
 		except (AttributeError, KeyError):
 			pass
+
+	def _is_allowed_peer(self, ip):
+		"""Allow only LAN-local peers for Render Remote sockets"""
+		return is_allowed_lan_ip(ip)
+
+	def _get_cache_root(self):
+		"""Resolve the configured remote cache root"""
+		prefs = bpy.context.preferences.addons[__package__].preferences
+		return str(Path(bpy.path.abspath(prefs.remote_cache_directory)).expanduser().resolve())
+
+	def _get_project_cache_dir(self, project_name):
+		"""Resolve a normalized project cache directory under the cache root"""
+		project_id = normalize_project_id(project_name)
+		return resolve_under_root(self._get_cache_root(), project_id), project_id
+
+	def _create_connection(self, ip, port, timeout=10):
+		"""Create an outbound connection only to an allowed LAN target"""
+		if not self._is_allowed_peer(ip):
+			raise ProtocolError("Remote address is not LAN-local")
+		port = int(port)
+		if port < 1 or port > 65535:
+			raise ProtocolError("Invalid remote port")
+		return socket.create_connection((ip, port), timeout=timeout)
 	
 	def start_discovery_server(self, node_name, passcode=""):
 		"""Start discovery server to announce this node"""
@@ -1232,8 +1349,11 @@ class NetworkManager:
 			while self.discovery_active and not self._shutdown_requested:
 				try:
 					data, addr = sock.recvfrom(1024)
+					if not self._is_allowed_peer(addr[0]):
+						continue
+
 					message = json.loads(data.decode())
-					
+
 					if message.get('type') == 'discovery_request':
 						# Respond with node information
 						response = {
@@ -1246,10 +1366,10 @@ class NetworkManager:
 							'requires_auth': requires_auth,
 							'timestamp': time.time()
 						}
-						
+
 						response_data = json.dumps(response).encode()
 						sock.sendto(response_data, addr)
-						
+
 				except socket.timeout:
 					continue
 				except Exception as e:
@@ -1298,8 +1418,13 @@ class NetworkManager:
 			while self.communication_active and not self._shutdown_requested:
 				try:
 					client_sock, addr = server_sock.accept()
+					if not self._is_allowed_peer(addr[0]):
+						print(f"Rejected non-LAN connection from {addr[0]}")
+						client_sock.close()
+						continue
+
 					print(f"Accepted connection from {addr[0]}:{addr[1]}")
-					
+
 					# Handle client in separate thread
 					client_thread = threading.Thread(
 						target=self._handle_client,
@@ -1307,7 +1432,7 @@ class NetworkManager:
 						daemon=True
 					)
 					client_thread.start()
-					
+
 				except socket.timeout:
 					continue
 				except Exception as e:
@@ -1327,6 +1452,10 @@ class NetworkManager:
 	def _handle_client(self, client_sock, addr):
 		"""Handle individual client connections"""
 		try:
+			if not self._is_allowed_peer(addr[0]):
+				print(f"Rejected non-LAN client from {addr[0]}")
+				return
+
 			client_sock.settimeout(30.0)
 			while not self._shutdown_requested:
 				try:
@@ -1457,35 +1586,24 @@ class NetworkManager:
 			# Get pending files from output monitor
 			global render_manager
 			if render_manager and render_manager.output_file_monitor:
-				try:
-					pending_files = render_manager.output_file_monitor.get_pending_files()
-					
-					# Validate JSON can be encoded properly
-					json.dumps(pending_files)
-					
-					return {'status': 'success', 'pending_files': pending_files}
-				except (UnicodeDecodeError, UnicodeEncodeError) as e:
-					print(f"Unicode error in pending files: {e}")
-					# Return sanitized version
-					sanitized_files = []
-					for file_info in pending_files:
-						try:
-							sanitized_info = {
-								'file_path': file_info.get('file_path', '').encode('ascii', 'ignore').decode('ascii'),
-								'relative_path': file_info.get('relative_path', '').encode('ascii', 'ignore').decode('ascii'),
-								'size': file_info.get('size', 0),
-								'added_time': file_info.get('added_time', 0)
-							}
-							# Test JSON encoding
-							json.dumps(sanitized_info)
-							sanitized_files.append(sanitized_info)
-						except Exception:
-							continue  # Skip problematic files
-					
-					return {'status': 'success', 'pending_files': sanitized_files}
-				except json.JSONEncodeError as e:
-					print(f"JSON encoding error in pending files: {e}")
-					return {'status': 'success', 'pending_files': []}
+				pending_files = render_manager.output_file_monitor.get_pending_files()
+				response_files = []
+
+				for file_info in pending_files:
+					try:
+						relative_path = normalize_relative_path(
+							file_info.get('original_relative_path') or file_info.get('relative_path')
+						)
+						response_files.append({
+							'relative_path': relative_path,
+							'size': validate_file_size(file_info.get('size', 0)),
+							'added_time': file_info.get('added_time', 0)
+						})
+					except (PathSecurityError, ProtocolError):
+						continue
+
+				json.dumps(response_files)
+				return {'status': 'success', 'pending_files': response_files}
 			else:
 				return {'status': 'success', 'pending_files': []}
 				
@@ -1496,12 +1614,20 @@ class NetworkManager:
 	def _handle_request_file(self, message, client_sock):
 		"""Handle request for a specific file - with better error handling"""
 		try:
-			file_path = message.get('file_path')
 			relative_path = message.get('relative_path')
-			original_relative_path = message.get('original_relative_path', relative_path)
-			
-			if not file_path or not os.path.exists(file_path):
-				print(f"File not found for request: {file_path}")
+			if not relative_path:
+				return {'status': 'error', 'message': 'File path required'}
+
+			global render_manager
+			if not render_manager or not render_manager.output_file_monitor:
+				return {'status': 'error', 'message': 'No output files available'}
+
+			normalized_relative_path = normalize_relative_path(relative_path)
+			output_root = render_manager.output_file_monitor.project_root
+			file_path = resolve_under_root(output_root, normalized_relative_path)
+
+			if not os.path.isfile(file_path):
+				print(f"File not found for request: {normalized_relative_path}")
 				return {'status': 'error', 'message': 'File not found'}
 			
 			file_size = validate_file_size(os.path.getsize(file_path))
@@ -1511,24 +1637,25 @@ class NetworkManager:
 				'status': 'success',
 				'message': 'Sending file',
 				'file_size': file_size,
-				'relative_path': original_relative_path  # Use original path for destination
+				'relative_path': normalized_relative_path
 			}
 
 			send_message(client_sock, response)
 
 			# Send file data
-			print(f"Sending file: {original_relative_path} ({file_size} bytes)")
+			print(f"Sending file: {normalized_relative_path} ({file_size} bytes)")
 			send_file(client_sock, file_path, file_size)
 			
-			print(f"File sent successfully: {original_relative_path}")
+			print(f"File sent successfully: {normalized_relative_path}")
 			
 			# Remove from pending files after successful send
-			global render_manager
 			if render_manager and render_manager.output_file_monitor:
 				render_manager.output_file_monitor.remove_pending_file(file_path)
 			
 			return None  # Response already sent
 			
+		except PathSecurityError:
+			return {'status': 'error', 'message': 'Invalid file path'}
 		except ProtocolError as e:
 			print(f"File request protocol failed: {e}")
 			return error_response('protocol_error', str(e))
@@ -1539,18 +1666,19 @@ class NetworkManager:
 	def _handle_get_manifest(self, message):
 		"""Handle request for project manifest"""
 		try:
-			prefs = bpy.context.preferences.addons[__package__].preferences
-			cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
 			project_name = message.get('project_name', 'default')
-			
-			project_cache_dir = os.path.join(cache_dir, project_name)
+			project_cache_dir, _project_id = self._get_project_cache_dir(project_name)
 			
 			if os.path.exists(project_cache_dir):
 				manifest = file_sync_manager.get_directory_manifest(project_cache_dir)
+				for file_info in manifest.values():
+					file_info.pop('abs_path', None)
 				return {'status': 'success', 'manifest': manifest}
 			else:
 				return {'status': 'success', 'manifest': {}}
-				
+
+		except PathSecurityError:
+			return {'status': 'error', 'message': 'Invalid project path'}
 		except Exception as e:
 			print(f"Manifest request failed: {e}")
 			return error_response('manifest_failed', 'Failed to get manifest')
@@ -1558,21 +1686,16 @@ class NetworkManager:
 	def _handle_sync_file(self, message, client_sock):
 		"""Handle file synchronization request"""
 		try:
-			prefs = bpy.context.preferences.addons[__package__].preferences
-			cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
 			project_name = message.get('project_name', 'default')
 			file_path = message.get('file_path')
 			file_size = validate_file_size(message.get('file_size', 0))
 			
 			if not file_path:
 				return {'status': 'error', 'message': 'File path required'}
-			
-			# Validate file path (security check)
-			if '..' in file_path or file_path.startswith('/'):
-				return {'status': 'error', 'message': 'Invalid file path'}
-			
-			project_cache_dir = os.path.join(cache_dir, project_name)
-			target_file_path = os.path.join(project_cache_dir, file_path)
+
+			relative_path = normalize_relative_path(file_path)
+			project_cache_dir, _project_id = self._get_project_cache_dir(project_name)
+			target_file_path = resolve_under_root(project_cache_dir, relative_path)
 			
 			# Create directory if needed
 			os.makedirs(os.path.dirname(target_file_path), exist_ok=True)
@@ -1580,6 +1703,8 @@ class NetworkManager:
 			recv_file(client_sock, target_file_path, file_size)
 			return {'status': 'success', 'message': 'File received'}
 
+		except PathSecurityError:
+			return {'status': 'error', 'message': 'Invalid file path'}
 		except ProtocolError as e:
 			print(f"File sync protocol failed: {e}")
 			return error_response('protocol_error', str(e))
@@ -1597,6 +1722,10 @@ class NetworkManager:
 			
 			if not blend_file:
 				return {'status': 'error', 'message': 'Blend file path required'}
+
+			blend_file_rel = normalize_relative_path(blend_file)
+			project_cache_dir, _project_id = self._get_project_cache_dir(project_name)
+			blend_file_path = resolve_under_root(project_cache_dir, blend_file_rel)
 			
 			# Add source project root to render settings for output monitoring
 			if source_project_root:
@@ -1604,9 +1733,11 @@ class NetworkManager:
 			
 			# Start render
 			self.is_rendering = True
-			result = render_manager.start_render(blend_file, render_settings, source_project_root)
+			result = render_manager.start_render(blend_file_path, render_settings, source_project_root)
 			return result
 			
+		except PathSecurityError:
+			return {'status': 'error', 'message': 'Invalid render path'}
 		except Exception as e:
 			print(f"Render request failed: {e}")
 			self.is_rendering = False
@@ -1676,9 +1807,15 @@ class NetworkManager:
 			while time.time() - start_time < timeout:
 				try:
 					data, addr = sock.recvfrom(1024)
+					if not self._is_allowed_peer(addr[0]):
+						continue
+
 					response = json.loads(data.decode())
-					
+
 					if response.get('type') == 'discovery_response':
+						if not self._is_allowed_peer(response.get('ip')):
+							continue
+
 						node_id = f"{response['ip']}:{response['port']}"
 						discovered[node_id] = {
 							'name': response['node_name'],
@@ -1689,7 +1826,7 @@ class NetworkManager:
 							'requires_auth': response['requires_auth'],
 							'last_seen': time.time()
 						}
-						
+
 				except socket.timeout:
 					continue
 				except Exception as e:
@@ -1708,7 +1845,7 @@ class NetworkManager:
 
 	def _send_request(self, ip, port, request, timeout=10):
 		"""Send a request message and receive a response message"""
-		with socket.create_connection((ip, port), timeout=timeout) as sock:
+		with self._create_connection(ip, port, timeout=timeout) as sock:
 			send_message(sock, request)
 			return recv_message(sock)
 
@@ -1790,14 +1927,15 @@ class NetworkManager:
 	def sync_file_to_remote(self, ip, port, auth_token, project_name, file_path, local_file_path):
 		"""Sync a file to remote node"""
 		try:
+			relative_path = normalize_relative_path(file_path)
 			file_size = validate_file_size(os.path.getsize(local_file_path))
 
-			with socket.create_connection((ip, port), timeout=30) as sock:
+			with self._create_connection(ip, port, timeout=30) as sock:
 				request = {
 					'type': 'sync_file',
 					'auth_token': auth_token,
 					'project_name': project_name,
-					'file_path': file_path,
+					'file_path': relative_path,
 					'file_size': file_size,
 					'timestamp': time.time()
 				}
@@ -1815,6 +1953,7 @@ class NetworkManager:
 	def send_render_request(self, ip, port, auth_token, project_name, blend_file, render_settings, source_project_root=None):
 		"""Send render request to remote node"""
 		try:
+			blend_file = normalize_relative_path(blend_file)
 			request = {
 				'type': 'render_request',
 				'auth_token': auth_token,
@@ -1864,19 +2003,15 @@ class NetworkManager:
 			
 		return []
 	
-	def request_file_from_target(self, ip, port, auth_token, file_path, relative_path):
+	def request_file_from_target(self, ip, port, auth_token, relative_path):
 		"""Request a specific file from target computer - with better error handling"""
 		try:
-			with socket.create_connection((ip, port), timeout=30) as sock:
-				# Use original relative path if available
-				original_relative_path = relative_path
-				
+			relative_path = normalize_relative_path(relative_path)
+			with self._create_connection(ip, port, timeout=30) as sock:
 				request = {
 					'type': 'request_file',
 					'auth_token': auth_token,
-					'file_path': file_path,
 					'relative_path': relative_path,
-					'original_relative_path': original_relative_path,
 					'timestamp': time.time()
 				}
 
@@ -1888,18 +2023,16 @@ class NetworkManager:
 					return False
 
 				file_size = validate_file_size(response.get('file_size', 0))
-				target_relative_path = response.get('relative_path', relative_path)
+				target_relative_path = normalize_relative_path(response.get('relative_path', relative_path))
 				
 				print(f"Receiving file: {target_relative_path} ({file_size} bytes)")
 				
 				# Determine where to save the file on source
-				if bpy.data.filepath:
-					source_blend_dir = os.path.dirname(bpy.data.filepath)
-					source_project_root = os.path.dirname(source_blend_dir)
-				else:
-					source_project_root = os.getcwd()
-				
-				target_path = os.path.join(source_project_root, target_relative_path)
+				source_project_root = file_sync_manager.get_project_root()
+				if not source_project_root:
+					raise PathSecurityError("Could not determine source project root")
+
+				target_path = resolve_under_root(source_project_root, target_relative_path)
 				
 				# Create directory structure if needed
 				target_dir = os.path.dirname(target_path)
@@ -2436,6 +2569,10 @@ class REMOTERENDER_OT_ConnectNode(Operator):
 		if not target_node:
 			self.report({'ERROR'}, "Node not found")
 			return {'CANCELLED'}
+
+		if not is_allowed_lan_ip(target_node.ip):
+			self.report({'ERROR'}, "Remote node is not on an allowed LAN address")
+			return {'CANCELLED'}
 		
 		if not props.connection_password:
 			self.report({'ERROR'}, "Password required for this node")
@@ -2494,6 +2631,10 @@ class REMOTERENDER_OT_ConnectManual(Operator):
 		
 		if not props.manual_ip:
 			self.report({'ERROR'}, "Please enter an IP address")
+			return {'CANCELLED'}
+
+		if not is_allowed_lan_ip(props.manual_ip):
+			self.report({'ERROR'}, "Manual IP must be a private, link-local, or loopback address")
 			return {'CANCELLED'}
 		
 		if not props.connection_password:
@@ -2669,18 +2810,19 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 				total_files = len(selected_files)
 				
 				for file_info in selected_files:
-					local_file_path = os.path.join(project_root, file_info.file_path)
-					
+					relative_path = normalize_relative_path(file_info.file_path)
+					local_file_path = resolve_under_root(project_root, relative_path)
+
 					if os.path.exists(local_file_path):
 						success = network_manager.sync_file_to_remote(
 							target_node.ip,
 							target_node.port,
 							target_node.auth_token,
 							props.project_name,
-							file_info.file_path,
+							relative_path,
 							local_file_path
 						)
-						
+
 						if success:
 							success_count += 1
 				
@@ -2757,9 +2899,6 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			'engine': scene.render.engine
 		}
 		
-		# Get blend file path on remote
-		prefs = context.preferences.addons[__package__].preferences
-		cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
 		project_root = file_sync_manager.get_project_root()
 		
 		if not project_root:
@@ -2767,8 +2906,11 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			return {'CANCELLED'}
 		
 		# Relative path of blend file
-		blend_file_rel = os.path.relpath(bpy.data.filepath, project_root)
-		remote_blend_path = os.path.join(cache_dir, props.project_name, blend_file_rel).replace('\\', '/')
+		try:
+			blend_file_rel = relative_path_under_root(bpy.data.filepath, project_root)
+		except PathSecurityError:
+			self.report({'ERROR'}, "Blend file is outside the project root")
+			return {'CANCELLED'}
 		
 		# Send render request
 		result = network_manager.send_render_request(
@@ -2776,7 +2918,7 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			target_node.port,
 			target_node.auth_token,
 			props.project_name,
-			remote_blend_path,
+			blend_file_rel,
 			render_settings,
 			project_root  # Pass source project root for output sync
 		)
@@ -2824,28 +2966,26 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 					target_node.port,
 					target_node.auth_token
 				)
-				
+
 				if pending_files:
 					print(f"Found {len(pending_files)} pending files for sync")
-					
+
 					for file_info in pending_files:
-						file_path = file_info.get('file_path')
 						relative_path = file_info.get('relative_path')
-						
-						if file_path and relative_path:
+
+						if relative_path:
 							print(f"Syncing from target: {relative_path}")
-							
+
 							success = network_manager.request_file_from_target(
 								target_node.ip,
 								target_node.port,
 								target_node.auth_token,
-								file_path,
 								relative_path
 							)
-							
+
 							if not success:
 								print(f"Failed to sync: {relative_path}")
-				
+
 			except Exception as e:
 				print(f"Error checking for pending files: {e}")
 			
@@ -2860,19 +3000,17 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 						target_node.port,
 						target_node.auth_token
 					)
-					
+
 					if final_pending:
 						print(f"Final sync: {len(final_pending)} remaining files")
 						for file_info in final_pending:
-							file_path = file_info.get('file_path')
 							relative_path = file_info.get('relative_path')
-							
-							if file_path and relative_path:
+
+							if relative_path:
 								network_manager.request_file_from_target(
 									target_node.ip,
 									target_node.port,
 									target_node.auth_token,
-									file_path,
 									relative_path
 								)
 				except Exception as e:
