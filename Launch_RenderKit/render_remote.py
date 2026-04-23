@@ -3,6 +3,7 @@ import socket
 import ssl
 import json
 import hashlib
+import hmac
 import secrets
 import threading
 import time
@@ -22,6 +23,10 @@ bl_info = {
 
 PROTOCOL_MAX_MESSAGE_SIZE = 1024 * 1024  # 1MB JSON envelope limit
 PROTOCOL_MAX_FILE_SIZE = 128 * 1024 * 1024 * 1024  # 128GB file transfer limit
+AUTH_PBKDF2_ITERATIONS = 200_000
+AUTH_CHALLENGE_TIMEOUT = 60
+AUTH_TOKEN_TIMEOUT = 60 * 60
+AUTH_MAX_CHALLENGES = 256
 
 # ----
 # File Filtering Utilities
@@ -580,10 +585,11 @@ file_sync_manager = FileSyncManager()
 # ----
 
 class SecureConnection:
-	"""Handles secure SSL connections with authentication"""
+	"""Handles authentication state for remote TCP messages"""
 	
 	def __init__(self):
 		self.auth_tokens = {}
+		self.auth_challenges = {}
 		self.connection_timeout = 300  # 5 minutes
 	
 	def generate_auth_token(self):
@@ -601,12 +607,91 @@ class SecureConnection:
 		"""Hash password with salt for secure storage"""
 		if salt is None:
 			salt = secrets.token_hex(16)
-		return hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 10000), salt
-	
-	def verify_password(self, password, hashed_password, salt):
-		"""Verify password against hash"""
-		test_hash, _ = self.hash_password(password, salt)
-		return test_hash == hashed_password
+		return hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), AUTH_PBKDF2_ITERATIONS), salt
+
+	def build_auth_proof(self, password_hash, client_nonce, server_nonce):
+		"""Build a challenge response proof without sending the passcode"""
+		message = f"{client_nonce}:{server_nonce}".encode()
+		return hmac.new(password_hash, message, hashlib.sha256).hexdigest()
+
+	def create_challenge(self, ip, salt):
+		"""Create a short-lived authentication challenge"""
+		self.cleanup_expired_auth()
+		if len(self.auth_challenges) >= AUTH_MAX_CHALLENGES:
+			oldest_nonce = min(
+				self.auth_challenges,
+				key=lambda nonce: self.auth_challenges[nonce].get('created', 0)
+			)
+			self.auth_challenges.pop(oldest_nonce, None)
+
+		client_nonce = secrets.token_urlsafe(24)
+		server_nonce = secrets.token_urlsafe(24)
+		self.auth_challenges[client_nonce] = {
+			'server_nonce': server_nonce,
+			'created': time.time(),
+			'ip': ip
+		}
+		return {
+			'client_nonce': client_nonce,
+			'server_nonce': server_nonce,
+			'salt': salt,
+			'iterations': AUTH_PBKDF2_ITERATIONS,
+			'algorithm': 'pbkdf2_sha256_hmac_sha256'
+		}
+
+	def consume_challenge(self, client_nonce, server_nonce, ip):
+		"""Fetch and remove a valid challenge"""
+		challenge = self.auth_challenges.pop(client_nonce, None)
+		if not challenge:
+			return None
+		if challenge.get('server_nonce') != server_nonce:
+			return None
+		if challenge.get('ip') != ip:
+			return None
+		if time.time() - challenge.get('created', 0) > AUTH_CHALLENGE_TIMEOUT:
+			return None
+		return challenge
+
+	def issue_auth_token(self, ip):
+		"""Issue an expiring token bound to the peer IP"""
+		auth_token = self.generate_auth_token()
+		now = time.time()
+		self.auth_tokens[auth_token] = {
+			'created': now,
+			'expires': now + AUTH_TOKEN_TIMEOUT,
+			'ip': ip
+		}
+		return auth_token
+
+	def verify_auth_token(self, auth_token, ip):
+		"""Verify an auth token and remove stale tokens"""
+		self.cleanup_expired_auth()
+		token_info = self.auth_tokens.get(auth_token)
+		if not token_info:
+			return False
+		if token_info.get('ip') != ip:
+			return False
+		if token_info.get('expires', 0) < time.time():
+			self.auth_tokens.pop(auth_token, None)
+			return False
+		return True
+
+	def cleanup_expired_auth(self):
+		"""Remove expired auth tokens and challenges"""
+		now = time.time()
+		self.auth_tokens = {
+			token: info for token, info in self.auth_tokens.items()
+			if info.get('expires', 0) >= now
+		}
+		self.auth_challenges = {
+			nonce: info for nonce, info in self.auth_challenges.items()
+			if now - info.get('created', 0) <= AUTH_CHALLENGE_TIMEOUT
+		}
+
+	def clear_authentication(self):
+		"""Clear all token and challenge state"""
+		self.auth_tokens.clear()
+		self.auth_challenges.clear()
 
 # ----
 # Output File Monitor (Simplified)
@@ -1023,14 +1108,11 @@ class NetworkManager:
 	def start_discovery_server(self, node_name, passcode=""):
 		"""Start discovery server to announce this node"""
 		if self.discovery_active:
-			return
+			return True
 		
-		# Store password hash for authentication
-		if passcode:
-			self.stored_password_hash, self.stored_salt = self.security.hash_password(passcode)
-		else:
-			self.stored_password_hash = None
-			self.stored_salt = None
+		if not self.configure_authentication(passcode):
+			print("Remote render target service requires an authentication passcode")
+			return False
 			
 		self._shutdown_requested = False
 		self.discovery_active = True
@@ -1045,10 +1127,25 @@ class NetworkManager:
 		self.start_communication_server()
 		
 		print(f"Discovery server started for node: {node_name}")
-	
+		return True
+
+	def configure_authentication(self, passcode):
+		"""Set the target passcode hash and revoke existing auth state"""
+		self.security.clear_authentication()
+		if not passcode:
+			self.stored_password_hash = None
+			self.stored_salt = None
+			return False
+		self.stored_password_hash, self.stored_salt = self.security.hash_password(passcode)
+		return True
+
+	def revoke_auth_sessions(self):
+		"""Revoke active tokens and challenges while keeping the configured passcode"""
+		self.security.clear_authentication()
+
 	def clear_authentication(self):
 		"""Clear active authentication state for stopped services"""
-		self.security.auth_tokens.clear()
+		self.security.clear_authentication()
 		self.stored_password_hash = None
 		self.stored_salt = None
 
@@ -1271,32 +1368,18 @@ class NetworkManager:
 		"""Process incoming messages from clients"""
 		msg_type = message.get('type')
 		
-		if msg_type == 'connection_test':
-			auth_token = message.get('auth_token')
-			
-			if not self.stored_password_hash:
-				return {'status': 'success', 'message': 'Connection successful'}
-			
-			if auth_token and auth_token in self.security.auth_tokens:
-				return {'status': 'success', 'message': 'Connection successful'}
-			else:
-				return {'status': 'error', 'message': 'Authentication required'}
+		if msg_type == 'auth_challenge':
+			return self._handle_auth_challenge(message, addr)
 			
 		elif msg_type == 'authenticate':
-			password = message.get('password', '')
+			return self._handle_authenticate(message, addr)
 			
-			if not self.stored_password_hash:
-				return {'status': 'error', 'message': 'No authentication required'}
+		auth_error = self._require_authenticated(message, addr)
+		if auth_error:
+			return auth_error
 			
-			if self.security.verify_password(password, self.stored_password_hash, self.stored_salt):
-				auth_token = self.security.generate_auth_token()
-				self.security.auth_tokens[auth_token] = {
-					'created': time.time(),
-					'ip': addr[0]
-				}
-				return {'status': 'success', 'auth_token': auth_token}
-			else:
-				return {'status': 'error', 'message': 'Invalid password'}
+		if msg_type == 'connection_test':
+			return {'status': 'success', 'message': 'Connection successful'}
 			
 		elif msg_type == 'get_project_manifest':
 			return self._handle_get_manifest(message)
@@ -1322,15 +1405,55 @@ class NetworkManager:
 		else:
 			return {'status': 'error', 'message': 'Unknown message type'}
 
+	def _handle_auth_challenge(self, message, addr):
+		"""Create a challenge for passcode proof authentication"""
+		if not self.stored_password_hash or not self.stored_salt:
+			return error_response('auth_not_configured', 'Authentication is not configured')
+
+		challenge = self.security.create_challenge(addr[0], self.stored_salt)
+		return {
+			'status': 'success',
+			'challenge': challenge
+		}
+
+	def _handle_authenticate(self, message, addr):
+		"""Verify a challenge response and issue an auth token"""
+		client_nonce = message.get('client_nonce')
+		server_nonce = message.get('server_nonce')
+		proof = message.get('proof')
+
+		if not client_nonce or not server_nonce or not proof:
+			return error_response('auth_failed', 'Invalid authentication response')
+
+		challenge = self.security.consume_challenge(client_nonce, server_nonce, addr[0])
+		if not challenge:
+			return error_response('auth_failed', 'Invalid or expired authentication challenge')
+
+		expected_proof = self.security.build_auth_proof(
+			self.stored_password_hash,
+			client_nonce,
+			server_nonce
+		)
+		if not hmac.compare_digest(proof, expected_proof):
+			return error_response('auth_failed', 'Invalid authentication response')
+
+		auth_token = self.security.issue_auth_token(addr[0])
+		return {
+			'status': 'success',
+			'auth_token': auth_token,
+			'expires_in': AUTH_TOKEN_TIMEOUT
+		}
+
+	def _require_authenticated(self, message, addr):
+		"""Require a valid auth token for all protected TCP routes"""
+		auth_token = message.get('auth_token')
+		if not auth_token or not self.security.verify_auth_token(auth_token, addr[0]):
+			return error_response('authentication_required', 'Authentication required')
+		return None
+
 	def _handle_get_pending_files(self, message):
 		"""Handle request for list of files pending sync - with better error handling"""
 		try:
-			auth_token = message.get('auth_token')
-			
-			if self.stored_password_hash:
-				if not auth_token or auth_token not in self.security.auth_tokens:
-					return {'status': 'error', 'message': 'Authentication required'}
-			
 			# Get pending files from output monitor
 			global render_manager
 			if render_manager and render_manager.output_file_monitor:
@@ -1373,12 +1496,6 @@ class NetworkManager:
 	def _handle_request_file(self, message, client_sock):
 		"""Handle request for a specific file - with better error handling"""
 		try:
-			auth_token = message.get('auth_token')
-			
-			if self.stored_password_hash:
-				if not auth_token or auth_token not in self.security.auth_tokens:
-					return {'status': 'error', 'message': 'Authentication required'}
-			
 			file_path = message.get('file_path')
 			relative_path = message.get('relative_path')
 			original_relative_path = message.get('original_relative_path', relative_path)
@@ -1422,12 +1539,6 @@ class NetworkManager:
 	def _handle_get_manifest(self, message):
 		"""Handle request for project manifest"""
 		try:
-			auth_token = message.get('auth_token')
-			
-			if self.stored_password_hash:
-				if not auth_token or auth_token not in self.security.auth_tokens:
-					return {'status': 'error', 'message': 'Authentication required'}
-			
 			prefs = bpy.context.preferences.addons[__package__].preferences
 			cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
 			project_name = message.get('project_name', 'default')
@@ -1447,12 +1558,6 @@ class NetworkManager:
 	def _handle_sync_file(self, message, client_sock):
 		"""Handle file synchronization request"""
 		try:
-			auth_token = message.get('auth_token')
-			
-			if self.stored_password_hash:
-				if not auth_token or auth_token not in self.security.auth_tokens:
-					return {'status': 'error', 'message': 'Authentication required'}
-			
 			prefs = bpy.context.preferences.addons[__package__].preferences
 			cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
 			project_name = message.get('project_name', 'default')
@@ -1485,12 +1590,6 @@ class NetworkManager:
 	def _handle_render_request(self, message, addr):
 		"""Handle render request from source computer"""
 		try:
-			auth_token = message.get('auth_token')
-			
-			if self.stored_password_hash:
-				if not auth_token or auth_token not in self.security.auth_tokens:
-					return {'status': 'error', 'message': 'Authentication required'}
-			
 			render_settings = message.get('render_settings', {})
 			project_name = message.get('project_name', 'default')
 			blend_file = message.get('blend_file')
@@ -1631,9 +1730,34 @@ class NetworkManager:
 	def authenticate(self, ip, port, password):
 		"""Authenticate with a remote node"""
 		try:
+			challenge_request = {
+				'type': 'auth_challenge',
+				'timestamp': time.time()
+			}
+			challenge_response = self._send_request(ip, port, challenge_request, timeout=5)
+			if challenge_response.get('status') != 'success':
+				return None
+
+			challenge = challenge_response.get('challenge', {})
+			client_nonce = challenge.get('client_nonce')
+			server_nonce = challenge.get('server_nonce')
+			salt = challenge.get('salt')
+			iterations = challenge.get('iterations', AUTH_PBKDF2_ITERATIONS)
+			if not client_nonce or not server_nonce or not salt:
+				return None
+
+			password_hash = hashlib.pbkdf2_hmac(
+				'sha256',
+				password.encode(),
+				salt.encode(),
+				int(iterations)
+			)
+			proof = self.security.build_auth_proof(password_hash, client_nonce, server_nonce)
 			auth_message = {
 				'type': 'authenticate',
-				'password': password,
+				'client_nonce': client_nonce,
+				'server_nonce': server_nonce,
+				'proof': proof,
 				'timestamp': time.time()
 			}
 			response = self._send_request(ip, port, auth_message, timeout=5)
@@ -2234,15 +2358,20 @@ class REMOTERENDER_OT_StartDiscovery(Operator):
 			self.report({'WARNING'}, "Discovery already active")
 			return {'CANCELLED'}
 		
+		if not prefs.remote_passcode:
+			self.report({'ERROR'}, "Set a Render Remote authentication passcode in add-on preferences before starting target mode")
+			return {'CANCELLED'}
+
 		network_manager.update_ports_from_preferences()
 		
-		network_manager.start_discovery_server(
+		if not network_manager.start_discovery_server(
 			props.node_name,
 			prefs.remote_passcode
-		)
+		):
+			self.report({'ERROR'}, "Failed to start authenticated remote render target")
+			return {'CANCELLED'}
 		
-		auth_status = "with authentication" if prefs.remote_passcode else "without authentication"
-		self.report({'INFO'}, f"Discovery started for node: {props.node_name} ({auth_status})")
+		self.report({'INFO'}, f"Discovery started for node: {props.node_name} (with authentication)")
 		return {'FINISHED'}
 
 class REMOTERENDER_OT_StopDiscovery(Operator):
@@ -2308,22 +2437,19 @@ class REMOTERENDER_OT_ConnectNode(Operator):
 			self.report({'ERROR'}, "Node not found")
 			return {'CANCELLED'}
 		
-		# Test connection
-		auth_token = None
-		if target_node.requires_auth:
-			if not props.connection_password:
-				self.report({'ERROR'}, "Password required for this node")
-				return {'CANCELLED'}
+		if not props.connection_password:
+			self.report({'ERROR'}, "Password required for this node")
+			return {'CANCELLED'}
 			
-			auth_token = network_manager.authenticate(
-				target_node.ip,
-				target_node.port,
-				props.connection_password
-			)
+		auth_token = network_manager.authenticate(
+			target_node.ip,
+			target_node.port,
+			props.connection_password
+		)
 			
-			if not auth_token:
-				self.report({'ERROR'}, "Authentication failed - check password")
-				return {'CANCELLED'}
+		if not auth_token:
+			self.report({'ERROR'}, "Authentication failed - check password")
+			return {'CANCELLED'}
 		
 		# Test connection
 		if network_manager.test_connection(target_node.ip, target_node.port, auth_token):
@@ -2370,18 +2496,19 @@ class REMOTERENDER_OT_ConnectManual(Operator):
 			self.report({'ERROR'}, "Please enter an IP address")
 			return {'CANCELLED'}
 		
-		# Test connection
-		auth_token = None
-		if props.connection_password:
-			auth_token = network_manager.authenticate(
-				props.manual_ip,
-				props.manual_port,
-				props.connection_password
-			)
+		if not props.connection_password:
+			self.report({'ERROR'}, "Password required for remote render nodes")
+			return {'CANCELLED'}
 			
-			if not auth_token:
-				self.report({'ERROR'}, "Authentication failed - check password")
-				return {'CANCELLED'}
+		auth_token = network_manager.authenticate(
+			props.manual_ip,
+			props.manual_port,
+			props.connection_password
+		)
+
+		if not auth_token:
+			self.report({'ERROR'}, "Authentication failed - check password")
+			return {'CANCELLED'}
 		
 		if network_manager.test_connection(props.manual_ip, props.manual_port, auth_token):
 			# Add manual connection to discovered nodes
@@ -2392,7 +2519,7 @@ class REMOTERENDER_OT_ConnectManual(Operator):
 			manual_node.port = props.manual_port
 			manual_node.is_connected = True
 			manual_node.auth_token = auth_token or ""
-			manual_node.requires_auth = bool(props.connection_password)
+			manual_node.requires_auth = True
 			
 			props.selected_node = manual_node.node_id
 			
@@ -2930,9 +3057,9 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		
 		# Show authentication status from preferences
 		if prefs.remote_passcode:
-			col.label(text="Authentication: Enabled", icon='LOCKED')
+			col.label(text="Authentication: Required", icon='LOCKED')
 		else:
-			col.label(text="Authentication: Disabled", icon='UNLOCKED')
+			col.label(text="Set a passcode before starting target mode", icon='ERROR')
 		col.label(text="(Configure passcode in Add-on Preferences)", icon='PREFERENCES')
 		
 		# Discovery controls
@@ -3273,10 +3400,13 @@ def reset_connection_status_on_load(dummy):
 			props.sync_status = "Not Scanned"
 			props.render_status = "Not Started"
 			props.monitor_render = False
-			
+
 			# Clear sync files
 			if hasattr(context.scene, 'sync_files'):
 				context.scene.sync_files.clear()
+
+			if network_manager:
+				network_manager.revoke_auth_sessions()
 	except Exception as e:
 		print(f"Error resetting connection status: {e}")
 

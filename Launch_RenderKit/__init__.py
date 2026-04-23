@@ -175,9 +175,18 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		description="Choose a category tab for the panel to be placed in",
 		default="Launch",
 		update=update_remote_category)
-		# Consider adding search_options=(list of currently available tabs) for easier operation
+	# Consider adding search_options=(list of currently available tabs) for easier operation
 	
 	# Render remote settings
+	def update_remote_passcode(self, context):
+		try:
+			if self.remote_passcode:
+				render_remote.network_manager.configure_authentication(self.remote_passcode)
+			else:
+				render_remote.shutdown(force=True)
+		except Exception as e:
+			print(f"Remote render passcode update failed: {e}")
+
 	remote_cache_directory: StringProperty(
 		name="Cache Directory",
 		description="Local directory for caching remote projects",
@@ -201,9 +210,10 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	)
 	remote_passcode: StringProperty(
 		name="Authentication Passcode",
-		description="Global passcode required for connections to this computer (leave empty for no authentication)",
+		description="Global passcode required for connections to this computer",
 		subtype='PASSWORD',
-		default=""
+		default="",
+		update=update_remote_passcode
 	)
 	
 	
@@ -528,7 +538,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			subgrid.prop(self, "remote_discovery_port", text="")
 			subgrid.separator()
 			subgrid.prop(self, "remote_communication_port", text="")
-			# subgrid.label(text="Leave passcode empty to allow connections without authentication", icon='INFO')
 		
 		
 		
