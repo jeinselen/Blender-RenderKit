@@ -62,7 +62,7 @@ class FileFilter:
 	# Directories that should never be synced
 	IGNORE_DIRECTORIES = {
 		'__pycache__', '.git', '.svn', '.hg',
-		'node_modules', '.cache', 'cache',
+		'node_modules', '.cache',
 		'temp', 'tmp', '.tmp',
 	}
 	
@@ -87,14 +87,6 @@ class FileFilter:
 		for part in path_parts:
 			if part.lower() in cls.IGNORE_DIRECTORIES:
 				return True
-		
-		# During dependency scans, also ignore likely render outputs
-		if is_dependency_scan:
-			for pattern in cls.RENDER_OUTPUT_PATTERNS:
-				if pattern in file_path.lower():
-					# Additional check: if it's an image/video in a render-like folder, likely output
-					if file_ext in {'.png', '.jpg', '.jpeg', '.exr', '.tif', '.tiff', '.mp4', '.mov', '.avi'}:
-						return True
 		
 		return False
 	
@@ -424,67 +416,206 @@ class FileSyncManager:
 			return True
 		except (PathSecurityError, OSError, ValueError):
 			return False
-	
+
+	def _normalize_filesystem_path(self, file_path):
+		"""Return an absolute normalized path for Blender file references"""
+		if not file_path:
+			return None
+		try:
+			abs_path = bpy.path.abspath(file_path)
+			if not abs_path:
+				return None
+			return str(Path(abs_path).expanduser().resolve(strict=False))
+		except Exception:
+			return None
+
+	def _remember_reference(self, references, file_path, role):
+		"""Add a referenced path unless it is a known system/temp file"""
+		abs_path = self._normalize_filesystem_path(file_path)
+		if not abs_path:
+			return
+		if FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
+			return
+		references.setdefault(abs_path, role)
+
+	def _expand_sequence_files(self, file_path):
+		"""Find existing files that belong to an image/volume/movie sequence"""
+		abs_path = self._normalize_filesystem_path(file_path)
+		if not abs_path:
+			return []
+
+		path = Path(abs_path)
+		parent = path.parent
+		name = path.name
+		if not parent.exists():
+			return []
+
+		patterns = set()
+		if '#' in name:
+			patterns.add(re.sub(r'#+', lambda match: '[0-9]' * len(match.group(0)), name))
+		if '<UDIM>' in name:
+			patterns.add(name.replace('<UDIM>', '[0-9][0-9][0-9][0-9]'))
+		if '<UVTILE>' in name:
+			patterns.add(name.replace('<UVTILE>', 'u[0-9]*_v[0-9]*'))
+
+		match = re.match(r'^(.*?)(\d+)(\.[^.]+)$', name)
+		if match:
+			prefix, digits, suffix = match.groups()
+			patterns.add(f"{prefix}{'[0-9]' * len(digits)}{suffix}")
+
+		expanded = []
+		for pattern in patterns:
+			for candidate in parent.glob(pattern):
+				if candidate.is_file():
+					expanded.append(str(candidate.resolve(strict=False)))
+		return sorted(set(expanded))
+
+	def _add_file_reference(self, references, file_path, role, include_sequences=False, include_directory=False, project_root=None):
+		"""Add a single file reference, expanding sequences or referenced directories when needed"""
+		abs_path = self._normalize_filesystem_path(file_path)
+		if not abs_path:
+			return
+
+		if project_root and not self.validate_file_scope(abs_path, project_root):
+			self._remember_reference(references, abs_path, role)
+			return
+
+		if include_directory and os.path.isdir(abs_path):
+			for directory_file in self._iter_referenced_directory(abs_path):
+				self._remember_reference(references, directory_file, role)
+			return
+
+		expanded_paths = self._expand_sequence_files(abs_path) if include_sequences else []
+		if expanded_paths:
+			for expanded_path in expanded_paths:
+				self._remember_reference(references, expanded_path, role)
+		else:
+			self._remember_reference(references, abs_path, role)
+
+	def _iter_referenced_directory(self, directory_path):
+		"""Yield files under an explicitly referenced directory"""
+		abs_directory = self._normalize_filesystem_path(directory_path)
+		if not abs_directory or not os.path.isdir(abs_directory):
+			return
+
+		for root, dirs, files in os.walk(abs_directory):
+			dirs[:] = [
+				d for d in dirs
+				if not FileFilter.should_ignore_file(os.path.join(root, d), is_dependency_scan=True)
+			]
+			for file_name in files:
+				file_path = os.path.join(root, file_name)
+				if not FileFilter.should_ignore_file(file_path, is_dependency_scan=True):
+					yield file_path
+
+	def _add_optional_filepath_attr(self, references, owner, attr_name, role, include_sequences=False, include_directory=False, project_root=None):
+		"""Add a filepath-like Blender attribute when it exists and is populated"""
+		try:
+			file_path = getattr(owner, attr_name, None)
+		except Exception:
+			return
+		if isinstance(file_path, str) and file_path:
+			self._add_file_reference(
+				references,
+				file_path,
+				role,
+				include_sequences=include_sequences,
+				include_directory=include_directory,
+				project_root=project_root
+			)
+
+	def _iter_node_trees(self):
+		"""Yield node trees that may contain file-backed nodes"""
+		for collection_name in ('materials', 'worlds', 'scenes', 'node_groups'):
+			collection = getattr(bpy.data, collection_name, ())
+			for item in collection:
+				node_tree = getattr(item, 'node_tree', None)
+				if node_tree:
+					yield node_tree
+
 	def scan_blend_dependencies(self, blend_file_path=None):
 		"""Scan blend file for all dependencies and categorize them"""
 		if not blend_file_path:
 			blend_file_path = bpy.data.filepath
 			
 		if not blend_file_path:
-			return {'internal': [], 'external': [], 'missing': []}
+			return {'internal': [], 'external': [], 'missing': [], 'roles': {}}
 		
 		project_root = self.get_project_root(blend_file_path)
-		dependencies = {'internal': [], 'external': [], 'missing': []}
+		dependencies = {'internal': [], 'external': [], 'missing': [], 'roles': {}}
 		
 		# Always include the blend file itself as an internal dependency
 		if os.path.exists(blend_file_path) and self.validate_file_scope(blend_file_path, project_root):
 			dependencies['internal'].append(blend_file_path)
+			dependencies['roles'][blend_file_path] = 'blend'
 		
 		# Collect all file references from Blender
-		file_paths = set()
+		file_references = {}
 		
 		# Images
 		for img in bpy.data.images:
 			if img.filepath and not img.packed_file:
-				abs_path = bpy.path.abspath(img.filepath)
-				if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
-					file_paths.add(abs_path)
+				self._add_file_reference(
+					file_references,
+					img.filepath,
+					'image',
+					include_sequences=getattr(img, 'source', '') in {'SEQUENCE', 'TILED'},
+					project_root=project_root
+				)
 		
 		# Sounds
 		for sound in bpy.data.sounds:
 			if sound.filepath and not sound.packed_file:
-				abs_path = bpy.path.abspath(sound.filepath)
-				if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
-					file_paths.add(abs_path)
+				self._add_file_reference(file_references, sound.filepath, 'sound', project_root=project_root)
 				
 		# Movie clips
 		for clip in bpy.data.movieclips:
 			if clip.filepath:
-				abs_path = bpy.path.abspath(clip.filepath)
-				if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
-					file_paths.add(abs_path)
+				self._add_file_reference(
+					file_references,
+					clip.filepath,
+					'movie_clip',
+					include_sequences=getattr(clip, 'source', '') == 'SEQUENCE',
+					project_root=project_root
+				)
 				
 		# Fonts
 		for font in bpy.data.fonts:
 			if font.filepath:
-				abs_path = bpy.path.abspath(font.filepath)
-				if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
-					file_paths.add(abs_path)
+				self._add_file_reference(file_references, font.filepath, 'font', project_root=project_root)
 				
 		# Libraries (linked files)
 		for lib in bpy.data.libraries:
 			if lib.filepath:
-				abs_path = bpy.path.abspath(lib.filepath)
-				if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
-					file_paths.add(abs_path)
-		
-		# Cache files (simulation caches, etc.)
+				self._add_file_reference(file_references, lib.filepath, 'library', project_root=project_root)
+
+		# Cache files, volumes, and external data blocks
+		for cache_file in getattr(bpy.data, 'cache_files', []):
+			self._add_optional_filepath_attr(file_references, cache_file, 'filepath', 'cache_file', project_root=project_root)
+
+		for volume in getattr(bpy.data, 'volumes', []):
+			self._add_optional_filepath_attr(file_references, volume, 'filepath', 'volume', include_sequences=True, project_root=project_root)
+
+		# Modifier and simulation cache references
 		for obj in bpy.data.objects:
+			self._add_optional_filepath_attr(file_references, getattr(obj, 'data', None), 'filepath', 'object_data', include_sequences=True, project_root=project_root)
+
 			for modifier in obj.modifiers:
-				if hasattr(modifier, 'filepath') and modifier.filepath:
-					abs_path = bpy.path.abspath(modifier.filepath)
-					if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
-						file_paths.add(abs_path)
+				self._add_optional_filepath_attr(file_references, modifier, 'filepath', 'modifier', include_sequences=True, include_directory=True, project_root=project_root)
+				cache_file = getattr(modifier, 'cache_file', None)
+				if cache_file:
+					self._add_optional_filepath_attr(file_references, cache_file, 'filepath', 'modifier_cache_file', project_root=project_root)
+
+				domain_settings = getattr(modifier, 'domain_settings', None)
+				if domain_settings:
+					self._add_optional_filepath_attr(
+						file_references,
+						domain_settings,
+						'cache_directory',
+						'simulation_cache',
+						include_directory=True,
+						project_root=project_root
+					)
 		
 		# Check for particle cache files
 		for obj in bpy.data.objects:
@@ -495,23 +626,35 @@ class FileSyncManager:
 						continue
 					# Point cache files
 					if hasattr(psys, 'point_cache') and psys.point_cache.filepath:
-						abs_path = bpy.path.abspath(psys.point_cache.filepath)
-						if not FileFilter.should_ignore_file(abs_path, is_dependency_scan=True):
-							file_paths.add(abs_path)
+						self._add_file_reference(
+							file_references,
+							psys.point_cache.filepath,
+							'particle_cache',
+							include_directory=True,
+							project_root=project_root
+						)
+
+		# File-backed nodes that are not represented by bpy.data.images
+		for node_tree in self._iter_node_trees():
+			for node in node_tree.nodes:
+				self._add_optional_filepath_attr(file_references, node, 'filepath', 'node_file', include_sequences=True, project_root=project_root)
 		
 		# Categorize files (excluding the blend file since we already added it)
-		for file_path in file_paths:
+		for file_path, role in sorted(file_references.items()):
 			# Skip the blend file itself since we already added it
 			if file_path == blend_file_path:
 				continue
 				
-			if not os.path.exists(file_path):
-				dependencies['missing'].append(file_path)
-			elif self.validate_file_scope(file_path, project_root):
-				dependencies['internal'].append(file_path)
-			else:
+			if not self.validate_file_scope(file_path, project_root):
 				dependencies['external'].append(file_path)
-				
+				dependencies['roles'][file_path] = role
+			elif not os.path.exists(file_path):
+				dependencies['missing'].append(file_path)
+				dependencies['roles'][file_path] = role
+			else:
+				dependencies['internal'].append(file_path)
+				dependencies['roles'][file_path] = role
+
 		return dependencies
 	
 	def calculate_file_hash(self, file_path):
@@ -528,6 +671,7 @@ class FileSyncManager:
 	def get_referenced_files_manifest(self, project_root, dependencies):
 		"""Create a manifest of only referenced files with hashes and metadata"""
 		manifest = {}
+		roles = dependencies.get('roles', {})
 		
 		try:
 			print(f"Creating manifest for {len(dependencies['internal'])} internal files")
@@ -550,12 +694,13 @@ class FileSyncManager:
 								'hash': file_hash,
 								'size': stat.st_size,
 								'mtime': stat.st_mtime,
+								'role': roles.get(file_path, 'input'),
 								'abs_path': file_path
 							}
 							print(f"Added to manifest: {rel_path} ({stat.st_size} bytes)")
 						else:
 							print(f"Could not hash file: {file_path}")
-							
+
 					except (PathSecurityError, ValueError) as e:
 						print(f"Path error for {file_path}: {e}")
 					except Exception as e:
@@ -2346,7 +2491,7 @@ network_manager = NetworkManager()
 class SyncFileInfo(PropertyGroup):
 	"""Information about a file that needs syncing"""
 	file_path: StringProperty()
-	status: StringProperty()  # 'new', 'modified', 'deleted'
+	status: StringProperty()  # 'new', 'modified', 'deleted', 'external', 'missing'
 	size: IntProperty()
 	selected: BoolProperty(default=True)
 
@@ -2431,6 +2576,16 @@ class RemoteRenderProperties(PropertyGroup):
 	
 	show_external_warning: BoolProperty(
 		name="Show External Warning",
+		default=False
+	)
+
+	missing_files_count: IntProperty(
+		name="Missing Files Count",
+		default=0
+	)
+
+	show_missing_warning: BoolProperty(
+		name="Show Missing Warning",
 		default=False
 	)
 	
@@ -2719,36 +2874,59 @@ class REMOTERENDER_OT_ScanProject(Operator):
 				def update_ui():
 					context = bpy.context
 					props = context.scene.remote_render_props
-					
+
 					props.external_files_count = len(dependencies['external'])
 					props.show_external_warning = len(dependencies['external']) > 0
-					
+					props.missing_files_count = len(dependencies['missing'])
+					props.show_missing_warning = len(dependencies['missing']) > 0
+
 					context.scene.sync_files.clear()
-					
+
 					if sync_changes:
 						for file_info in sync_changes['new_files']:
 							item = context.scene.sync_files.add()
 							item.file_path = file_info['path']
 							item.status = 'new'
 							item.size = file_info['size']
-						
+
 						for file_info in sync_changes['modified_files']:
 							item = context.scene.sync_files.add()
 							item.file_path = file_info['path']
 							item.status = 'modified'
 							item.size = file_info['size']
-						
+
 						for file_info in sync_changes['deleted_files']:
 							item = context.scene.sync_files.add()
 							item.file_path = file_info['path']
 							item.status = 'deleted'
 							item.size = 0
-						
+
 						total_files = len(sync_changes['new_files']) + len(sync_changes['modified_files'])
-						props.sync_status = f"{total_files} files need sync"
+						if total_files:
+							props.sync_status = f"{total_files} files need sync"
+						elif dependencies['external'] or dependencies['missing']:
+							props.sync_status = "Unsupported references found"
+						elif sync_changes['deleted_files']:
+							props.sync_status = f"{len(sync_changes['deleted_files'])} stale remote files"
+						else:
+							props.sync_status = "Up to date"
 					else:
-						props.sync_status = "Up to date"
-					
+						props.sync_status = "Unsupported references found" if (dependencies['external'] or dependencies['missing']) else "Up to date"
+
+					for file_path in dependencies['external']:
+						item = context.scene.sync_files.add()
+						item.file_path = file_path
+						item.status = 'external'
+						item.size = 0
+						item.selected = False
+
+					for file_path in dependencies['missing']:
+						item = context.scene.sync_files.add()
+						item.file_path = file_path
+						item.status = 'missing'
+						item.size = 0
+						item.selected = False
+
 					return None
 				
 				timer_manager.register_timer(update_ui, interval=0.1)
@@ -2792,7 +2970,7 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 			return {'CANCELLED'}
 		
 		# Get selected files
-		selected_files = [f for f in context.scene.sync_files if f.selected and f.status != 'deleted']
+		selected_files = [f for f in context.scene.sync_files if f.selected and f.status in {'new', 'modified'}]
 		
 		if not selected_files:
 			self.report({'WARNING'}, "No files selected for sync")
@@ -2881,6 +3059,14 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 		
 		if not target_node:
 			self.report({'ERROR'}, "Remote node not connected")
+			return {'CANCELLED'}
+
+		if props.show_missing_warning:
+			self.report({'ERROR'}, "Referenced files are missing. Restore them and scan again before rendering remotely.")
+			return {'CANCELLED'}
+
+		if props.show_external_warning:
+			self.report({'ERROR'}, "External references outside the project root are not supported for remote rendering.")
 			return {'CANCELLED'}
 		
 		print(f"Info: Render started on remote computer")
@@ -3287,6 +3473,12 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			warning_box.label(text=f"Warning: {props.external_files_count} external files detected!", icon='ERROR')
 			warning_box.label(text="External files will NOT be synced to target computer.")
 			warning_box.label(text="Only files within the project folder structure are supported.")
+
+		if props.show_missing_warning:
+			warning_box = box.box()
+			warning_box.alert = True
+			warning_box.label(text=f"Warning: {props.missing_files_count} referenced files are missing!", icon='ERROR')
+			warning_box.label(text="Missing files must be restored before remote rendering.")
 		
 		# Sync files list
 		if context.scene.sync_files:
@@ -3310,6 +3502,10 @@ class REMOTERENDER_PT_MainPanel(Panel):
 					row.label(text="", icon='FILE_REFRESH')
 				elif sync_file.status == 'deleted':
 					row.label(text="", icon='X')
+				elif sync_file.status in {'external', 'missing'}:
+					row.label(text="", icon='ERROR')
+				else:
+					row.label(text="", icon='FILE')
 				
 				# File info
 				col = row.column()
