@@ -146,7 +146,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			if self.remote_enable:
 				render_remote.register()
 			else:
-				render_remote.shutdown(force=True)
+				render_remote.unregister()
 		except Exception as e:
 			print(f"Remote render enable update failed: {e}")
 
@@ -162,13 +162,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	
 	def update_remote_category(self, context):
 		category = bpy.context.preferences.addons[__package__].preferences.remote_category
-		try:
-			bpy.utils.unregister_class(render_remote.REMOTERENDER_PT_MainPanel)
-		except RuntimeError:
-			pass
-		if len(category) > 0:
-			render_remote.REMOTERENDER_PT_MainPanel.bl_category = category
-			bpy.utils.register_class(render_remote.REMOTERENDER_PT_MainPanel)
+		render_remote.set_panel_category(category)
 	
 	remote_category: StringProperty(
 		name="Remote Render Panel",
@@ -180,9 +174,9 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	# Render remote settings
 	def update_remote_passcode(self, context):
 		try:
-			if self.remote_passcode:
+			if self.remote_passcode and render_remote.is_registered():
 				render_remote.network_manager.configure_authentication(self.remote_passcode)
-			else:
+			elif render_remote.is_registered():
 				render_remote.shutdown(force=True)
 		except Exception as e:
 			print(f"Remote render passcode update failed: {e}")

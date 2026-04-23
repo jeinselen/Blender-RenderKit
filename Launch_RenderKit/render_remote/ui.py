@@ -1,0 +1,1408 @@
+import bpy
+import os
+import re
+import shutil
+import socket
+import threading
+import time
+from bpy.props import StringProperty, EnumProperty, BoolProperty, IntProperty, FloatProperty, CollectionProperty
+from bpy.types import Operator, Panel, PropertyGroup
+from .constants import ADDON_PACKAGE, build_source_project_cache_name, OUTPUT_SYNC_POLL_INTERVAL, OUTPUT_SYNC_QUIET_PERIOD
+from .paths import PathSecurityError, normalize_relative_path, resolve_under_root, relative_path_under_root
+from .protocol import error_response
+from .file_sync import file_sync_manager
+from .network import network_manager
+from .render import render_manager
+from .timers import timer_manager
+
+# ----
+# Property Groups for UI State
+# ----
+
+def update_remote_mode(self, context):
+	"""Ensure source mode does not keep a listening target service running"""
+	try:
+		if self.mode != 'TARGET':
+			if network_manager.discovery_active:
+				network_manager.stop_discovery_server(force=True)
+			elif network_manager.communication_active:
+				network_manager.stop_communication_server(force=True)
+	except Exception as e:
+		print(f"Remote mode update failed: {e}")
+
+class SyncFileInfo(PropertyGroup):
+	"""Information about a file that needs syncing"""
+	file_path: StringProperty()
+	status: StringProperty()  # 'new', 'modified', 'deleted', 'external', 'missing'
+	size: IntProperty()
+	selected: BoolProperty(default=True)
+
+class RemoteNodeProperties(PropertyGroup):
+	"""Properties for remote node information"""
+
+	node_id: StringProperty(name="Node ID")
+	name: StringProperty(name="Node Name")
+	ip: StringProperty(name="IP Address")
+	port: IntProperty(name="Port")
+	blender_version: StringProperty(name="Blender Version")
+	plugin_version: StringProperty(name="Plugin Version")
+	requires_auth: BoolProperty(name="Requires Authentication")
+	is_connected: BoolProperty(name="Is Connected")
+	auth_token: StringProperty(name="Auth Token")
+
+class RemoteRenderProperties(PropertyGroup):
+	"""Main properties for remote render settings"""
+
+	# Mode selection
+	mode: EnumProperty(
+		name="Mode",
+		description="Select operation mode",
+		items=[
+			('SOURCE', "Source", "Control remote rendering from this computer"),
+			('TARGET', "Target", "Allow this computer to be used for remote rendering")
+		],
+		default='SOURCE',
+		update=update_remote_mode
+	)
+
+	# Node name for target mode
+	node_name: StringProperty(
+		name="Node Name",
+		description="Name for this computer when discovered",
+		default=socket.gethostname()
+	)
+
+	# Connection settings for source mode
+	selected_node: StringProperty(
+		name="Selected Node",
+		description="Currently selected remote node"
+	)
+
+	manual_ip: StringProperty(
+		name="Manual IP",
+		description="Manually enter IP address",
+		default=""
+	)
+
+	manual_port: IntProperty(
+		name="Manual Port",
+		description="Port for manual connection",
+		default=5002,
+		min=1024,
+		max=65535
+	)
+
+	connection_password: StringProperty(
+		name="Connection Password",
+		description="Password for connecting to remote node",
+		subtype='PASSWORD',
+		default=""
+	)
+
+	# Project settings
+	project_name: StringProperty(
+		name="Project Name",
+		description="Name for the project on the remote cache",
+		default="Untitled"
+	)
+
+	# Sync status
+	sync_status: StringProperty(
+		name="Sync Status",
+		default="Not Scanned"
+	)
+
+	external_files_count: IntProperty(
+		name="External Files Count",
+		default=0
+	)
+
+	show_external_warning: BoolProperty(
+		name="Show External Warning",
+		default=False
+	)
+
+	missing_files_count: IntProperty(
+		name="Missing Files Count",
+		default=0
+	)
+
+	show_missing_warning: BoolProperty(
+		name="Show Missing Warning",
+		default=False
+	)
+
+	# Render status properties
+	render_status: StringProperty(
+		name="Render Status",
+		default="Not Started"
+	)
+
+	render_progress: FloatProperty(
+		name="Render Progress",
+		default=0.0,
+		min=0.0,
+		max=100.0,
+		subtype='PERCENTAGE'
+	)
+
+	current_frame: IntProperty(
+		name="Current Frame",
+		default=0
+	)
+
+	total_frames: IntProperty(
+		name="Total Frames",
+		default=0
+	)
+
+	render_elapsed_time: FloatProperty(
+		name="Elapsed Time",
+		default=0.0
+	)
+
+	render_error_message: StringProperty(
+		name="Render Error",
+		default=""
+	)
+
+	# Progress monitoring
+	monitor_render: BoolProperty(
+		name="Monitor Render",
+		default=False
+	)
+
+# ----
+# Source-side Render Remote Workflow Helpers
+# ----
+
+def get_connected_remote_node(context, props):
+	"""Return the selected connected remote node, if any"""
+	for node in context.scene.discovered_nodes:
+		if node.node_id == props.selected_node and node.is_connected:
+			return node
+	return None
+
+def format_connected_remote_label(node):
+	"""Human-friendly label for the connected render target"""
+	if not node:
+		return "Not connected"
+	if node.name and node.ip:
+		return f"{node.name} ({node.ip}:{node.port})"
+	if node.name:
+		return node.name
+	if node.ip:
+		return f"{node.ip}:{node.port}"
+	return "Connected target"
+
+def update_sync_ui_from_scan(context, dependencies, sync_changes=None):
+	"""Update sync UI state from dependency and manifest comparison results"""
+	props = context.scene.remote_render_props
+	props.external_files_count = len(dependencies['external'])
+	props.show_external_warning = len(dependencies['external']) > 0
+	props.missing_files_count = len(dependencies['missing'])
+	props.show_missing_warning = len(dependencies['missing']) > 0
+
+	context.scene.sync_files.clear()
+
+	if sync_changes:
+		for file_info in sync_changes['new_files']:
+			item = context.scene.sync_files.add()
+			item.file_path = file_info['path']
+			item.status = 'new'
+			item.size = file_info['size']
+
+		for file_info in sync_changes['modified_files']:
+			item = context.scene.sync_files.add()
+			item.file_path = file_info['path']
+			item.status = 'modified'
+			item.size = file_info['size']
+
+		for file_info in sync_changes['deleted_files']:
+			item = context.scene.sync_files.add()
+			item.file_path = file_info['path']
+			item.status = 'deleted'
+			item.size = 0
+
+		total_files = len(sync_changes['new_files']) + len(sync_changes['modified_files'])
+		if total_files:
+			props.sync_status = f"{total_files} files need sync"
+		elif dependencies['external'] or dependencies['missing']:
+			props.sync_status = "Unsupported references found"
+		elif sync_changes['deleted_files']:
+			props.sync_status = f"{len(sync_changes['deleted_files'])} stale remote files"
+		else:
+			props.sync_status = "Up to date"
+	else:
+		props.sync_status = "Unsupported references found" if (dependencies['external'] or dependencies['missing']) else "Up to date"
+
+	for file_path in dependencies['external']:
+		item = context.scene.sync_files.add()
+		item.file_path = file_path
+		item.status = 'external'
+		item.size = 0
+		item.selected = False
+
+	for file_path in dependencies['missing']:
+		item = context.scene.sync_files.add()
+		item.file_path = file_path
+		item.status = 'missing'
+		item.size = 0
+		item.selected = False
+
+def collect_project_sync_state(props, target_node, require_remote_manifest=True):
+	"""Scan dependencies and compare them with the target-owned input manifest"""
+	project_root = file_sync_manager.get_project_root()
+	if not project_root:
+		raise Exception("Could not determine project root")
+
+	project_cache_name = build_source_project_cache_name(props.project_name)
+	dependencies = file_sync_manager.scan_blend_dependencies()
+	local_manifest = file_sync_manager.get_referenced_files_manifest(project_root, dependencies)
+	remote_manifest = network_manager.get_remote_manifest(
+		target_node.ip,
+		target_node.port,
+		target_node.auth_token,
+		project_cache_name
+	)
+	if remote_manifest is None:
+		if require_remote_manifest:
+			raise Exception("Could not load target input manifest")
+		sync_changes = None
+	else:
+		sync_changes = file_sync_manager.compare_manifests(local_manifest, remote_manifest)
+
+	return {
+		'project_root': project_root,
+		'project_cache_name': project_cache_name,
+		'dependencies': dependencies,
+		'local_manifest': local_manifest,
+		'remote_manifest': remote_manifest,
+		'sync_changes': sync_changes
+	}
+
+def sync_project_inputs_to_target(target_node, project_cache_name, project_root, local_manifest, sync_changes, upload_paths=None, delete_paths=None, status_callback=None):
+	"""Upload changed inputs and delete obsolete target-owned inputs"""
+	changed_upload_paths = [file_info['path'] for file_info in sync_changes['new_files'] + sync_changes['modified_files']]
+	stale_delete_paths = [file_info['path'] for file_info in sync_changes['deleted_files']]
+	upload_paths = [normalize_relative_path(path) for path in (changed_upload_paths if upload_paths is None else upload_paths)]
+	delete_paths = [normalize_relative_path(path) for path in (stale_delete_paths if delete_paths is None else delete_paths)]
+
+	upload_paths = sorted(set(path for path in upload_paths if path in local_manifest))
+	delete_paths = sorted(set(path for path in delete_paths if path not in local_manifest and path in stale_delete_paths))
+
+	result = {
+		'uploaded': 0,
+		'upload_total': len(upload_paths),
+		'deleted': 0,
+		'delete_total': len(delete_paths),
+		'failed_uploads': [],
+		'failed_deletes': []
+	}
+
+	if upload_paths and status_callback:
+		status_callback("Uploading inputs...")
+
+	for relative_path in upload_paths:
+		local_file_path = resolve_under_root(project_root, relative_path)
+		if not os.path.exists(local_file_path):
+			result['failed_uploads'].append(relative_path)
+			continue
+
+		success = network_manager.sync_file_to_remote(
+			target_node.ip,
+			target_node.port,
+			target_node.auth_token,
+			project_cache_name,
+			relative_path,
+			local_file_path,
+			local_manifest[relative_path]
+		)
+
+		if success:
+			result['uploaded'] += 1
+		else:
+			result['failed_uploads'].append(relative_path)
+
+	if delete_paths:
+		if status_callback:
+			status_callback("Deleting stale inputs...")
+		delete_response = network_manager.delete_obsolete_inputs(
+			target_node.ip,
+			target_node.port,
+			target_node.auth_token,
+			project_cache_name,
+			delete_paths
+		)
+		if delete_response and delete_response.get('status') == 'success':
+			result['deleted'] = len(delete_response.get('deleted_paths', [])) + len(delete_response.get('missing_paths', []))
+			result['failed_deletes'] = delete_response.get('skipped_paths', [])
+		else:
+			result['failed_deletes'] = delete_paths
+
+	return result
+
+def build_project_relative_render_settings(scene, animation, project_root):
+	"""Build render settings without source-machine absolute output paths"""
+	render_settings = {
+		'animation': animation,
+		'frame_start': scene.frame_start,
+		'frame_end': scene.frame_end,
+		'frame_current': scene.frame_current,
+		'file_format': scene.render.image_settings.file_format,
+		'resolution_x': scene.render.resolution_x,
+		'resolution_y': scene.render.resolution_y,
+		'resolution_percentage': scene.render.resolution_percentage,
+		'engine': scene.render.engine,
+		'output_path_mode': 'project_relative'
+	}
+
+	if scene.render.filepath:
+		output_path = bpy.path.abspath(scene.render.filepath)
+		render_settings['output_relative_path'] = relative_path_under_root(output_path, project_root)
+
+	return render_settings
+
+def schedule_remote_status_update(sync_status=None, render_status=None, render_error_message=None, monitor_render=None):
+	"""Schedule a UI-safe status update on the main thread"""
+	def update():
+		context = bpy.context
+		if not context or not hasattr(context, 'scene') or not hasattr(context.scene, 'remote_render_props'):
+			return None
+
+		props = context.scene.remote_render_props
+		if sync_status is not None:
+			props.sync_status = sync_status
+		if render_status is not None:
+			props.render_status = render_status
+		if render_error_message is not None:
+			props.render_error_message = sanitize_ui_message(render_error_message)
+		if monitor_render is not None:
+			props.monitor_render = monitor_render
+		return None
+
+	timer_manager.register_timer(update, interval=0.1)
+
+def sanitize_ui_message(message):
+	"""Remove token-like strings and absolute paths from UI-facing messages"""
+	text = str(message or "")
+	text = re.sub(r'[A-Za-z]:[\\/][^\s,;:]+', '[path]', text)
+	text = re.sub(r'/(?:[^/\s:]+/)*[^/\s:]+', '[path]', text)
+	text = re.sub(r'\b[a-f0-9]{24,}\b', '[token]', text, flags=re.IGNORECASE)
+	return text
+
+def format_render_status_label(status):
+	"""Human-friendly render status labels for the UI"""
+	status_key = str(status or "").strip().lower()
+	mapping = {
+		'not started': 'Not Started',
+		'idle': 'Idle',
+		'preparing': 'Preparing',
+		'rendering': 'Rendering',
+		'completed': 'Complete',
+		'cancelled': 'Cancelled',
+		'error': 'Error',
+	}
+	if status_key in mapping:
+		return mapping[status_key]
+	text = str(status or "").strip()
+	return text.replace('_', ' ').title() if text else 'Unknown'
+
+# ----
+# Operators (keeping existing ones but simplifying some logic)
+# ----
+
+class REMOTERENDER_OT_StartDiscovery(Operator):
+	bl_idname = "render_remote.start_discovery"
+	bl_label = "Allow Remote Rendering"
+	bl_description = "Start the LAN listening service that allows other computers to send remote render jobs"
+
+	def execute(self, context):
+		props = context.scene.remote_render_props
+		prefs = context.preferences.addons[ADDON_PACKAGE].preferences
+
+		if network_manager.discovery_active:
+			self.report({'WARNING'}, "Discovery already active")
+			return {'CANCELLED'}
+
+		if not prefs.remote_passcode:
+			self.report({'ERROR'}, "Set a Render Remote authentication passcode in add-on preferences before starting target mode")
+			return {'CANCELLED'}
+
+		network_manager.update_ports_from_preferences()
+
+		if not network_manager.start_discovery_server(
+			props.node_name,
+			prefs.remote_passcode
+		):
+			self.report({'ERROR'}, "Failed to start authenticated remote render target")
+			return {'CANCELLED'}
+
+		self.report({'INFO'}, f"Remote render target enabled for {props.node_name}")
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_StopDiscovery(Operator):
+	bl_idname = "render_remote.stop_discovery"
+	bl_label = "Stop Allowing Remote Rendering"
+	bl_description = "Stop the LAN listening service for incoming remote render jobs"
+
+	def execute(self, context):
+		network_manager.stop_discovery_server()
+		self.report({'INFO'}, "Remote render target disabled")
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_ScanNetwork(Operator):
+	bl_idname = "render_remote.scan_network"
+	bl_label = "Scan Network"
+	bl_description = "Scan network for available remote render nodes"
+
+	def execute(self, context):
+		self.report({'INFO'}, "Scanning network for remote nodes...")
+
+		def scan_network():
+			discovered = network_manager.discover_nodes()
+
+			def update_ui():
+				context = bpy.context
+				context.scene.discovered_nodes.clear()
+
+				for node_id, node_info in discovered.items():
+					item = context.scene.discovered_nodes.add()
+					item.node_id = node_id
+					item.name = node_info['name']
+					item.ip = node_info['ip']
+					item.port = node_info['port']
+					item.blender_version = node_info['blender_version']
+					item.requires_auth = node_info['requires_auth']
+
+				return None
+
+			timer_manager.register_timer(update_ui, interval=0.1)
+
+		threading.Thread(target=scan_network, daemon=True).start()
+
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_ConnectNode(Operator):
+	bl_idname = "render_remote.connect_node"
+	bl_label = "Connect to Node"
+	bl_description = "Connect to selected remote node"
+
+	node_id: StringProperty()
+
+	def execute(self, context):
+		from .constants import is_allowed_lan_ip
+		props = context.scene.remote_render_props
+
+		# Find the node to connect to
+		target_node = None
+		for node in context.scene.discovered_nodes:
+			if node.node_id == self.node_id:
+				target_node = node
+				break
+
+		if not target_node:
+			self.report({'ERROR'}, "Node not found")
+			return {'CANCELLED'}
+
+		if not is_allowed_lan_ip(target_node.ip):
+			self.report({'ERROR'}, "Remote node is not on an allowed LAN address")
+			return {'CANCELLED'}
+
+		if not props.connection_password:
+			self.report({'ERROR'}, "Password required for this node")
+			return {'CANCELLED'}
+
+		auth_token = network_manager.authenticate(
+			target_node.ip,
+			target_node.port,
+			props.connection_password
+		)
+
+		if not auth_token:
+			self.report({'ERROR'}, "Authentication failed - check password")
+			return {'CANCELLED'}
+
+		# Test connection
+		if network_manager.test_connection(target_node.ip, target_node.port, auth_token):
+			target_node.is_connected = True
+			target_node.auth_token = auth_token or ""
+			props.selected_node = self.node_id
+
+			self.report({'INFO'}, f"Connected to {target_node.name}")
+		else:
+			self.report({'ERROR'}, f"Failed to connect to {target_node.name}")
+			return {'CANCELLED'}
+
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_DisconnectNode(Operator):
+	bl_idname = "render_remote.disconnect_node"
+	bl_label = "Disconnect"
+	bl_description = "Disconnect from remote node"
+
+	def execute(self, context):
+		props = context.scene.remote_render_props
+
+		# Find connected node and disconnect
+		for node in context.scene.discovered_nodes:
+			if node.node_id == props.selected_node:
+				node.is_connected = False
+				node.auth_token = ""
+				break
+
+		props.selected_node = ""
+		props.sync_status = "Not Scanned"
+		self.report({'INFO'}, "Disconnected from remote node")
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_ConnectManual(Operator):
+	bl_idname = "render_remote.connect_manual"
+	bl_label = "Connect Manual"
+	bl_description = "Connect to manually entered IP address"
+
+	def execute(self, context):
+		from .constants import is_allowed_lan_ip
+		props = context.scene.remote_render_props
+
+		if not props.manual_ip:
+			self.report({'ERROR'}, "Please enter an IP address")
+			return {'CANCELLED'}
+
+		if not is_allowed_lan_ip(props.manual_ip):
+			self.report({'ERROR'}, "Manual IP must be a private, link-local, or loopback address")
+			return {'CANCELLED'}
+
+		if not props.connection_password:
+			self.report({'ERROR'}, "Password required for remote render nodes")
+			return {'CANCELLED'}
+
+		auth_token = network_manager.authenticate(
+			props.manual_ip,
+			props.manual_port,
+			props.connection_password
+		)
+
+		if not auth_token:
+			self.report({'ERROR'}, "Authentication failed - check password")
+			return {'CANCELLED'}
+
+		if network_manager.test_connection(props.manual_ip, props.manual_port, auth_token):
+			# Add manual connection to discovered nodes
+			manual_node = context.scene.discovered_nodes.add()
+			manual_node.node_id = f"{props.manual_ip}:{props.manual_port}"
+			manual_node.name = f"Manual ({props.manual_ip})"
+			manual_node.ip = props.manual_ip
+			manual_node.port = props.manual_port
+			manual_node.is_connected = True
+			manual_node.auth_token = auth_token or ""
+			manual_node.requires_auth = True
+
+			props.selected_node = manual_node.node_id
+
+			self.report({'INFO'}, f"Connected to {props.manual_ip}")
+		else:
+			self.report({'ERROR'}, f"Failed to connect to {props.manual_ip}")
+			return {'CANCELLED'}
+
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_ScanProject(Operator):
+	bl_idname = "render_remote.scan_project"
+	bl_label = "Scan Project Dependencies"
+	bl_description = "Scan current project for all file dependencies and check sync status"
+
+	def execute(self, context):
+		props = context.scene.remote_render_props
+
+		if not bpy.data.filepath:
+			self.report({'ERROR'}, "Please save your blend file first")
+			return {'CANCELLED'}
+
+		props.sync_status = "Scanning inputs..."
+		self.report({'INFO'}, "Scanning project dependencies...")
+
+		def scan_project():
+			try:
+				context = bpy.context
+				props = context.scene.remote_render_props
+				dependencies = file_sync_manager.scan_blend_dependencies()
+				sync_changes = None
+
+				if props.selected_node:
+					target_node = get_connected_remote_node(context, props)
+
+					if target_node:
+						sync_state = collect_project_sync_state(props, target_node, require_remote_manifest=False)
+						dependencies = sync_state['dependencies']
+						sync_changes = sync_state['sync_changes']
+
+				def update_ui():
+					context = bpy.context
+					update_sync_ui_from_scan(context, dependencies, sync_changes)
+					return None
+
+				timer_manager.register_timer(update_ui, interval=0.1)
+
+			except Exception as e:
+				print(f"Project scan failed: {e}")
+
+				def update_error():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.sync_status = f"Scan failed: {sanitize_ui_message(e)}"
+					return None
+
+				timer_manager.register_timer(update_error, interval=0.1)
+
+		threading.Thread(target=scan_project, daemon=True).start()
+
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_SyncFiles(Operator):
+	bl_idname = "render_remote.sync_files"
+	bl_label = "Sync Selected Files"
+	bl_description = "Sync selected files to remote node"
+
+	def execute(self, context):
+		props = context.scene.remote_render_props
+
+		if not props.selected_node:
+			self.report({'ERROR'}, "No remote node connected")
+			return {'CANCELLED'}
+
+		if not bpy.data.filepath:
+			self.report({'ERROR'}, "Please save your blend file first")
+			return {'CANCELLED'}
+
+		# Find connected node
+		target_node = None
+		for node in context.scene.discovered_nodes:
+			if node.node_id == props.selected_node and node.is_connected:
+				target_node = node
+				break
+
+		if not target_node:
+			self.report({'ERROR'}, "Remote node not connected")
+			return {'CANCELLED'}
+
+		# Get selected files and stale owned inputs
+		selected_upload_paths = [
+			normalize_relative_path(f.file_path)
+			for f in context.scene.sync_files
+			if f.selected and f.status in {'new', 'modified'}
+		]
+		selected_delete_paths = [
+			normalize_relative_path(f.file_path)
+			for f in context.scene.sync_files
+			if f.selected and f.status == 'deleted'
+		]
+
+		if not selected_upload_paths and not selected_delete_paths:
+			self.report({'WARNING'}, "No files selected for sync")
+			return {'CANCELLED'}
+
+		props.sync_status = "Scanning inputs..."
+		self.report({'INFO'}, f"Syncing {len(selected_upload_paths)} files and deleting {len(selected_delete_paths)} stale inputs...")
+
+		def sync_files():
+			try:
+				sync_state = collect_project_sync_state(props, target_node)
+				sync_result = sync_project_inputs_to_target(
+					target_node,
+					sync_state['project_cache_name'],
+					sync_state['project_root'],
+					sync_state['local_manifest'],
+					sync_state['sync_changes'],
+					upload_paths=selected_upload_paths,
+					delete_paths=selected_delete_paths,
+					status_callback=lambda message: schedule_remote_status_update(sync_status=message)
+				)
+
+				def update_ui():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					if sync_result['delete_total']:
+						props.sync_status = f"Synced {sync_result['uploaded']}/{sync_result['upload_total']} files, deleted {sync_result['deleted']}/{sync_result['delete_total']} stale inputs"
+					else:
+						props.sync_status = f"Synced {sync_result['uploaded']}/{sync_result['upload_total']} files"
+
+					if sync_result['failed_uploads'] or sync_result['failed_deletes']:
+						props.sync_status = f"{props.sync_status} with errors"
+					else:
+						props.sync_status = "Complete"
+
+					if sync_result['uploaded'] > 0 or sync_result['deleted'] > 0:
+						bpy.ops.render_remote.scan_project()
+
+					return None
+
+				timer_manager.register_timer(update_ui, interval=0.1)
+
+			except Exception as e:
+				print(f"File sync failed: {e}")
+
+				def update_error():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.sync_status = f"Sync failed: {sanitize_ui_message(e)}"
+					return None
+
+				timer_manager.register_timer(update_error, interval=0.1)
+
+		threading.Thread(target=sync_files, daemon=True).start()
+
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_StartRemoteRender(Operator):
+	bl_idname = "render_remote.start_remote_render"
+	bl_label = "Start Remote Render"
+	bl_description = "Start rendering on remote computer"
+
+	animation: BoolProperty(name="Animation", default=False)
+
+	def execute(self, context):
+		props = context.scene.remote_render_props
+
+		if not props.selected_node:
+			self.report({'ERROR'}, "No remote node connected")
+			return {'CANCELLED'}
+
+		if not bpy.data.filepath:
+			self.report({'ERROR'}, "Please save your blend file first")
+			return {'CANCELLED'}
+
+		# Find connected node
+		target_node = None
+		for node in context.scene.discovered_nodes:
+			if node.node_id == props.selected_node and node.is_connected:
+				target_node = node
+				break
+
+		if not target_node:
+			self.report({'ERROR'}, "Remote node not connected")
+			return {'CANCELLED'}
+
+		animation = self.animation
+		props.sync_status = "Scanning inputs..."
+		props.render_status = "preparing"
+		props.monitor_render = False
+		props.render_error_message = ""
+		self.report({'INFO'}, "Preparing remote render: scanning and syncing inputs...")
+
+		def start_render_workflow():
+			try:
+				context = bpy.context
+				props = context.scene.remote_render_props
+				scene = context.scene
+				sync_state = collect_project_sync_state(props, target_node)
+				dependencies = sync_state['dependencies']
+				sync_changes = sync_state['sync_changes']
+
+				def update_scanned():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					update_sync_ui_from_scan(context, dependencies, sync_changes)
+					return None
+
+				timer_manager.register_timer(update_scanned, interval=0.1)
+
+				if dependencies['missing']:
+					raise Exception("Referenced files are missing. Restore them and scan again before rendering remotely.")
+
+				if dependencies['external']:
+					raise Exception("External references outside the project root are not supported for remote rendering.")
+
+				render_settings = build_project_relative_render_settings(scene, animation, sync_state['project_root'])
+				blend_file_rel = relative_path_under_root(bpy.data.filepath, sync_state['project_root'])
+
+				sync_result = sync_project_inputs_to_target(
+					target_node,
+					sync_state['project_cache_name'],
+					sync_state['project_root'],
+					sync_state['local_manifest'],
+					sync_changes,
+					status_callback=lambda message: schedule_remote_status_update(sync_status=message, render_status="preparing")
+				)
+
+				if sync_result['failed_uploads']:
+					raise Exception(f"Failed to sync {len(sync_result['failed_uploads'])} input files")
+
+				if sync_result['failed_deletes']:
+					raise Exception(f"Failed to delete {len(sync_result['failed_deletes'])} stale remote inputs")
+
+				def update_starting():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.sync_status = "Rendering..."
+					props.render_status = "preparing"
+					return None
+
+				timer_manager.register_timer(update_starting, interval=0.1)
+
+				result = network_manager.send_render_request(
+					target_node.ip,
+					target_node.port,
+					target_node.auth_token,
+					sync_state['project_cache_name'],
+					blend_file_rel,
+					render_settings,
+					sync_state['project_root']
+				)
+
+				if not result or result.get('status') != 'success':
+					error_msg = result.get('message', 'Unknown error') if result else 'Connection failed'
+					raise Exception(f"Failed to start render: {error_msg}")
+
+				def update_success():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.render_status = "preparing"
+					props.monitor_render = True
+					self.report({'INFO'}, "Render started on remote computer")
+					self._start_progress_monitoring(context, target_node)
+					return None
+
+				timer_manager.register_timer(update_success, interval=0.1)
+
+			except Exception as e:
+				error_message = str(e)
+				print(f"Remote render preparation failed: {error_message}")
+
+				def update_error():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.render_status = "error"
+					props.render_error_message = sanitize_ui_message(error_message)
+					props.monitor_render = False
+					props.sync_status = f"Render preparation failed: {sanitize_ui_message(error_message)}"
+					self.report({'ERROR'}, sanitize_ui_message(error_message))
+					return None
+
+				timer_manager.register_timer(update_error, interval=0.1)
+
+		threading.Thread(target=start_render_workflow, daemon=True).start()
+		return {'FINISHED'}
+
+	def _start_progress_monitoring(self, context, target_node):
+		"""Start monitoring render progress and reconciling rendered outputs"""
+		downloaded_hashes = {}
+		last_manifest_signature = None
+		last_manifest_change = time.time()
+		completion_observed_at = None
+
+		def monitor_progress():
+			nonlocal last_manifest_signature, last_manifest_change, completion_observed_at
+			props = context.scene.remote_render_props
+
+			if not props.monitor_render:
+				return None
+
+			# Get render status
+			status = network_manager.get_render_status(
+				target_node.ip,
+				target_node.port,
+				target_node.auth_token
+			)
+
+			if status:
+				props.render_status = status.get('status', 'Unknown')
+				props.render_progress = status.get('progress', 0.0)
+				props.current_frame = status.get('current_frame', 0)
+				props.total_frames = status.get('frame_count', 0)
+				props.render_elapsed_time = status.get('elapsed_time', 0.0)
+				props.render_error_message = sanitize_ui_message(status.get('error_message', ''))
+
+			manifest = None
+			try:
+				manifest = network_manager.get_output_manifest(
+					target_node.ip,
+					target_node.port,
+					target_node.auth_token
+				)
+			except Exception as e:
+				print(f"Error checking output manifest: {e}")
+				manifest = None
+
+			now = time.time()
+			download_count = 0
+			if manifest is not None:
+				manifest_signature = tuple(
+					(path, entry.get('hash'), entry.get('size'), entry.get('timestamp'))
+					for path, entry in sorted(manifest.items())
+				)
+				if manifest_signature != last_manifest_signature:
+					last_manifest_signature = manifest_signature
+					last_manifest_change = now
+
+				source_project_root = file_sync_manager.get_project_root()
+				for relative_path, entry in sorted(manifest.items()):
+					expected_hash = entry.get('hash')
+					local_output_exists = False
+					if source_project_root:
+						try:
+							local_output_exists = os.path.exists(resolve_under_root(source_project_root, relative_path))
+						except PathSecurityError:
+							local_output_exists = False
+					if expected_hash and downloaded_hashes.get(relative_path) == expected_hash and local_output_exists:
+						continue
+
+					print(f"Syncing output from target: {relative_path}")
+					success = network_manager.request_file_from_target(
+						target_node.ip,
+						target_node.port,
+						target_node.auth_token,
+						relative_path,
+						entry
+					)
+					if success:
+						downloaded_hashes[relative_path] = expected_hash
+						download_count += 1
+					else:
+						print(f"Failed to sync output: {relative_path}")
+
+			if download_count:
+				props.sync_status = f"Downloading outputs ({download_count} updated)"
+			elif props.monitor_render:
+				if props.render_status in ['preparing', 'rendering']:
+					props.sync_status = "Rendering..."
+				else:
+					props.sync_status = "Downloading outputs..."
+
+			if status and props.render_status in ['preparing', 'rendering']:
+				return OUTPUT_SYNC_POLL_INTERVAL
+
+			if status and completion_observed_at is None:
+				completion_observed_at = now
+
+			if completion_observed_at is None:
+				return OUTPUT_SYNC_POLL_INTERVAL
+
+			quiet_reference = max(last_manifest_change, completion_observed_at)
+			if now - quiet_reference < OUTPUT_SYNC_QUIET_PERIOD:
+				return OUTPUT_SYNC_POLL_INTERVAL
+
+			props.monitor_render = False
+			props.sync_status = "Complete"
+			return None
+
+		timer_manager.register_timer(monitor_progress, interval=1.0, persistent=True)
+
+class REMOTERENDER_OT_CancelRemoteRender(Operator):
+	bl_idname = "render_remote.cancel_remote_render"
+	bl_label = "Cancel Remote Render"
+	bl_description = "Cancel rendering on remote computer"
+
+	def execute(self, context):
+		props = context.scene.remote_render_props
+
+		if not props.selected_node:
+			self.report({'ERROR'}, "No remote node connected")
+			return {'CANCELLED'}
+
+		# Find connected node
+		target_node = None
+		for node in context.scene.discovered_nodes:
+			if node.node_id == props.selected_node and node.is_connected:
+				target_node = node
+				break
+
+		if not target_node:
+			self.report({'ERROR'}, "Remote node not connected")
+			return {'CANCELLED'}
+
+		# Send cancel request
+		success = network_manager.cancel_remote_render(
+			target_node.ip,
+			target_node.port,
+			target_node.auth_token
+		)
+
+		if success:
+			self.report({'INFO'}, "Render cancelled")
+			props.render_status = "cancelled"
+			props.sync_status = "Cancelled"
+			props.monitor_render = False
+		else:
+			self.report({'ERROR'}, "Failed to cancel render")
+
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_RefreshRenderStatus(Operator):
+	bl_idname = "render_remote.refresh_render_status"
+	bl_label = "Refresh Status"
+	bl_description = "Refresh render status from remote computer"
+
+	def execute(self, context):
+		props = context.scene.remote_render_props
+
+		if not props.selected_node:
+			self.report({'ERROR'}, "No remote node connected")
+			return {'CANCELLED'}
+
+		# Find connected node
+		target_node = None
+		for node in context.scene.discovered_nodes:
+			if node.node_id == props.selected_node and node.is_connected:
+				target_node = node
+				break
+
+		if not target_node:
+			self.report({'ERROR'}, "Remote node not connected")
+			return {'CANCELLED'}
+
+		# Get render status
+		status = network_manager.get_render_status(
+			target_node.ip,
+			target_node.port,
+			target_node.auth_token
+		)
+
+		if status:
+			props.render_status = status.get('status', 'Unknown')
+			props.render_progress = status.get('progress', 0.0)
+			props.current_frame = status.get('current_frame', 0)
+			props.total_frames = status.get('frame_count', 0)
+			props.render_elapsed_time = status.get('elapsed_time', 0.0)
+			props.render_error_message = sanitize_ui_message(status.get('error_message', ''))
+
+			self.report({'INFO'}, f"Status: {format_render_status_label(props.render_status)}")
+		else:
+			self.report({'ERROR'}, "Failed to get render status")
+
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_SelectAllSyncFiles(Operator):
+	bl_idname = "render_remote.select_all_sync_files"
+	bl_label = "Select All"
+	bl_description = "Select all files for synchronization"
+
+	def execute(self, context):
+		for sync_file in context.scene.sync_files:
+			sync_file.selected = True
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_DeselectAllSyncFiles(Operator):
+	bl_idname = "render_remote.deselect_all_sync_files"
+	bl_label = "Deselect All"
+	bl_description = "Deselect all files for synchronization"
+
+	def execute(self, context):
+		for sync_file in context.scene.sync_files:
+			sync_file.selected = False
+		return {'FINISHED'}
+
+class REMOTERENDER_OT_ClearCache(Operator):
+	bl_idname = "render_remote.clear_cache"
+	bl_label = "Clear Cache"
+	bl_description = "Clear local cache directory"
+
+	def execute(self, context):
+		prefs = context.preferences.addons[ADDON_PACKAGE].preferences
+		cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
+
+		if os.path.exists(cache_dir):
+			try:
+				shutil.rmtree(cache_dir)
+				os.makedirs(cache_dir, exist_ok=True)
+				self.report({'INFO'}, "Cache cleared successfully")
+			except Exception as e:
+				self.report({'ERROR'}, f"Failed to clear cache: {e}")
+				return {'CANCELLED'}
+		else:
+			self.report({'WARNING'}, "Cache directory does not exist")
+
+		return {'FINISHED'}
+
+# ----
+# UI Panels
+# ----
+
+class REMOTERENDER_PT_MainPanel(Panel):
+	bl_label = "Remote Render"
+	bl_idname = "REMOTERENDER_PT_main_panel"
+	bl_description = 'Manage remote rendering options'
+	bl_space_type = "VIEW_3D"
+	bl_region_type = "UI"
+	bl_category = "Launch"
+	bl_options = {'DEFAULT_CLOSED'}
+	bl_order = 64
+
+	@classmethod
+	def poll(cls, context):
+		try:
+			return context.preferences.addons[ADDON_PACKAGE].preferences.remote_enable
+		except (AttributeError, KeyError):
+			return False
+
+	def draw(self, context):
+		layout = self.layout
+		props = context.scene.remote_render_props
+		prefs = context.preferences.addons[ADDON_PACKAGE].preferences
+
+		# Mode Selection
+		box = layout.box()
+		box.label(text="Operation Mode:", icon='SETTINGS')
+		box.prop(props, "mode", expand=True)
+
+		layout.separator()
+
+		# Dynamic UI based on selected mode
+		if props.mode == 'TARGET':
+			self.draw_target_mode(layout, props, prefs)
+		else:  # SOURCE mode
+			self.draw_source_mode(layout, props, prefs)
+
+	def draw_target_mode(self, layout, props, prefs):
+		"""Draw UI for Target mode"""
+		box = layout.box()
+		box.label(text="Target Mode:", icon='NETWORK_DRIVE')
+
+		status_box = box.box()
+		if network_manager.discovery_active:
+			status_box.label(text="Listening for LAN remote render jobs", icon='CHECKMARK')
+		else:
+			status_box.label(text="Not listening for remote render jobs", icon='PAUSE')
+		status_box.label(text="Turning off Render Remote or leaving Target mode stops this service.", icon='INFO')
+
+		col = box.column()
+		col.prop(props, "node_name")
+
+		# Show authentication status from preferences
+		if prefs.remote_passcode:
+			col.label(text="Authentication: Passcode required", icon='LOCKED')
+			col.label(text="Configure passcode in Add-on Preferences.", icon='PREFERENCES')
+		else:
+			auth_box = box.box()
+			auth_box.alert = True
+			auth_box.label(text="Set a passcode before allowing remote rendering.", icon='ERROR')
+			auth_box.label(text="Configure passcode in Add-on Preferences.", icon='PREFERENCES')
+
+		# Discovery controls
+		row = box.row(align=True)
+		if network_manager.discovery_active:
+			row.operator("render_remote.stop_discovery", icon='PAUSE')
+			row.label(text="Listening", icon='CHECKMARK')
+		else:
+			row.operator("render_remote.start_discovery", icon='PLAY')
+			row.label(text="Stopped", icon='X')
+
+	def draw_source_mode(self, layout, props, prefs):
+		"""Draw UI for Source mode"""
+		context = bpy.context
+		connected_node = get_connected_remote_node(context, props)
+		box = layout.box()
+		box.label(text="Source Mode:", icon='DESKTOP')
+		box.label(text="Source mode uses outbound LAN connections only.", icon='INFO')
+		box.label(text="It does not listen for incoming remote render jobs.")
+
+		# Network scan
+		row = box.row()
+		row.operator("render_remote.scan_network", icon='VIEWZOOM')
+
+		# Discovered nodes
+		if context.scene.discovered_nodes:
+			box.label(text="Discovered Nodes:")
+			for node in context.scene.discovered_nodes:
+				node_box = box.box()
+				row = node_box.row()
+
+				# Node info
+				col = row.column()
+				col.label(text=f"{node.name}")
+				col.label(text=f"{node.ip}:{node.port}")
+				if node.blender_version:
+					col.label(text=f"Blender {node.blender_version}")
+
+				# Connection status and controls
+				col = row.column()
+				if node.is_connected:
+					col.label(text="Connected", icon='CHECKMARK')
+					if node.node_id == props.selected_node:
+						col.operator("render_remote.disconnect_node", text="Disconnect")
+				else:
+					if node.requires_auth:
+						col.prop(props, "connection_password", text="Password")
+
+					op = col.operator("render_remote.connect_node", text="Connect")
+					op.node_id = node.node_id
+
+		# Manual connection
+		box.separator()
+		box.label(text="Manual Connection:")
+		col = box.column()
+		col.prop(props, "manual_ip")
+		col.prop(props, "manual_port")
+		col.prop(props, "connection_password", text="Password")
+		col.operator("render_remote.connect_manual")
+
+		# Selected connection info
+		if connected_node:
+			box.separator()
+			box.label(text=f"Connected Target: {format_connected_remote_label(connected_node)}", icon='LINKED')
+		elif props.selected_node:
+			box.separator()
+			box.label(text="Selected target is no longer connected", icon='ERROR')
+
+		# Project settings
+		layout.separator()
+		box = layout.box()
+		box.label(text="Project Settings:", icon='FILE_FOLDER')
+		box.prop(props, "project_name")
+
+		# Project scanning and sync
+		layout.separator()
+		self.draw_sync_interface(layout, context, props)
+
+	def draw_sync_interface(self, layout, context, props):
+		"""Draw file synchronization interface"""
+		box = layout.box()
+		box.label(text="Input Sync:", icon='FILE_REFRESH')
+
+		# Scan button and status
+		row = box.row(align=True)
+		row.operator("render_remote.scan_project", icon='VIEWZOOM')
+		row.label(text=f"Phase: {props.sync_status}", icon='INFO')
+
+		# External files warning
+		if props.show_external_warning:
+			warning_box = box.box()
+			warning_box.alert = True
+			warning_box.label(text=f"Warning: {props.external_files_count} external files detected!", icon='ERROR')
+			warning_box.label(text="External files will NOT be synced to target computer.")
+			warning_box.label(text="Only files within the project folder structure are supported.")
+
+		if props.show_missing_warning:
+			warning_box = box.box()
+			warning_box.alert = True
+			warning_box.label(text=f"Warning: {props.missing_files_count} referenced files are missing!", icon='ERROR')
+			warning_box.label(text="Missing files must be restored before remote rendering.")
+
+		# Sync files list
+		if context.scene.sync_files:
+			box.label(text="Files to Sync:")
+
+			# Select all/none buttons
+			row = box.row()
+			row.operator("render_remote.select_all_sync_files", text="Select All")
+			row.operator("render_remote.deselect_all_sync_files", text="Deselect All")
+
+			# File list
+			sync_box = box.box()
+			for sync_file in context.scene.sync_files:
+				row = sync_box.row()
+				row.prop(sync_file, "selected", text="")
+
+				# File status icon
+				if sync_file.status == 'new':
+					row.label(text="", icon='FILE_NEW')
+				elif sync_file.status == 'modified':
+					row.label(text="", icon='FILE_REFRESH')
+				elif sync_file.status == 'deleted':
+					row.label(text="", icon='X')
+				elif sync_file.status in {'external', 'missing'}:
+					row.label(text="", icon='ERROR')
+				else:
+					row.label(text="", icon='FILE')
+
+				# File info
+				col = row.column()
+				col.label(text=sync_file.file_path)
+				if sync_file.size > 0:
+					size_mb = sync_file.size / (1024 * 1024)
+					if size_mb < 1:
+						size_str = f"{sync_file.size / 1024:.1f} KB"
+					else:
+						size_str = f"{size_mb:.1f} MB"
+					col.label(text=f"{sync_file.status.upper()} - {size_str}")
+				else:
+					col.label(text=sync_file.status.upper())
+
+			# Sync button
+			box.operator("render_remote.sync_files", icon='FILE_REFRESH')
+
+		elif props.sync_status == "Up to date":
+			box.label(text="All files are synchronized!", icon='CHECKMARK')
+
+		# Render Management Interface
+		if get_connected_remote_node(context, props):
+			layout.separator()
+			self.draw_render_interface(layout, context, props)
+
+	def draw_render_interface(self, layout, context, props):
+		"""Draw render management interface"""
+		box = layout.box()
+		box.label(text="Remote Rendering:", icon='RENDER_ANIMATION')
+		active_workflow = props.monitor_render or props.render_status in ['preparing', 'rendering']
+
+		# Render controls
+		if active_workflow:
+			row = box.row(align=True)
+			if props.render_status in ['preparing', 'rendering']:
+				row.operator("render_remote.cancel_remote_render", icon='X')
+			row.operator("render_remote.refresh_render_status", icon='FILE_REFRESH')
+
+			progress_box = box.box()
+			progress_box.label(text=f"Phase: {props.sync_status}", icon='INFO')
+			progress_box.label(text=f"Render Status: {format_render_status_label(props.render_status)}", icon='RENDER_ANIMATION')
+
+			if props.render_progress > 0:
+				row = progress_box.row()
+				row.label(text=f"Progress: {props.render_progress:.1f}%")
+
+			if props.total_frames > 1:
+				row = progress_box.row()
+				row.label(text=f"Frame: {props.current_frame} / {props.total_frames}")
+
+			if props.render_elapsed_time > 0:
+				elapsed_minutes = int(props.render_elapsed_time // 60)
+				elapsed_seconds = int(props.render_elapsed_time % 60)
+				row = progress_box.row()
+				row.label(text=f"Elapsed: {elapsed_minutes:02d}:{elapsed_seconds:02d}")
+
+			if props.monitor_render and props.render_status not in ['preparing', 'rendering']:
+				progress_box.label(text="Waiting for output sync to settle.", icon='INFO')
+
+			if props.render_error_message:
+				error_box = progress_box.box()
+				error_box.alert = True
+				error_box.label(text=f"Error: {props.render_error_message}", icon='ERROR')
+		else:
+			if props.show_external_warning or props.show_missing_warning:
+				warning_box = box.box()
+				warning_box.alert = True
+				warning_box.label(text="Resolve missing or unsupported references before rendering.", icon='ERROR')
+
+			row = box.row()
+			row.enabled = not (props.show_external_warning or props.show_missing_warning)
+			op = row.operator("render_remote.start_remote_render", text="Render Animation", icon='RENDER_ANIMATION')
+			op.animation = True
+
+			# Status refresh
+			row = box.row()
+			row.operator("render_remote.refresh_render_status", icon='FILE_REFRESH')
+
+			# Show last status if available
+			if props.render_status and props.render_status != "Not Started":
+				status_box = box.box()
+				status_box.label(text=f"Last Status: {format_render_status_label(props.render_status)}")
+				if props.sync_status not in {"Not Scanned", "Up to date"}:
+					status_box.label(text=f"Last Phase: {props.sync_status}", icon='INFO')
+
+				if props.render_error_message:
+					status_box.label(text=f"Error: {props.render_error_message}", icon='ERROR')
+
+		# Output monitoring info
+		box.separator()
+		box.label(text="Output File Sync:", icon='FILE_REFRESH')
+		box.label(text="Outputs are pulled back into this project automatically")
+		box.label(text="Relative folder structure is preserved")
+		box.label(text="Source mode initiates the transfer connections")
+
+		# Show project root info
+		if bpy.data.filepath:
+			project_root = file_sync_manager.get_project_root()
+			if project_root:
+				box.label(text=f"Project root: {os.path.basename(project_root)}/", icon='FILE_FOLDER')
+		else:
+			box.label(text="(Save your project to see sync info)", icon='INFO')
