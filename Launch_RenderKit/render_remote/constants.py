@@ -32,8 +32,13 @@ INPUT_MANIFEST_FILENAME = ".render_remote_input_manifest.json"
 INPUT_MANIFEST_VERSION = 1
 OUTPUT_SYNC_POLL_INTERVAL = 2.0
 OUTPUT_SYNC_QUIET_PERIOD = 6.0
+OUTPUT_SYNC_POST_PROCESS_TIMEOUT = 60.0
 
 FILE_TRANSFER_CHUNK_SIZE = 64 * 1024
+
+def default_remote_cache_directory():
+	"""Return an absolute cache directory that does not depend on a saved blend file."""
+	return str(Path.home().joinpath("Documents", "Launch_RenderKit_RemoteCache"))
 
 LAN_ALLOWED_NETWORKS = tuple(ipaddress.ip_network(network) for network in (
 	'10.0.0.0/8',

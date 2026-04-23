@@ -4,9 +4,10 @@ import re
 import threading
 import time
 from pathlib import Path
-from .constants import OUTPUT_SYNC_POLL_INTERVAL
+from .constants import OUTPUT_SYNC_POLL_INTERVAL, OUTPUT_SYNC_POST_PROCESS_TIMEOUT
 from .paths import (FileFilter, PathSecurityError, normalize_relative_path,
-                    resolve_under_root, relative_path_under_root)
+                    resolve_under_root, relative_path_under_root,
+                    is_reserved_input_manifest_path)
 from .file_sync import file_sync_manager
 
 class OutputFileMonitor:
@@ -17,6 +18,7 @@ class OutputFileMonitor:
 		self.source_project_root = None
 		if source_project_root:
 			self.source_project_root = str(Path(source_project_root).expanduser().resolve(strict=False))
+		self.blend_file_path = bpy.data.filepath
 		self.monitoring = False
 		self.monitor_thread = None
 		self._stop_event = threading.Event()
@@ -25,6 +27,7 @@ class OutputFileMonitor:
 		self.output_roots = set()
 		self.known_files = {}
 		self.output_manifest = {}
+		self.sidecar_paths = set(file_sync_manager.get_renderkit_sidecar_candidates(self.blend_file_path))
 		self.last_scan_time = 0.0
 		self.last_output_change = time.time()
 
@@ -59,6 +62,9 @@ class OutputFileMonitor:
 		if not basename:
 			return normalized_path
 
+		if os.path.isdir(normalized_path):
+			return normalized_path
+
 		if os.path.splitext(basename)[1]:
 			return os.path.dirname(normalized_path)
 
@@ -68,7 +74,7 @@ class OutputFileMonitor:
 		if basename.endswith(('_', '-')) or '#' in basename:
 			return os.path.dirname(normalized_path)
 
-		return normalized_path
+		return os.path.dirname(normalized_path) or normalized_path
 
 	def _resolve_output_path_under_workspace(self, path_text, fallback_relative):
 		"""Map an output path to a safe location under the target workspace"""
@@ -132,9 +138,47 @@ class OutputFileMonitor:
 		}
 		print(f"Configured output roots: {sorted(self.output_roots)}")
 
+	def _add_output_root(self, output_root):
+		"""Add a monitored output directory when it stays inside the target workspace."""
+		normalized_root = self._normalize_existing_path(output_root)
+		if normalized_root and self._is_within_workspace(normalized_root):
+			self.output_roots.add(normalized_root)
+
+	def _refresh_renderkit_output_roots(self, scene):
+		"""Capture RenderKit FFmpeg output directories after variables have expanded."""
+		settings = getattr(scene, 'render_kit_settings', None)
+		if not settings:
+			return
+
+		for attr_name in (
+			'autosave_video_prores_path',
+			'autosave_video_mp4_path',
+			'autosave_video_custom_path',
+		):
+			output_path = getattr(settings, attr_name, '')
+			if not output_path:
+				continue
+			output_root = self._get_output_root_from_path(bpy.path.abspath(output_path))
+			self._add_output_root(output_root)
+
+	def _iter_sidecar_files(self):
+		"""Yield RenderKit sidecar files such as the total render time log."""
+		for file_path in sorted(self.sidecar_paths):
+			if (
+				os.path.isfile(file_path)
+				and self._is_within_workspace(file_path)
+				and not FileFilter.should_ignore_file(file_path)
+			):
+				yield file_path
+
 	def _iter_output_files(self):
 		"""Yield current files from known output roots"""
 		seen_paths = set()
+		for file_path in self._iter_sidecar_files():
+			if file_path not in seen_paths:
+				seen_paths.add(file_path)
+				yield file_path
+
 		for output_root in sorted(self.output_roots):
 			if not os.path.exists(output_root):
 				continue
@@ -146,6 +190,12 @@ class OutputFileMonitor:
 					if file_path in seen_paths or FileFilter.should_ignore_file(file_path):
 						continue
 					if not self._is_within_workspace(file_path):
+						continue
+					try:
+						relative_path = relative_path_under_root(file_path, self.project_root)
+						if is_reserved_input_manifest_path(relative_path):
+							continue
+					except PathSecurityError:
 						continue
 					seen_paths.add(file_path)
 					yield file_path
@@ -384,6 +434,7 @@ class OutputFileMonitor:
 		"""Attempt immediate capture of freshly written frame outputs"""
 		if not self.monitoring:
 			return
+		self._refresh_renderkit_output_roots(scene)
 
 		def detect_frame_files():
 			time.sleep(1.0)
@@ -398,11 +449,12 @@ class OutputFileMonitor:
 			return
 
 		print("Render complete - monitoring post-processing outputs")
+		self._refresh_renderkit_output_roots(scene)
 		self._scan_for_new_files()
 
 		def post_processing_monitor():
 			monitor_time = 0
-			while monitor_time < 30:
+			while monitor_time < OUTPUT_SYNC_POST_PROCESS_TIMEOUT:
 				self._stop_event.wait(timeout=3)
 				monitor_time += 3
 				if self._stop_event.is_set():

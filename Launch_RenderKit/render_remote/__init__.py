@@ -6,14 +6,15 @@ from .network import network_manager, NetworkManager
 from .render import render_manager, RenderManager
 from .constants import (ADDON_PACKAGE, AUTH_MAX_CHALLENGES, AUTH_PBKDF2_ITERATIONS,
                         INPUT_MANIFEST_FILENAME, PROTOCOL_MAX_MESSAGE_SIZE,
-                        addon_package_from_module_package, is_allowed_lan_ip)
+                        addon_package_from_module_package,
+                        default_remote_cache_directory, is_allowed_lan_ip)
 from .paths import (FileFilter, PathSecurityError, normalize_relative_path,
                     relative_path_under_root, resolve_under_root)
 from .protocol import (ProtocolError, error_response, recv_file, recv_message,
                        send_file, send_message, validate_message)
 from .handlers import (cleanup_on_exit, cleanup_on_load_pre, reset_connection_status_on_load,
                        shutdown)
-from .ui import (SyncFileInfo, RemoteNodeProperties, RemoteRenderProperties,
+from .ui import (SyncFileInfo, RemoteNodeProperties,
                  REMOTERENDER_OT_StartDiscovery, REMOTERENDER_OT_StopDiscovery,
                  REMOTERENDER_OT_ScanNetwork, REMOTERENDER_OT_ConnectNode,
                  REMOTERENDER_OT_DisconnectNode, REMOTERENDER_OT_ConnectManual,
@@ -29,7 +30,6 @@ _atexit_registered = False
 classes = (
 	SyncFileInfo,
 	RemoteNodeProperties,
-	RemoteRenderProperties,
 	REMOTERENDER_OT_StartDiscovery,
 	REMOTERENDER_OT_StopDiscovery,
 	REMOTERENDER_OT_ScanNetwork,
@@ -68,13 +68,11 @@ def register():
 			if "already registered" not in str(e):
 				raise
 
-	# Register property groups
-	if not hasattr(bpy.types.Scene, 'remote_render_props'):
-		bpy.types.Scene.remote_render_props = bpy.props.PointerProperty(type=RemoteRenderProperties)
-	if not hasattr(bpy.types.Scene, 'discovered_nodes'):
-		bpy.types.Scene.discovered_nodes = bpy.props.CollectionProperty(type=RemoteNodeProperties)
-	if not hasattr(bpy.types.Scene, 'sync_files'):
-		bpy.types.Scene.sync_files = bpy.props.CollectionProperty(type=SyncFileInfo)
+	# Register transient runtime collections on WindowManager so Render Remote does not dirty .blend files.
+	if not hasattr(bpy.types.WindowManager, 'remote_render_discovered_nodes'):
+		bpy.types.WindowManager.remote_render_discovered_nodes = bpy.props.CollectionProperty(type=RemoteNodeProperties)
+	if not hasattr(bpy.types.WindowManager, 'remote_render_sync_files'):
+		bpy.types.WindowManager.remote_render_sync_files = bpy.props.CollectionProperty(type=SyncFileInfo)
 
 	# Register cleanup handlers
 	if cleanup_on_exit not in bpy.app.handlers.load_pre:
@@ -127,13 +125,11 @@ def unregister():
 		except ValueError:
 			pass
 
-	# Remove properties
-	if hasattr(bpy.types.Scene, 'remote_render_props'):
-		del bpy.types.Scene.remote_render_props
-	if hasattr(bpy.types.Scene, 'discovered_nodes'):
-		del bpy.types.Scene.discovered_nodes
-	if hasattr(bpy.types.Scene, 'sync_files'):
-		del bpy.types.Scene.sync_files
+	# Remove transient runtime collections
+	if hasattr(bpy.types.WindowManager, 'remote_render_discovered_nodes'):
+		del bpy.types.WindowManager.remote_render_discovered_nodes
+	if hasattr(bpy.types.WindowManager, 'remote_render_sync_files'):
+		del bpy.types.WindowManager.remote_render_sync_files
 
 	_is_registered = False
 	print("Remote Render Sync add-on unregistered")
@@ -172,6 +168,7 @@ __all__ = (
 	"is_allowed_lan_ip",
 	"is_registered",
 	"addon_package_from_module_package",
+	"default_remote_cache_directory",
 	"network_manager",
 	"normalize_relative_path",
 	"recv_file",

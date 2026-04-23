@@ -2,6 +2,7 @@ import bpy
 import threading
 import time
 from bpy.app.handlers import persistent
+from .constants import ADDON_PACKAGE, OUTPUT_SYNC_POST_PROCESS_TIMEOUT
 from .timers import timer_manager
 
 @persistent
@@ -54,7 +55,7 @@ def _render_complete_handler(scene, depsgraph):
 
 	# Clean up after a delay to allow final file operations
 	def delayed_cleanup():
-		time.sleep(10)  # Wait 10 seconds for final file operations
+		time.sleep(OUTPUT_SYNC_POST_PROCESS_TIMEOUT + 5)  # Wait for post-render tools such as FFmpeg.
 		if render_manager.output_file_monitor:
 			render_manager.output_file_monitor.stop_monitoring()
 			render_manager.output_file_monitor = None
@@ -122,27 +123,26 @@ def reset_connection_status_on_load(dummy):
 	try:
 		# Clear previous connection data when opening a new project
 		context = bpy.context
-		if hasattr(context.scene, 'remote_render_props'):
-			props = context.scene.remote_render_props
+		prefs = context.preferences.addons[ADDON_PACKAGE].preferences
 
-			# Reset connection status but keep discovered nodes
-			if hasattr(context.scene, 'discovered_nodes'):
-				for node in context.scene.discovered_nodes:
-					node.is_connected = False
-					node.auth_token = ""
+		# Reset connection status but keep discovered nodes
+		if hasattr(context.window_manager, 'remote_render_discovered_nodes'):
+			for node in context.window_manager.remote_render_discovered_nodes:
+				node.is_connected = False
+				node.auth_token = ""
 
-			# Reset selection and status
-			props.selected_node = ""
-			props.sync_status = "Not Scanned"
-			props.render_status = "Not Started"
-			props.monitor_render = False
+		# Reset selection and status without touching scene data
+		prefs.remote_selected_node = ""
+		prefs.remote_sync_status = "Not Scanned"
+		prefs.remote_render_status = "Not Started"
+		prefs.remote_monitor_render = False
 
-			# Clear sync files
-			if hasattr(context.scene, 'sync_files'):
-				context.scene.sync_files.clear()
+		# Clear sync files
+		if hasattr(context.window_manager, 'remote_render_sync_files'):
+			context.window_manager.remote_render_sync_files.clear()
 
-			if network_manager:
-				network_manager.revoke_auth_sessions()
+		if network_manager:
+			network_manager.revoke_auth_sessions()
 	except Exception as e:
 		print(f"Error resetting connection status: {e}")
 

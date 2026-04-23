@@ -14,7 +14,7 @@ from .constants import (ADDON_PACKAGE, ADDON_VERSION, DISCOVERY_REPLY_TIMEOUT, C
                         DISCOVERY_BROADCAST_TIMEOUT, LAN_ALLOWED_NETWORKS,
                         INPUT_MANIFEST_FILENAME, INPUT_MANIFEST_VERSION,
                         normalize_project_id, parse_ip_address, is_allowed_lan_ip,
-                        build_source_project_cache_name)
+                        build_source_project_cache_name, default_remote_cache_directory)
 from .paths import (PathSecurityError, normalize_relative_path, resolve_under_root,
                     relative_path_under_root, is_reserved_input_manifest_path)
 from .protocol import (ProtocolError, error_response, validate_message, validate_file_size,
@@ -65,11 +65,22 @@ class NetworkManager:
 			prefs = bpy.context.preferences.addons[ADDON_PACKAGE].preferences
 			self.discovery_port = prefs.remote_discovery_port
 			self.communication_port = prefs.remote_communication_port
-			self._cached_cache_root = str(
-				Path(bpy.path.abspath(prefs.remote_cache_directory)).expanduser().resolve()
-			)
+			self._cached_cache_root = self._resolve_cache_root(prefs.remote_cache_directory)
 		except (AttributeError, KeyError):
 			pass
+
+	def _resolve_cache_root(self, configured_path):
+		"""Resolve the configured cache root, falling back when blend-relative paths are unusable."""
+		path_text = str(configured_path or '').strip()
+		if not path_text:
+			return default_remote_cache_directory()
+		if path_text.startswith("//") and not getattr(bpy.data, 'filepath', ''):
+			return default_remote_cache_directory()
+
+		resolved_path = bpy.path.abspath(path_text)
+		if not resolved_path or str(resolved_path).startswith("//"):
+			return default_remote_cache_directory()
+		return str(Path(resolved_path).expanduser().resolve())
 
 	def _is_allowed_peer(self, ip):
 		"""Allow only LAN-local peers for Render Remote sockets"""
@@ -81,7 +92,7 @@ class NetworkManager:
 			return self._cached_cache_root
 		try:
 			prefs = bpy.context.preferences.addons[ADDON_PACKAGE].preferences
-			return str(Path(bpy.path.abspath(prefs.remote_cache_directory)).expanduser().resolve())
+			return self._resolve_cache_root(prefs.remote_cache_directory)
 		except (AttributeError, KeyError):
 			raise RuntimeError("Remote cache root is not configured")
 

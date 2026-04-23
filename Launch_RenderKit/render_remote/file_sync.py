@@ -3,7 +3,7 @@ import hashlib
 import os
 import re
 from pathlib import Path
-from .constants import PROTOCOL_MAX_FILE_SIZE
+from .constants import ADDON_PACKAGE, PROTOCOL_MAX_FILE_SIZE
 from .paths import (FileFilter, PathSecurityError, normalize_relative_path,
                     is_reserved_input_manifest_path, relative_path_under_root)
 
@@ -37,6 +37,47 @@ class FileSyncManager:
 			return True
 		except (PathSecurityError, OSError, ValueError):
 			return False
+
+	def _get_renderkit_sidecar_names(self, blend_file_path):
+		"""Return RenderKit-managed sidecar file names for a blend file."""
+		project_name = os.path.splitext(os.path.basename(blend_file_path))[0]
+		sidecar_names = {"RenderKit-TotalTime.txt"}
+
+		try:
+			prefs = bpy.context.preferences.addons[ADDON_PACKAGE].preferences
+			log_name = getattr(prefs, 'external_log_name', '')
+		except Exception:
+			log_name = ''
+
+		if log_name:
+			sidecar_names.add(str(log_name).replace("{{project}}", project_name))
+
+		return sorted(name for name in sidecar_names if name)
+
+	def get_renderkit_sidecar_candidates(self, blend_file_path=None):
+		"""Return RenderKit-managed sidecar paths, whether or not they exist yet."""
+		if not blend_file_path:
+			blend_file_path = bpy.data.filepath
+		if not blend_file_path:
+			return []
+
+		project_root = self.get_project_root(blend_file_path)
+		blend_dir = os.path.dirname(os.path.abspath(blend_file_path))
+		sidecar_paths = []
+		for sidecar_name in self._get_renderkit_sidecar_names(blend_file_path):
+			candidate = os.path.join(blend_dir, sidecar_name)
+			if self.validate_file_scope(candidate, project_root):
+				sidecar_paths.append(str(Path(candidate).resolve(strict=False)))
+
+		return sorted(set(sidecar_paths))
+
+	def get_renderkit_sidecar_paths(self, blend_file_path=None):
+		"""Return existing RenderKit-managed sidecar files that should travel with the project."""
+		return [
+			sidecar_path
+			for sidecar_path in self.get_renderkit_sidecar_candidates(blend_file_path)
+			if os.path.isfile(sidecar_path)
+		]
 
 	def _normalize_filesystem_path(self, file_path):
 		"""Return an absolute normalized path for Blender file references"""
@@ -169,6 +210,10 @@ class FileSyncManager:
 		if os.path.exists(blend_file_path) and self.validate_file_scope(blend_file_path, project_root):
 			dependencies['internal'].append(blend_file_path)
 			dependencies['roles'][blend_file_path] = 'blend'
+
+		for sidecar_path in self.get_renderkit_sidecar_paths(blend_file_path):
+			dependencies['internal'].append(sidecar_path)
+			dependencies['roles'][sidecar_path] = 'renderkit_sidecar'
 
 		# Collect all file references from Blender
 		file_references = {}
