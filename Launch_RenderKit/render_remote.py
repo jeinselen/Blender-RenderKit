@@ -33,6 +33,8 @@ PROJECT_ID_HASH_LENGTH = 12
 PROJECT_ID_SLUG_LENGTH = 60
 INPUT_MANIFEST_FILENAME = ".render_remote_input_manifest.json"
 INPUT_MANIFEST_VERSION = 1
+OUTPUT_SYNC_POLL_INTERVAL = 2.0
+OUTPUT_SYNC_QUIET_PERIOD = 6.0
 
 LAN_ALLOWED_NETWORKS = tuple(ipaddress.ip_network(network) for network in (
 	'10.0.0.0/8',
@@ -975,149 +977,297 @@ class SecureConnection:
 # ----
 
 class OutputFileMonitor:
-	"""Monitors project directory for new/modified files created during rendering"""
-	
+	"""Monitors target-side render outputs and exposes them as a manifest"""
+
 	def __init__(self, project_root, source_project_root):
-		self.project_root = project_root  # Root directory to monitor on target
-		self.source_project_root = source_project_root  # Root directory on source for path mapping
+		self.project_root = str(Path(project_root).expanduser().resolve(strict=False))
+		self.source_project_root = None
+		if source_project_root:
+			self.source_project_root = str(Path(source_project_root).expanduser().resolve(strict=False))
 		self.monitoring = False
 		self.monitor_thread = None
-		self.known_files = {}  # Store file path -> (size, mtime, hash) mapping
-		self.pending_files = []  # List of files pending sync
-		self.synced_files = set()  # Track files that have been successfully synced
-		self.pending_lock = threading.Lock()  # Thread safety for pending files
-		self.last_scan_time = 0  # Prevent too-frequent scans
-		
-		# Initialize known files with their modification times and sizes
+		self.scan_lock = threading.Lock()
+		self.manifest_lock = threading.Lock()
+		self.output_roots = set()
+		self.known_files = {}
+		self.output_manifest = {}
+		self.last_scan_time = 0.0
+		self.last_output_change = time.time()
+
+		self._configure_scene_output_paths(bpy.context.scene)
 		self._scan_initial_files()
-	
-	def _scan_initial_files(self):
-		"""Scan and record all existing files before rendering starts"""
-		if not os.path.exists(self.project_root):
+
+	def _make_safe_segment(self, value, fallback="output"):
+		"""Create a filesystem-safe path segment"""
+		text = re.sub(r'[^A-Za-z0-9_.-]+', '-', str(value or '')).strip('._-')
+		return text[:64] or fallback
+
+	def _normalize_existing_path(self, file_path):
+		"""Normalize an existing output path string when possible"""
+		if not file_path:
+			return None
+		try:
+			return str(Path(file_path).expanduser().resolve(strict=False))
+		except Exception:
+			return None
+
+	def _is_within_workspace(self, file_path):
+		"""Return True when a path stays inside the target workspace"""
+		return file_sync_manager.validate_file_scope(file_path, self.project_root)
+
+	def _get_output_root_from_path(self, file_path):
+		"""Resolve the directory root for a render output path"""
+		normalized_path = self._normalize_existing_path(file_path)
+		if not normalized_path:
+			return None
+
+		basename = os.path.basename(normalized_path.rstrip('/\\'))
+		if not basename:
+			return normalized_path
+
+		if os.path.splitext(basename)[1]:
+			return os.path.dirname(normalized_path)
+
+		if basename.lower() in FileFilter.RENDER_OUTPUT_PATTERNS:
+			return normalized_path
+
+		if basename.endswith(('_', '-')) or '#' in basename:
+			return os.path.dirname(normalized_path)
+
+		return normalized_path
+
+	def _resolve_output_path_under_workspace(self, path_text, fallback_relative):
+		"""Map an output path to a safe location under the target workspace"""
+		normalized_fallback = normalize_relative_path(fallback_relative)
+		fallback_path = resolve_under_root(self.project_root, normalized_fallback)
+		normalized_path = self._normalize_existing_path(path_text)
+		if not normalized_path:
+			return fallback_path
+
+		if self._is_within_workspace(normalized_path):
+			return normalized_path
+
+		if self.source_project_root:
+			try:
+				relative_path = relative_path_under_root(normalized_path, self.source_project_root)
+				return resolve_under_root(self.project_root, relative_path)
+			except PathSecurityError:
+				pass
+
+		return fallback_path
+
+	def _iter_output_file_nodes(self, scene):
+		"""Yield compositor file output nodes when compositing is enabled"""
+		compositing = scene.node_tree if bpy.app.version < tuple([5, 0, 0]) else scene.compositing_node_group
+		if not scene.render.use_compositing or not compositing:
 			return
-			
-		print(f"Scanning initial files in: {self.project_root}")
+
+		for node in compositing.nodes:
+			if node.type == 'OUTPUT_FILE':
+				yield node
+
+	def _configure_scene_output_paths(self, scene):
+		"""Rewrite output destinations to stay inside the target workspace and record roots"""
+		output_roots = set()
+
+		if scene.render.filepath:
+			main_output_path = self._resolve_output_path_under_workspace(
+				bpy.path.abspath(scene.render.filepath),
+				"renders"
+			)
+			scene.render.filepath = main_output_path
+			output_root = self._get_output_root_from_path(main_output_path)
+			if output_root:
+				output_roots.add(output_root)
+
+		for index, node in enumerate(self._iter_output_file_nodes(scene) or []):
+			path_attr = 'base_path' if bpy.app.version < tuple([5, 0, 0]) else 'directory'
+			configured_directory = getattr(node, path_attr, '')
+			fallback_relative = f"renders/compositor/{self._make_safe_segment(node.name, f'node-{index + 1}')}"
+			target_directory = self._resolve_output_path_under_workspace(
+				bpy.path.abspath(configured_directory) if configured_directory else '',
+				fallback_relative
+			)
+			setattr(node, path_attr, target_directory)
+			output_roots.add(target_directory)
+
+		self.output_roots = {
+			str(Path(root).expanduser().resolve(strict=False))
+			for root in output_roots
+			if root and self._is_within_workspace(root)
+		}
+		print(f"Configured output roots: {sorted(self.output_roots)}")
+
+	def _iter_output_files(self):
+		"""Yield current files from known output roots"""
+		seen_paths = set()
+		for output_root in sorted(self.output_roots):
+			if not os.path.exists(output_root):
+				continue
+
+			for root, dirs, files in os.walk(output_root):
+				dirs[:] = [d for d in dirs if not FileFilter.should_ignore_file(os.path.join(root, d))]
+				for file_name in files:
+					file_path = os.path.join(root, file_name)
+					if file_path in seen_paths or FileFilter.should_ignore_file(file_path):
+						continue
+					if not self._is_within_workspace(file_path):
+						continue
+					seen_paths.add(file_path)
+					yield file_path
+
+	def _infer_frame_number(self, relative_path):
+		"""Best-effort frame number extraction from a rendered file path"""
+		match = re.search(r'(\d{3,8})(?=\.[^.]+$)', relative_path)
+		if not match:
+			return None
+		try:
+			return int(match.group(1))
+		except ValueError:
+			return None
+
+	def _update_manifest_entry(self, file_path, frame_number=None):
+		"""Record a rendered output file in the output manifest"""
+		normalized_path = self._normalize_existing_path(file_path)
+		if not normalized_path or not os.path.isfile(normalized_path):
+			return
+		if not self._is_within_workspace(normalized_path):
+			return
+
+		try:
+			relative_path = relative_path_under_root(normalized_path, self.project_root)
+			stat = os.stat(normalized_path)
+		except (OSError, PathSecurityError):
+			return
+
+		previous_state = self.known_files.get(normalized_path)
+		if previous_state and previous_state['size'] == stat.st_size and previous_state['mtime'] == stat.st_mtime:
+			return
+
+		file_hash = file_sync_manager.calculate_file_hash(normalized_path)
+		if not file_hash:
+			return
+
+		now = time.time()
+		with self.manifest_lock:
+			existing_entry = self.output_manifest.get(relative_path, {})
+			stable_timestamp = existing_entry.get('timestamp', now)
+			if existing_entry.get('hash') != file_hash or existing_entry.get('size') != stat.st_size:
+				stable_timestamp = now
+
+			entry = {
+				'relative_path': relative_path,
+				'size': stat.st_size,
+				'hash': file_hash,
+				'timestamp': stable_timestamp,
+			}
+
+			resolved_frame = frame_number if frame_number is not None else self._infer_frame_number(relative_path)
+			if resolved_frame is not None:
+				entry['frame'] = int(resolved_frame)
+			elif 'frame' in existing_entry:
+				entry['frame'] = existing_entry['frame']
+
+			if entry != existing_entry:
+				self.output_manifest[relative_path] = entry
+				self.last_output_change = now
+
+		self.known_files[normalized_path] = {
+			'size': stat.st_size,
+			'mtime': stat.st_mtime,
+			'hash': file_hash,
+		}
+
+	def _remove_deleted_outputs(self, current_paths):
+		"""Drop manifest entries for outputs that no longer exist on disk"""
+		current_paths = {self._normalize_existing_path(path) for path in current_paths}
+		for known_path in list(self.known_files):
+			if known_path in current_paths:
+				continue
+			if not self._is_within_workspace(known_path):
+				self.known_files.pop(known_path, None)
+				continue
+
+			try:
+				relative_path = relative_path_under_root(known_path, self.project_root)
+			except PathSecurityError:
+				self.known_files.pop(known_path, None)
+				continue
+
+			self.known_files.pop(known_path, None)
+			with self.manifest_lock:
+				if relative_path in self.output_manifest:
+					self.output_manifest.pop(relative_path, None)
+					self.last_output_change = time.time()
+
+	def _scan_initial_files(self):
+		"""Record pre-existing output files so only new/changed render outputs are tracked"""
 		file_count = 0
-		
-		for root, dirs, files in os.walk(self.project_root):
-			for file in files:
-				file_path = os.path.join(root, file)
-				
-				# Skip files that should be ignored
-				if FileFilter.should_ignore_file(file_path):
-					continue
-					
-				try:
-					stat = os.stat(file_path)
-					# Store size, mtime, and a simple hash for better change detection
-					file_hash = f"{stat.st_size}_{stat.st_mtime}"
-					self.known_files[file_path] = (stat.st_size, stat.st_mtime, file_hash)
-					file_count += 1
-				except OSError:
-					pass
-		
-		print(f"Initial scan complete: {file_count} files recorded")
-	
+		for file_path in self._iter_output_files():
+			try:
+				stat = os.stat(file_path)
+				self.known_files[file_path] = {
+					'size': stat.st_size,
+					'mtime': stat.st_mtime,
+					'hash': None,
+				}
+				file_count += 1
+			except OSError:
+				continue
+
+		print(f"Initial output scan complete: {file_count} existing files recorded")
+
 	def start_monitoring(self):
-		"""Start monitoring for new/modified files"""
+		"""Start background monitoring for render outputs"""
 		if self.monitoring:
 			return
-			
+
 		self.monitoring = True
-		print(f"Started monitoring project directory: {self.project_root}")
-		
-		# Start monitoring thread
+		print(f"Started monitoring output roots: {sorted(self.output_roots)}")
+
 		if not self.monitor_thread or not self.monitor_thread.is_alive():
 			self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
 			self.monitor_thread.start()
-	
+
 	def stop_monitoring(self):
-		"""Stop monitoring and do final sync of any remaining files"""
+		"""Stop monitoring and perform a final output scan"""
 		if not self.monitoring:
 			return
-			
+
 		print("Stopping output file monitoring...")
 		self.monitoring = False
-		
+
 		if self.monitor_thread:
 			self.monitor_thread.join(timeout=5)
-		
-		# Do final comprehensive scan for any files we might have missed
+
 		self._final_sync_scan()
-	
+
 	def _monitor_loop(self):
-		"""Main monitoring loop - runs continuously during rendering"""
+		"""Monitor outputs for new and changed files while rendering continues"""
 		while self.monitoring:
 			try:
-				current_time = time.time()
-				
-				# Limit scan frequency to prevent excessive CPU usage
-				if current_time - self.last_scan_time >= 2.0:  # Scan every 2 seconds minimum
+				now = time.time()
+				if now - self.last_scan_time >= OUTPUT_SYNC_POLL_INTERVAL:
 					self._scan_for_new_files()
-					self.last_scan_time = current_time
-				
-				time.sleep(1)  # Check condition every 1 second
-				
+					self.last_scan_time = now
+				time.sleep(1.0)
 			except Exception as e:
-				print(f"Monitor loop error: {e}")
-				time.sleep(5)
-		
-		print("File monitoring loop stopped")
-	
-	def on_frame_written(self, scene, depsgraph=None):
-		"""Called when a frame is written to disk - immediate file detection"""
-		if not self.monitoring:
-			return
-			
-		def detect_frame_files():
-			# Wait a moment for file to be completely written
-			time.sleep(1.0)  # Increased wait time for file completion
-			
-			# Get the expected output file paths for this frame
-			expected_outputs = self._get_expected_frame_outputs(scene)
-			
-			# Check if expected files exist and add them to pending
-			for expected_path in expected_outputs:
-				if os.path.exists(expected_path) and not FileFilter.should_ignore_file(expected_path):
-					try:
-						stat = os.stat(expected_path)
-						file_hash = f"{stat.st_size}_{stat.st_mtime}"
-						
-						# Check if this is actually a new or modified file
-						if (expected_path not in self.known_files or 
-							self.known_files[expected_path][2] != file_hash):
-							
-							rel_path = os.path.relpath(expected_path, self.project_root)
-							
-							# Don't add if already synced recently
-							if expected_path not in self.synced_files:
-								print(f"Frame output detected: {rel_path}")
-								self._add_pending_file(expected_path, rel_path, priority=True)
-								
-								# Update known files immediately
-								self.known_files[expected_path] = (stat.st_size, stat.st_mtime, file_hash)
-						
-					except OSError as e:
-						print(f"Error checking frame output {expected_path}: {e}")
-		
-		# Run detection in background thread
-		threading.Thread(target=detect_frame_files, daemon=True).start()
-	
+				print(f"Output monitor loop error: {e}")
+				time.sleep(2.0)
+
+		print("Output monitoring loop stopped")
+
 	def _get_expected_frame_outputs(self, scene):
 		"""Get expected output file paths for the current frame"""
 		outputs = []
-		
-		# Main render output
+
 		if scene.render.filepath:
 			base_path = bpy.path.abspath(scene.render.filepath)
-			
-			# Handle frame numbering
 			if scene.render.use_file_extension:
 				if scene.frame_current != scene.frame_start or (scene.frame_end - scene.frame_start) > 0:
 					path_parts = os.path.splitext(base_path)
 					frame_str = f"{scene.frame_current:04d}"
-					
-					# Get file extension based on format
+
 					file_format = scene.render.image_settings.file_format
 					if file_format == 'PNG':
 						ext = '.png'
@@ -1129,227 +1279,116 @@ class OutputFileMonitor:
 						ext = '.tif'
 					else:
 						ext = path_parts[1] if path_parts[1] else '.png'
-					
+
 					main_output = f"{path_parts[0]}{frame_str}{ext}"
 				else:
 					main_output = base_path
 			else:
 				main_output = base_path
-				
+
 			outputs.append(main_output)
-		
-		# Compositor node outputs
-		compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
-		if scene.render.use_compositing and compositing:
-			for node in compositing.nodes:
-				directory = node.base_path if bpy.app.version < tuple([5,0,0]) else node.directory
-				if node.type == 'OUTPUT_FILE' and directory:
-					directory = bpy.path.abspath(directory)
-					
-					for input_socket in node.inputs:
-						if input_socket.is_linked:
-							if input_socket.name != 'Image':
-								filename = f"{input_socket.name}{scene.frame_current:04d}"
-							else:
-								filename = f"Image{scene.frame_current:04d}"
-								
-							# Add file extension based on format
-							if hasattr(node, 'format'):
-								if node.format.file_format == 'PNG':
-									filename += '.png'
-								elif node.format.file_format == 'JPEG':
-									filename += '.jpg'
-								elif node.format.file_format == 'OPEN_EXR':
-									filename += '.exr'
-								else:
-									filename += '.png'
-							else:
-								filename += '.png'
-								
-							output_path = os.path.join(directory, filename)
-							outputs.append(output_path)
-		
-		return outputs
-	
-	def _scan_for_new_files(self):
-		"""Scan for new or modified files"""
-		if not os.path.exists(self.project_root):
-			return
-			
-		current_files = {}
-		
-		# Scan all files in project directory
-		for root, dirs, files in os.walk(self.project_root):
-			# Skip certain directories that we don't want to sync back
-			dirs[:] = [d for d in dirs if not FileFilter.should_ignore_file(os.path.join(root, d))]
-			
-			for file in files:
-				file_path = os.path.join(root, file)
-				
-				# Skip files that should be ignored
-				if FileFilter.should_ignore_file(file_path):
-					continue
-				
-				try:
-					stat = os.stat(file_path)
-					file_hash = f"{stat.st_size}_{stat.st_mtime}"
-					current_files[file_path] = (stat.st_size, stat.st_mtime, file_hash)
-				except OSError:
-					continue
-		
-		# Find new or modified files
-		new_or_modified = []
-		for file_path, (size, mtime, file_hash) in current_files.items():
-			# Skip if already synced recently
-			if file_path in self.synced_files:
+
+		for node in self._iter_output_file_nodes(scene) or []:
+			directory = node.base_path if bpy.app.version < tuple([5, 0, 0]) else node.directory
+			if not directory:
 				continue
-				
-			if file_path not in self.known_files:
-				# New file
-				new_or_modified.append((file_path, "new"))
-			elif self.known_files[file_path][2] != file_hash:
-				# Modified file (hash changed)
-				new_or_modified.append((file_path, "modified"))
-		
-		# Process new/modified files
-		for file_path, change_type in new_or_modified:
-			rel_path = os.path.relpath(file_path, self.project_root)
-			print(f"Detected {change_type} file: {rel_path}")
-			self._add_pending_file(file_path, rel_path)
-		
-		# Update known files
-		self.known_files.update(current_files)
-	
-	def _add_pending_file(self, file_path, rel_path, priority=False):
-		"""Add a file to the pending sync list (thread-safe)"""
-		with self.pending_lock:
-			# Check if already pending (prevent duplicates)
-			for pending in self.pending_files:
-				if pending['file_path'] == file_path:
-					print(f"File already pending: {rel_path}")
-					return  # Already pending
-			
-			# Check if already synced recently
-			if file_path in self.synced_files:
-				print(f"File already synced: {rel_path}")
-				return
-			
-			# Sanitize relative path for JSON safety
-			safe_rel_path = rel_path.replace('\\', '/').encode('unicode_escape').decode('ascii')
-			
-			# Add to pending list
-			file_info = {
-				'file_path': file_path,
-				'relative_path': safe_rel_path,
-				'original_relative_path': rel_path,  # Keep original for actual file operations
-				'size': os.path.getsize(file_path) if os.path.exists(file_path) else 0,
-				'added_time': time.time(),
-				'priority': priority
-			}
-			
-			if priority:
-				# Insert priority files at the beginning
-				self.pending_files.insert(0, file_info)
-			else:
-				self.pending_files.append(file_info)
-			
-			print(f"Added to pending sync: {rel_path} (queue: {len(self.pending_files)})")
-			
-			# Limit pending queue size to prevent memory issues
-			if len(self.pending_files) > 100:
-				print("Warning: Pending files queue is getting large, removing oldest entries")
-				# Remove oldest non-priority items
-				self.pending_files = [f for f in self.pending_files if f.get('priority', False)] + \
-									self.pending_files[-50:]  # Keep last 50 regular items
-	
-	def get_pending_files(self):
-		"""Get list of files pending sync (thread-safe)"""
-		with self.pending_lock:
-			try:
-				# Clean up the pending list - remove files that no longer exist
-				valid_pending = []
-				for file_info in self.pending_files:
-					if os.path.exists(file_info['file_path']):
-						valid_pending.append(file_info.copy())
+			directory = bpy.path.abspath(directory)
+			for input_socket in node.inputs:
+				if not input_socket.is_linked:
+					continue
+
+				if input_socket.name != 'Image':
+					filename = f"{input_socket.name}{scene.frame_current:04d}"
+				else:
+					filename = f"Image{scene.frame_current:04d}"
+
+				if hasattr(node, 'format'):
+					if node.format.file_format == 'PNG':
+						filename += '.png'
+					elif node.format.file_format == 'JPEG':
+						filename += '.jpg'
+					elif node.format.file_format == 'OPEN_EXR':
+						filename += '.exr'
 					else:
-						print(f"Removing non-existent pending file: {file_info['relative_path']}")
-				
-				self.pending_files = valid_pending
-				
-				# Limit response size to prevent JSON issues
-				if len(self.pending_files) > 50:
-					print(f"Large pending list ({len(self.pending_files)}), returning first 50 items")
-					return self.pending_files[:50]
-				
-				return self.pending_files
-				
-			except Exception as e:
-				print(f"Error getting pending files: {e}")
-				return []
-	
+						filename += '.png'
+				else:
+					filename += '.png'
+
+				outputs.append(os.path.join(directory, filename))
+
+		return outputs
+
+	def _scan_for_new_files(self):
+		"""Scan monitored output roots and update the output manifest"""
+		with self.scan_lock:
+			current_paths = []
+			for file_path in self._iter_output_files():
+				current_paths.append(file_path)
+				self._update_manifest_entry(file_path)
+
+			self._remove_deleted_outputs(current_paths)
+
+	def get_output_manifest(self):
+		"""Return a copy of the current output manifest"""
+		with self.manifest_lock:
+			return {
+				relative_path: entry.copy()
+				for relative_path, entry in sorted(self.output_manifest.items())
+			}
+
+	def get_pending_files(self):
+		"""Backward-compatible view of outputs as manifest entries"""
+		return list(self.get_output_manifest().values())
+
 	def remove_pending_file(self, file_path):
-		"""Remove a file from pending sync list after successful sync"""
-		with self.pending_lock:
-			# Remove from pending list
-			initial_count = len(self.pending_files)
-			self.pending_files = [f for f in self.pending_files if f['file_path'] != file_path]
-			
-			if len(self.pending_files) < initial_count:
-				print(f"Removed from pending: {os.path.basename(file_path)}")
-			
-			# Add to synced files set to prevent re-detection
-			self.synced_files.add(file_path)
-			
-			# Limit synced files set size
-			if len(self.synced_files) > 200:
-				# Remove oldest entries (convert to list, sort by age, keep newest)
-				oldest_files = sorted(self.synced_files)[:100]  # Remove 100 oldest
-				for old_file in oldest_files:
-					self.synced_files.discard(old_file)
-	
-	def on_render_complete(self, scene, depsgraph=None):
-		"""Called when rendering completes - start monitoring for post-processing"""
+		"""Legacy no-op retained for older call sites"""
+		return None
+
+	def on_frame_written(self, scene, depsgraph=None):
+		"""Attempt immediate capture of freshly written frame outputs"""
 		if not self.monitoring:
 			return
-			
-		print("Render complete - starting post-processing file monitor")
-		
-		# Do an immediate comprehensive scan
+
+		def detect_frame_files():
+			time.sleep(1.0)
+			for expected_path in self._get_expected_frame_outputs(scene):
+				self._update_manifest_entry(expected_path, frame_number=scene.frame_current)
+
+		threading.Thread(target=detect_frame_files, daemon=True).start()
+
+	def on_render_complete(self, scene, depsgraph=None):
+		"""Continue scanning after render completion for post-processing outputs"""
+		if not self.monitoring:
+			return
+
+		print("Render complete - monitoring post-processing outputs")
 		self._scan_for_new_files()
-		
-		# Continue monitoring for post-processing files (FFmpeg, etc.)
+
 		def post_processing_monitor():
 			monitor_time = 0
-			while monitor_time < 30:  # Monitor for 30 seconds
+			while monitor_time < 30:
 				time.sleep(3)
 				monitor_time += 3
 				try:
 					self._scan_for_new_files()
 				except Exception as e:
-					print(f"Post-processing monitor error: {e}")
-			
+					print(f"Post-processing output monitor error: {e}")
+
 			print("Post-processing monitoring completed")
-		
+
 		threading.Thread(target=post_processing_monitor, daemon=True).start()
-	
+
 	def _final_sync_scan(self):
-		"""Do a final comprehensive scan for any files that might have been created during shutdown"""
-		print("Performing final sync scan...")
-		
+		"""Do one last output scan before shutdown"""
+		print("Performing final output scan...")
 		try:
-			# Wait a moment for any final file operations to complete
 			time.sleep(2)
-			
-			# Do one final comprehensive scan
 			self._scan_for_new_files()
-			
-			with self.pending_lock:
-				pending_count = len(self.pending_files)
-			
-			print(f"Final sync scan completed. {pending_count} files pending sync.")
-			
+			with self.manifest_lock:
+				output_count = len(self.output_manifest)
+			print(f"Final output scan completed. {output_count} manifest entries available.")
 		except Exception as e:
-			print(f"Error in final sync scan: {e}")
+			print(f"Error in final output scan: {e}")
 
 # ----
 # Network Discovery and Communication (Simplified)
@@ -1764,6 +1803,9 @@ class NetworkManager:
 			
 		elif msg_type == 'get_pending_files':
 			return self._handle_get_pending_files(message)
+
+		elif msg_type == 'get_output_manifest':
+			return self._handle_get_output_manifest(message)
 			
 		elif msg_type == 'request_file':
 			return self._handle_request_file(message, client_sock)
@@ -1818,27 +1860,11 @@ class NetworkManager:
 		return None
 
 	def _handle_get_pending_files(self, message):
-		"""Handle request for list of files pending sync - with better error handling"""
+		"""Backward-compatible view of current output manifest entries"""
 		try:
-			# Get pending files from output monitor
 			global render_manager
 			if render_manager and render_manager.output_file_monitor:
-				pending_files = render_manager.output_file_monitor.get_pending_files()
-				response_files = []
-
-				for file_info in pending_files:
-					try:
-						relative_path = normalize_relative_path(
-							file_info.get('original_relative_path') or file_info.get('relative_path')
-						)
-						response_files.append({
-							'relative_path': relative_path,
-							'size': validate_file_size(file_info.get('size', 0)),
-							'added_time': file_info.get('added_time', 0)
-						})
-					except (PathSecurityError, ProtocolError):
-						continue
-
+				response_files = list(render_manager.output_file_monitor.get_output_manifest().values())
 				json.dumps(response_files)
 				return {'status': 'success', 'pending_files': response_files}
 			else:
@@ -1847,6 +1873,20 @@ class NetworkManager:
 		except Exception as e:
 			print(f"Get pending files request failed: {e}")
 			return error_response('pending_files_failed', 'Failed to get pending files')
+
+	def _handle_get_output_manifest(self, message):
+		"""Return the current target-side output manifest"""
+		try:
+			global render_manager
+			if render_manager and render_manager.output_file_monitor:
+				manifest = render_manager.output_file_monitor.get_output_manifest()
+				json.dumps(manifest)
+				return {'status': 'success', 'manifest': manifest}
+			return {'status': 'success', 'manifest': {}}
+
+		except Exception as e:
+			print(f"Get output manifest request failed: {e}")
+			return error_response('output_manifest_failed', 'Failed to get output manifest')
 	
 	def _handle_request_file(self, message, client_sock):
 		"""Handle request for a specific file - with better error handling"""
@@ -1860,6 +1900,11 @@ class NetworkManager:
 				return {'status': 'error', 'message': 'No output files available'}
 
 			normalized_relative_path = normalize_relative_path(relative_path)
+			output_manifest = render_manager.output_file_monitor.get_output_manifest()
+			manifest_entry = output_manifest.get(normalized_relative_path)
+			if not manifest_entry:
+				return {'status': 'error', 'message': 'Output file not available'}
+
 			output_root = render_manager.output_file_monitor.project_root
 			file_path = resolve_under_root(output_root, normalized_relative_path)
 
@@ -1874,7 +1919,8 @@ class NetworkManager:
 				'status': 'success',
 				'message': 'Sending file',
 				'file_size': file_size,
-				'relative_path': normalized_relative_path
+				'relative_path': normalized_relative_path,
+				'hash': manifest_entry.get('hash')
 			}
 
 			send_message(client_sock, response)
@@ -1884,10 +1930,6 @@ class NetworkManager:
 			send_file(client_sock, file_path, file_size)
 			
 			print(f"File sent successfully: {normalized_relative_path}")
-			
-			# Remove from pending files after successful send
-			if render_manager and render_manager.output_file_monitor:
-				render_manager.output_file_monitor.remove_pending_file(file_path)
 			
 			return None  # Response already sent
 			
@@ -2335,11 +2377,29 @@ class NetworkManager:
 			print(f"Get pending files request failed: {e}")
 			
 		return []
+
+	def get_output_manifest(self, ip, port, auth_token):
+		"""Get the current output manifest from the target node"""
+		try:
+			request = {
+				'type': 'get_output_manifest',
+				'auth_token': auth_token,
+				'timestamp': time.time()
+			}
+			response = self._send_request(ip, port, request, timeout=10)
+			if response.get('status') == 'success':
+				return response.get('manifest', {})
+
+		except Exception as e:
+			print(f"Get output manifest request failed: {e}")
+
+		return None
 	
-	def request_file_from_target(self, ip, port, auth_token, relative_path):
-		"""Request a specific file from target computer - with better error handling"""
+	def request_file_from_target(self, ip, port, auth_token, relative_path, manifest_entry=None):
+		"""Request and verify a specific output file from the target computer"""
 		try:
 			relative_path = normalize_relative_path(relative_path)
+			manifest_entry = manifest_entry or {}
 			with self._create_connection(ip, port, timeout=30) as sock:
 				request = {
 					'type': 'request_file',
@@ -2357,6 +2417,7 @@ class NetworkManager:
 
 				file_size = validate_file_size(response.get('file_size', 0))
 				target_relative_path = normalize_relative_path(response.get('relative_path', relative_path))
+				expected_hash = manifest_entry.get('hash') or response.get('hash')
 				
 				print(f"Receiving file: {target_relative_path} ({file_size} bytes)")
 				
@@ -2370,8 +2431,21 @@ class NetworkManager:
 				# Create directory structure if needed
 				target_dir = os.path.dirname(target_path)
 				os.makedirs(target_dir, exist_ok=True)
-				
-				recv_file(sock, target_path, file_size)
+
+				download_path = f"{target_path}.download"
+				recv_file(sock, download_path, file_size)
+
+				if expected_hash:
+					download_hash = file_sync_manager.calculate_file_hash(download_path)
+					if download_hash != expected_hash:
+						try:
+							os.remove(download_path)
+						except OSError:
+							pass
+						print(f"Downloaded file hash mismatch: {target_relative_path}")
+						return False
+
+				os.replace(download_path, target_path)
 				print(f"✓ Successfully received: {target_relative_path}")
 				return True
 				
@@ -3433,7 +3507,8 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 					target_node.auth_token,
 					sync_state['project_cache_name'],
 					blend_file_rel,
-					render_settings
+					render_settings,
+					sync_state['project_root']
 				)
 
 				if not result or result.get('status') != 'success':
@@ -3471,8 +3546,14 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 		return {'FINISHED'}
 	
 	def _start_progress_monitoring(self, context, target_node):
-		"""Start monitoring render progress and syncing output files - SIMPLIFIED"""
+		"""Start monitoring render progress and reconciling rendered outputs"""
+		downloaded_hashes = {}
+		last_manifest_signature = None
+		last_manifest_change = time.time()
+		completion_observed_at = None
+
 		def monitor_progress():
+			nonlocal last_manifest_signature, last_manifest_change, completion_observed_at
 			props = context.scene.remote_render_props
 			
 			if not props.monitor_render:
@@ -3493,65 +3574,73 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 				props.render_elapsed_time = status.get('elapsed_time', 0.0)
 				props.render_error_message = status.get('error_message', '')
 			
-			# Check for pending output files and sync them
+			manifest = None
 			try:
-				pending_files = network_manager.get_pending_files(
+				manifest = network_manager.get_output_manifest(
 					target_node.ip,
 					target_node.port,
 					target_node.auth_token
 				)
-
-				if pending_files:
-					print(f"Found {len(pending_files)} pending files for sync")
-
-					for file_info in pending_files:
-						relative_path = file_info.get('relative_path')
-
-						if relative_path:
-							print(f"Syncing from target: {relative_path}")
-
-							success = network_manager.request_file_from_target(
-								target_node.ip,
-								target_node.port,
-								target_node.auth_token,
-								relative_path
-							)
-
-							if not success:
-								print(f"Failed to sync: {relative_path}")
-
 			except Exception as e:
-				print(f"Error checking for pending files: {e}")
-			
-			# Continue monitoring if render is still active
-			if status and props.render_status in ['preparing', 'rendering']:
-				return 2.0  # Check every 2 seconds during rendering
-			else:
-				# Do one final check for pending files after render completes
-				try:
-					final_pending = network_manager.get_pending_files(
+				print(f"Error checking output manifest: {e}")
+				manifest = None
+
+			now = time.time()
+			download_count = 0
+			if manifest is not None:
+				manifest_signature = tuple(
+					(path, entry.get('hash'), entry.get('size'), entry.get('timestamp'))
+					for path, entry in sorted(manifest.items())
+				)
+				if manifest_signature != last_manifest_signature:
+					last_manifest_signature = manifest_signature
+					last_manifest_change = now
+
+				source_project_root = file_sync_manager.get_project_root()
+				for relative_path, entry in sorted(manifest.items()):
+					expected_hash = entry.get('hash')
+					local_output_exists = False
+					if source_project_root:
+						try:
+							local_output_exists = os.path.exists(resolve_under_root(source_project_root, relative_path))
+						except PathSecurityError:
+							local_output_exists = False
+					if expected_hash and downloaded_hashes.get(relative_path) == expected_hash and local_output_exists:
+						continue
+
+					print(f"Syncing output from target: {relative_path}")
+					success = network_manager.request_file_from_target(
 						target_node.ip,
 						target_node.port,
-						target_node.auth_token
+						target_node.auth_token,
+						relative_path,
+						entry
 					)
+					if success:
+						downloaded_hashes[relative_path] = expected_hash
+						download_count += 1
+					else:
+						print(f"Failed to sync output: {relative_path}")
 
-					if final_pending:
-						print(f"Final sync: {len(final_pending)} remaining files")
-						for file_info in final_pending:
-							relative_path = file_info.get('relative_path')
+			if download_count:
+				props.sync_status = f"Downloading outputs ({download_count} updated)"
 
-							if relative_path:
-								network_manager.request_file_from_target(
-									target_node.ip,
-									target_node.port,
-									target_node.auth_token,
-									relative_path
-								)
-				except Exception as e:
-					print(f"Error in final file sync: {e}")
-				
-				props.monitor_render = False
-				return None
+			if status and props.render_status in ['preparing', 'rendering']:
+				return OUTPUT_SYNC_POLL_INTERVAL
+
+			if status and completion_observed_at is None:
+				completion_observed_at = now
+
+			if completion_observed_at is None:
+				return OUTPUT_SYNC_POLL_INTERVAL
+
+			quiet_reference = max(last_manifest_change, completion_observed_at)
+			if now - quiet_reference < OUTPUT_SYNC_QUIET_PERIOD:
+				return OUTPUT_SYNC_POLL_INTERVAL
+
+			props.monitor_render = False
+			props.sync_status = "Output sync complete"
+			return None
 		
 		timer_manager.register_timer(monitor_progress, interval=1.0, persistent=True)
 
