@@ -18,6 +18,8 @@ from bpy.props import StringProperty, EnumProperty, BoolProperty, IntProperty, F
 from bpy.types import Operator, Panel, AddonPreferences, PropertyGroup
 from bpy.app.handlers import persistent
 
+ADDON_VERSION = "0.2.0"  # mirrors blender_manifest.toml version field
+
 PROTOCOL_MAX_MESSAGE_SIZE = 1024 * 1024  # 1MB JSON envelope limit
 PROTOCOL_MAX_FILE_SIZE = 128 * 1024 * 1024 * 1024  # 128GB file transfer limit
 AUTH_PBKDF2_ITERATIONS = 200_000
@@ -862,6 +864,7 @@ class SecureConnection:
 	"""Handles authentication state for remote TCP messages"""
 	
 	def __init__(self):
+		self._lock = threading.RLock()
 		self.auth_tokens = {}
 		self.auth_challenges = {}
 		self.connection_timeout = 300  # 5 minutes
@@ -890,82 +893,88 @@ class SecureConnection:
 
 	def create_challenge(self, ip, salt):
 		"""Create a short-lived authentication challenge"""
-		self.cleanup_expired_auth()
-		if len(self.auth_challenges) >= AUTH_MAX_CHALLENGES:
-			oldest_nonce = min(
-				self.auth_challenges,
-				key=lambda nonce: self.auth_challenges[nonce].get('created', 0)
-			)
-			self.auth_challenges.pop(oldest_nonce, None)
+		with self._lock:
+			self.cleanup_expired_auth()
+			if len(self.auth_challenges) >= AUTH_MAX_CHALLENGES:
+				oldest_nonce = min(
+					self.auth_challenges,
+					key=lambda nonce: self.auth_challenges[nonce].get('created', 0)
+				)
+				self.auth_challenges.pop(oldest_nonce, None)
 
-		client_nonce = secrets.token_urlsafe(24)
-		server_nonce = secrets.token_urlsafe(24)
-		self.auth_challenges[client_nonce] = {
-			'server_nonce': server_nonce,
-			'created': time.time(),
-			'ip': ip
-		}
-		return {
-			'client_nonce': client_nonce,
-			'server_nonce': server_nonce,
-			'salt': salt,
-			'iterations': AUTH_PBKDF2_ITERATIONS,
-			'algorithm': 'pbkdf2_sha256_hmac_sha256'
-		}
+			client_nonce = secrets.token_urlsafe(24)
+			server_nonce = secrets.token_urlsafe(24)
+			self.auth_challenges[client_nonce] = {
+				'server_nonce': server_nonce,
+				'created': time.time(),
+				'ip': ip
+			}
+			return {
+				'client_nonce': client_nonce,
+				'server_nonce': server_nonce,
+				'salt': salt,
+				'iterations': AUTH_PBKDF2_ITERATIONS,
+				'algorithm': 'pbkdf2_sha256_hmac_sha256'
+			}
 
 	def consume_challenge(self, client_nonce, server_nonce, ip):
 		"""Fetch and remove a valid challenge"""
-		challenge = self.auth_challenges.pop(client_nonce, None)
-		if not challenge:
-			return None
-		if challenge.get('server_nonce') != server_nonce:
-			return None
-		if challenge.get('ip') != ip:
-			return None
-		if time.time() - challenge.get('created', 0) > AUTH_CHALLENGE_TIMEOUT:
-			return None
-		return challenge
+		with self._lock:
+			challenge = self.auth_challenges.pop(client_nonce, None)
+			if not challenge:
+				return None
+			if challenge.get('server_nonce') != server_nonce:
+				return None
+			if challenge.get('ip') != ip:
+				return None
+			if time.time() - challenge.get('created', 0) > AUTH_CHALLENGE_TIMEOUT:
+				return None
+			return challenge
 
 	def issue_auth_token(self, ip):
 		"""Issue an expiring token bound to the peer IP"""
-		auth_token = self.generate_auth_token()
-		now = time.time()
-		self.auth_tokens[auth_token] = {
-			'created': now,
-			'expires': now + AUTH_TOKEN_TIMEOUT,
-			'ip': ip
-		}
-		return auth_token
+		with self._lock:
+			auth_token = self.generate_auth_token()
+			now = time.time()
+			self.auth_tokens[auth_token] = {
+				'created': now,
+				'expires': now + AUTH_TOKEN_TIMEOUT,
+				'ip': ip
+			}
+			return auth_token
 
 	def verify_auth_token(self, auth_token, ip):
 		"""Verify an auth token and remove stale tokens"""
-		self.cleanup_expired_auth()
-		token_info = self.auth_tokens.get(auth_token)
-		if not token_info:
-			return False
-		if token_info.get('ip') != ip:
-			return False
-		if token_info.get('expires', 0) < time.time():
-			self.auth_tokens.pop(auth_token, None)
-			return False
-		return True
+		with self._lock:
+			self.cleanup_expired_auth()
+			token_info = self.auth_tokens.get(auth_token)
+			if not token_info:
+				return False
+			if token_info.get('ip') != ip:
+				return False
+			if token_info.get('expires', 0) < time.time():
+				self.auth_tokens.pop(auth_token, None)
+				return False
+			return True
 
 	def cleanup_expired_auth(self):
 		"""Remove expired auth tokens and challenges"""
-		now = time.time()
-		self.auth_tokens = {
-			token: info for token, info in self.auth_tokens.items()
-			if info.get('expires', 0) >= now
-		}
-		self.auth_challenges = {
-			nonce: info for nonce, info in self.auth_challenges.items()
-			if now - info.get('created', 0) <= AUTH_CHALLENGE_TIMEOUT
-		}
+		with self._lock:
+			now = time.time()
+			self.auth_tokens = {
+				token: info for token, info in self.auth_tokens.items()
+				if info.get('expires', 0) >= now
+			}
+			self.auth_challenges = {
+				nonce: info for nonce, info in self.auth_challenges.items()
+				if now - info.get('created', 0) <= AUTH_CHALLENGE_TIMEOUT
+			}
 
 	def clear_authentication(self):
 		"""Clear all token and challenge state"""
-		self.auth_tokens.clear()
-		self.auth_challenges.clear()
+		with self._lock:
+			self.auth_tokens.clear()
+			self.auth_challenges.clear()
 
 # ----
 # Output File Monitor (Simplified)
@@ -981,6 +990,7 @@ class OutputFileMonitor:
 			self.source_project_root = str(Path(source_project_root).expanduser().resolve(strict=False))
 		self.monitoring = False
 		self.monitor_thread = None
+		self._stop_event = threading.Event()
 		self.scan_lock = threading.Lock()
 		self.manifest_lock = threading.Lock()
 		self.output_roots = set()
@@ -1217,6 +1227,7 @@ class OutputFileMonitor:
 		if self.monitoring:
 			return
 
+		self._stop_event.clear()
 		self.monitoring = True
 		print(f"Started monitoring output roots: {sorted(self.output_roots)}")
 
@@ -1231,6 +1242,7 @@ class OutputFileMonitor:
 
 		print("Stopping output file monitoring...")
 		self.monitoring = False
+		self._stop_event.set()
 
 		if self.monitor_thread:
 			self.monitor_thread.join(timeout=5)
@@ -1245,10 +1257,10 @@ class OutputFileMonitor:
 				if now - self.last_scan_time >= OUTPUT_SYNC_POLL_INTERVAL:
 					self._scan_for_new_files()
 					self.last_scan_time = now
-				time.sleep(1.0)
+				self._stop_event.wait(timeout=1.0)
 			except Exception as e:
 				print(f"Output monitor loop error: {e}")
-				time.sleep(2.0)
+				self._stop_event.wait(timeout=2.0)
 
 		print("Output monitoring loop stopped")
 
@@ -1362,8 +1374,10 @@ class OutputFileMonitor:
 		def post_processing_monitor():
 			monitor_time = 0
 			while monitor_time < 30:
-				time.sleep(3)
+				self._stop_event.wait(timeout=3)
 				monitor_time += 3
+				if self._stop_event.is_set():
+					break
 				try:
 					self._scan_for_new_files()
 				except Exception as e:
@@ -1377,7 +1391,7 @@ class OutputFileMonitor:
 		"""Do one last output scan before shutdown"""
 		print("Performing final output scan...")
 		try:
-			time.sleep(2)
+			self._stop_event.wait(timeout=2)
 			self._scan_for_new_files()
 			with self.manifest_lock:
 				output_count = len(self.output_manifest)
@@ -1405,14 +1419,29 @@ class NetworkManager:
 		self.stored_password_hash = None
 		self.stored_salt = None
 		self._shutdown_requested = False
-		self.is_rendering = False  # Track if we're currently rendering
-	
+		self._rendering_event = threading.Event()
+		self._cached_cache_root = None
+
+	@property
+	def is_rendering(self):
+		return self._rendering_event.is_set()
+
+	@is_rendering.setter
+	def is_rendering(self, value):
+		if value:
+			self._rendering_event.set()
+		else:
+			self._rendering_event.clear()
+
 	def update_ports_from_preferences(self):
-		"""Update ports from addon preferences if available"""
+		"""Snapshot preference values that handler threads need. Call from main thread only."""
 		try:
 			prefs = bpy.context.preferences.addons[__package__].preferences
 			self.discovery_port = prefs.remote_discovery_port
 			self.communication_port = prefs.remote_communication_port
+			self._cached_cache_root = str(
+				Path(bpy.path.abspath(prefs.remote_cache_directory)).expanduser().resolve()
+			)
 		except (AttributeError, KeyError):
 			pass
 
@@ -1421,9 +1450,14 @@ class NetworkManager:
 		return is_allowed_lan_ip(ip)
 
 	def _get_cache_root(self):
-		"""Resolve the configured remote cache root"""
-		prefs = bpy.context.preferences.addons[__package__].preferences
-		return str(Path(bpy.path.abspath(prefs.remote_cache_directory)).expanduser().resolve())
+		"""Return the cached remote cache root; must be populated by update_ports_from_preferences on the main thread before handler threads call this."""
+		if self._cached_cache_root is not None:
+			return self._cached_cache_root
+		try:
+			prefs = bpy.context.preferences.addons[__package__].preferences
+			return str(Path(bpy.path.abspath(prefs.remote_cache_directory)).expanduser().resolve())
+		except (AttributeError, KeyError):
+			raise RuntimeError("Remote cache root is not configured")
 
 	def _get_project_cache_dir(self, project_name):
 		"""Resolve a normalized project cache directory under the cache root"""
@@ -1640,7 +1674,7 @@ class NetworkManager:
 							'ip': self._get_local_ip(),
 							'port': self.communication_port,
 							'blender_version': bpy.app.version_string,
-							'plugin_version': bl_info['version'],
+							'plugin_version': ADDON_VERSION,
 							'requires_auth': requires_auth,
 							'timestamp': time.time()
 						}
