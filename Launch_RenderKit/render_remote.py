@@ -31,6 +31,8 @@ AUTH_TOKEN_TIMEOUT = 60 * 60
 AUTH_MAX_CHALLENGES = 256
 PROJECT_ID_HASH_LENGTH = 12
 PROJECT_ID_SLUG_LENGTH = 60
+INPUT_MANIFEST_FILENAME = ".render_remote_input_manifest.json"
+INPUT_MANIFEST_VERSION = 1
 
 LAN_ALLOWED_NETWORKS = tuple(ipaddress.ip_network(network) for network in (
 	'10.0.0.0/8',
@@ -255,6 +257,23 @@ def normalize_project_id(project_name):
 	slug = slug[:PROJECT_ID_SLUG_LENGTH].strip('._-') or "project"
 	return f"{slug}-{digest}"
 
+def build_source_project_cache_name(project_name, blend_file_path=None):
+	"""Build a stable source-side cache identity for one blend project"""
+	raw_name = str(project_name or "Untitled").strip() or "Untitled"
+	if not blend_file_path:
+		try:
+			blend_file_path = bpy.data.filepath
+		except Exception:
+			blend_file_path = None
+
+	if not blend_file_path:
+		raise ValueError("Saved blend file required for remote project cache identity")
+
+	blend_path = str(Path(blend_file_path).expanduser().resolve(strict=False))
+	blend_name = Path(blend_path).name or "project.blend"
+	blend_hash = hashlib.sha256(blend_path.encode('utf-8')).hexdigest()[:PROJECT_ID_HASH_LENGTH]
+	return f"{raw_name}-{blend_name}-{blend_hash}"
+
 def normalize_relative_path(relative_path):
 	"""Normalize a project-relative POSIX path and reject traversal"""
 	if relative_path is None:
@@ -283,6 +302,17 @@ def normalize_relative_path(relative_path):
 	if not parts:
 		raise PathSecurityError("Relative path is required")
 	return '/'.join(parts)
+
+def is_reserved_input_manifest_path(relative_path):
+	"""Return True for internal manifest files that must not be synced or deleted as inputs"""
+	manifest_paths = (
+		INPUT_MANIFEST_FILENAME,
+		f"{INPUT_MANIFEST_FILENAME}.tmp",
+	)
+	return any(
+		relative_path == manifest_path or relative_path.startswith(f"{manifest_path}/")
+		for manifest_path in manifest_paths
+	)
 
 def resolve_under_root(root_path, relative_path):
 	"""Resolve a normalized relative path under an allowed root"""
@@ -754,14 +784,47 @@ class FileSyncManager:
 			
 		return manifest
 	
+	def sanitize_manifest_entry(self, entry):
+		"""Return storage-safe manifest metadata for a synced input file"""
+		if not isinstance(entry, dict):
+			return {}
+
+		safe_entry = {}
+		for key in ('hash', 'size', 'mtime', 'role'):
+			if key in entry:
+				safe_entry[key] = entry[key]
+		return safe_entry
+
+	def sanitize_input_manifest(self, manifest):
+		"""Normalize manifest keys and strip local-only filesystem paths"""
+		safe_manifest = {}
+		if not isinstance(manifest, dict):
+			return safe_manifest
+
+		for rel_path, entry in manifest.items():
+			try:
+				normalized_path = normalize_relative_path(rel_path)
+			except PathSecurityError:
+				continue
+
+			if is_reserved_input_manifest_path(normalized_path):
+				continue
+
+			safe_manifest[normalized_path] = self.sanitize_manifest_entry(entry)
+
+		return safe_manifest
+
 	def compare_manifests(self, local_manifest, remote_manifest):
-		"""Compare local and remote manifests to find differences"""
+		"""Compare local input manifest with target-owned input manifest"""
 		changes = {
 			'new_files': [],
 			'modified_files': [],
 			'deleted_files': [],
 			'unchanged_files': []
 		}
+
+		local_manifest = self.sanitize_input_manifest(local_manifest)
+		remote_manifest = self.sanitize_input_manifest(remote_manifest)
 		
 		# Files that exist locally
 		for rel_path, local_info in local_manifest.items():
@@ -771,7 +834,7 @@ class FileSyncManager:
 					'size': local_info['size'],
 					'local_info': local_info
 				})
-			elif local_info['hash'] != remote_manifest[rel_path]['hash']:
+			elif local_info.get('hash') != remote_manifest[rel_path].get('hash'):
 				changes['modified_files'].append({
 					'path': rel_path,
 					'size': local_info['size'],
@@ -781,38 +844,13 @@ class FileSyncManager:
 			else:
 				changes['unchanged_files'].append(rel_path)
 		
-		# Files that exist remotely but not locally
-		# BUT only consider them "deleted" if they're actually dependencies/inputs
+		# Files that were owned by the previous target input manifest but no longer exist locally
 		for rel_path in remote_manifest:
 			if rel_path not in local_manifest:
-				# Skip files that are likely render outputs or should be ignored
-				remote_file_path = remote_manifest[rel_path].get('abs_path', rel_path)
-				
-				# Don't treat render outputs as "deleted dependencies"
-				if FileFilter.is_likely_render_output(rel_path):
-					print(f"Skipping likely render output: {rel_path}")
-					continue
-				
-				# Don't treat ignored files as "deleted dependencies"  
-				if FileFilter.should_ignore_file(rel_path):
-					print(f"Skipping ignored file: {rel_path}")
-					continue
-				
-				# Only consider actual dependency-type files as potentially "deleted"
-				file_ext = os.path.splitext(rel_path)[1].lower()
-				dependency_extensions = {
-					'.blend', '.jpg', '.jpeg', '.png', '.exr', '.tif', '.tiff',
-					'.hdr', '.wav', '.mp3', '.mp4', '.mov', '.avi',
-					'.ttf', '.otf', '.obj', '.fbx', '.dae', '.abc'
-				}
-				
-				if file_ext in dependency_extensions:
-					changes['deleted_files'].append({
-						'path': rel_path,
-						'remote_info': remote_manifest[rel_path]
-					})
-				else:
-					print(f"Skipping non-dependency file: {rel_path}")
+				changes['deleted_files'].append({
+					'path': rel_path,
+					'remote_info': remote_manifest[rel_path]
+				})
 				
 		return changes
 
@@ -1358,6 +1396,57 @@ class NetworkManager:
 		project_id = normalize_project_id(project_name)
 		return resolve_under_root(self._get_cache_root(), project_id), project_id
 
+	def _get_input_manifest_path(self, project_cache_dir):
+		"""Resolve the target-owned input manifest path for a project cache"""
+		return resolve_under_root(project_cache_dir, INPUT_MANIFEST_FILENAME)
+
+	def _load_input_manifest(self, project_cache_dir):
+		"""Load the stored target-owned input manifest"""
+		manifest_path = self._get_input_manifest_path(project_cache_dir)
+		if not os.path.isfile(manifest_path):
+			return {}
+
+		with open(manifest_path, 'r', encoding='utf-8') as manifest_file:
+			manifest_data = json.load(manifest_file)
+
+		if isinstance(manifest_data, dict) and isinstance(manifest_data.get('files'), dict):
+			return file_sync_manager.sanitize_input_manifest(manifest_data['files'])
+
+		if isinstance(manifest_data, dict):
+			return file_sync_manager.sanitize_input_manifest(manifest_data)
+
+		return {}
+
+	def _write_input_manifest(self, project_cache_dir, manifest):
+		"""Persist the target-owned input manifest atomically"""
+		os.makedirs(project_cache_dir, exist_ok=True)
+		manifest_path = self._get_input_manifest_path(project_cache_dir)
+		temp_path = resolve_under_root(project_cache_dir, f"{INPUT_MANIFEST_FILENAME}.tmp")
+		manifest_data = {
+			'version': INPUT_MANIFEST_VERSION,
+			'updated_at': time.time(),
+			'files': file_sync_manager.sanitize_input_manifest(manifest)
+		}
+
+		with open(temp_path, 'w', encoding='utf-8') as manifest_file:
+			json.dump(manifest_data, manifest_file, indent=2, sort_keys=True)
+
+		os.replace(temp_path, manifest_path)
+
+	def _remove_empty_parent_dirs(self, project_cache_dir, file_path):
+		"""Remove empty directories up to, but not including, the project cache root"""
+		root = Path(project_cache_dir).resolve()
+		current = Path(file_path).resolve(strict=False).parent
+
+		while current != root:
+			try:
+				if os.path.commonpath([str(root), str(current)]) != str(root):
+					break
+				current.rmdir()
+				current = current.parent
+			except OSError:
+				break
+
 	def _create_connection(self, ip, port, timeout=10):
 		"""Create an outbound connection only to an allowed LAN target"""
 		if not self._is_allowed_peer(ip):
@@ -1660,6 +1749,9 @@ class NetworkManager:
 			
 		elif msg_type == 'sync_file':
 			return self._handle_sync_file(message, client_sock)
+
+		elif msg_type == 'delete_obsolete_inputs':
+			return self._handle_delete_obsolete_inputs(message)
 			
 		elif msg_type == 'render_request':
 			return self._handle_render_request(message, addr)
@@ -1813,14 +1905,8 @@ class NetworkManager:
 		try:
 			project_name = message.get('project_name', 'default')
 			project_cache_dir, _project_id = self._get_project_cache_dir(project_name)
-			
-			if os.path.exists(project_cache_dir):
-				manifest = file_sync_manager.get_directory_manifest(project_cache_dir)
-				for file_info in manifest.values():
-					file_info.pop('abs_path', None)
-				return {'status': 'success', 'manifest': manifest}
-			else:
-				return {'status': 'success', 'manifest': {}}
+			manifest = self._load_input_manifest(project_cache_dir)
+			return {'status': 'success', 'manifest': manifest}
 
 		except PathSecurityError:
 			return {'status': 'error', 'message': 'Invalid project path'}
@@ -1834,11 +1920,15 @@ class NetworkManager:
 			project_name = message.get('project_name', 'default')
 			file_path = message.get('file_path')
 			file_size = validate_file_size(message.get('file_size', 0))
+			manifest_entry = file_sync_manager.sanitize_manifest_entry(message.get('manifest_entry', {}))
 			
 			if not file_path:
 				return {'status': 'error', 'message': 'File path required'}
 
 			relative_path = normalize_relative_path(file_path)
+			if is_reserved_input_manifest_path(relative_path):
+				return {'status': 'error', 'message': 'Invalid file path'}
+
 			project_cache_dir, _project_id = self._get_project_cache_dir(project_name)
 			target_file_path = resolve_under_root(project_cache_dir, relative_path)
 			
@@ -1846,6 +1936,19 @@ class NetworkManager:
 			os.makedirs(os.path.dirname(target_file_path), exist_ok=True)
 			
 			recv_file(client_sock, target_file_path, file_size)
+
+			stat = os.stat(target_file_path)
+			manifest_entry['size'] = stat.st_size
+			manifest_entry.setdefault('mtime', stat.st_mtime)
+			if not manifest_entry.get('hash'):
+				file_hash = file_sync_manager.calculate_file_hash(target_file_path)
+				if file_hash:
+					manifest_entry['hash'] = file_hash
+
+			manifest = self._load_input_manifest(project_cache_dir)
+			manifest[relative_path] = manifest_entry
+			self._write_input_manifest(project_cache_dir, manifest)
+
 			return {'status': 'success', 'message': 'File received'}
 
 		except PathSecurityError:
@@ -1856,6 +1959,61 @@ class NetworkManager:
 		except Exception as e:
 			print(f"File sync failed: {e}")
 			return error_response('file_sync_failed', 'File sync failed')
+
+	def _handle_delete_obsolete_inputs(self, message):
+		"""Delete stale target inputs that are owned by the stored input manifest"""
+		try:
+			if self.is_rendering:
+				return error_response('render_in_progress', 'Cannot delete inputs while rendering')
+
+			project_name = message.get('project_name', 'default')
+			requested_paths = message.get('paths', [])
+			if not isinstance(requested_paths, list):
+				return {'status': 'error', 'message': 'Invalid delete request'}
+
+			project_cache_dir, _project_id = self._get_project_cache_dir(project_name)
+			manifest = self._load_input_manifest(project_cache_dir)
+			deleted_paths = []
+			missing_paths = []
+			skipped_paths = []
+
+			for requested_path in requested_paths:
+				try:
+					relative_path = normalize_relative_path(requested_path)
+				except PathSecurityError:
+					skipped_paths.append(str(requested_path))
+					continue
+
+				if is_reserved_input_manifest_path(relative_path) or relative_path not in manifest:
+					skipped_paths.append(relative_path)
+					continue
+
+				target_file_path = resolve_under_root(project_cache_dir, relative_path)
+				if os.path.isfile(target_file_path) or os.path.islink(target_file_path):
+					os.remove(target_file_path)
+					deleted_paths.append(relative_path)
+					self._remove_empty_parent_dirs(project_cache_dir, target_file_path)
+				elif not os.path.exists(target_file_path):
+					missing_paths.append(relative_path)
+				else:
+					skipped_paths.append(relative_path)
+					continue
+
+				manifest.pop(relative_path, None)
+
+			self._write_input_manifest(project_cache_dir, manifest)
+			return {
+				'status': 'success',
+				'deleted_paths': deleted_paths,
+				'missing_paths': missing_paths,
+				'skipped_paths': skipped_paths
+			}
+
+		except PathSecurityError:
+			return {'status': 'error', 'message': 'Invalid project path'}
+		except Exception as e:
+			print(f"Obsolete input delete failed: {e}")
+			return error_response('delete_failed', 'Failed to delete obsolete inputs')
 			
 	def _handle_render_request(self, message, addr):
 		"""Handle render request from source computer"""
@@ -2069,11 +2227,14 @@ class NetworkManager:
 			
 		return None
 	
-	def sync_file_to_remote(self, ip, port, auth_token, project_name, file_path, local_file_path):
+	def sync_file_to_remote(self, ip, port, auth_token, project_name, file_path, local_file_path, manifest_entry=None):
 		"""Sync a file to remote node"""
 		try:
 			relative_path = normalize_relative_path(file_path)
+			if is_reserved_input_manifest_path(relative_path):
+				return False
 			file_size = validate_file_size(os.path.getsize(local_file_path))
+			manifest_entry = file_sync_manager.sanitize_manifest_entry(manifest_entry or {})
 
 			with self._create_connection(ip, port, timeout=30) as sock:
 				request = {
@@ -2082,6 +2243,7 @@ class NetworkManager:
 					'project_name': project_name,
 					'file_path': relative_path,
 					'file_size': file_size,
+					'manifest_entry': manifest_entry,
 					'timestamp': time.time()
 				}
 
@@ -2094,6 +2256,31 @@ class NetworkManager:
 		except Exception as e:
 			print(f"File sync failed: {e}")
 			return False
+
+	def delete_obsolete_inputs(self, ip, port, auth_token, project_name, paths):
+		"""Ask the target to delete stale inputs it owns in its stored manifest"""
+		try:
+			normalized_paths = []
+			for path in paths:
+				normalized_path = normalize_relative_path(path)
+				if not is_reserved_input_manifest_path(normalized_path):
+					normalized_paths.append(normalized_path)
+
+			if not normalized_paths:
+				return {'status': 'success', 'deleted_paths': [], 'missing_paths': [], 'skipped_paths': []}
+
+			request = {
+				'type': 'delete_obsolete_inputs',
+				'auth_token': auth_token,
+				'project_name': project_name,
+				'paths': sorted(set(normalized_paths)),
+				'timestamp': time.time()
+			}
+			return self._send_request(ip, port, request, timeout=30)
+
+		except Exception as e:
+			print(f"Delete obsolete inputs failed: {e}")
+			return None
 	
 	def send_render_request(self, ip, port, auth_token, project_name, blend_file, render_settings, source_project_root=None):
 		"""Send render request to remote node"""
@@ -2854,20 +3041,21 @@ class REMOTERENDER_OT_ScanProject(Operator):
 						if node.node_id == props.selected_node and node.is_connected:
 							target_node = node
 							break
-					
+
 					if target_node:
 						project_root = file_sync_manager.get_project_root()
 						if project_root:
+							project_cache_name = build_source_project_cache_name(props.project_name)
 							# Use the new method that only includes referenced files
 							local_manifest = file_sync_manager.get_referenced_files_manifest(project_root, dependencies)
-							
+
 							remote_manifest = network_manager.get_remote_manifest(
 								target_node.ip,
 								target_node.port,
 								target_node.auth_token,
-								props.project_name
+								project_cache_name
 							)
-							
+
 							if remote_manifest is not None:
 								sync_changes = file_sync_manager.compare_manifests(local_manifest, remote_manifest)
 				
@@ -2957,6 +3145,10 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 		if not props.selected_node:
 			self.report({'ERROR'}, "No remote node connected")
 			return {'CANCELLED'}
+
+		if not bpy.data.filepath:
+			self.report({'ERROR'}, "Please save your blend file first")
+			return {'CANCELLED'}
 		
 		# Find connected node
 		target_node = None
@@ -2969,26 +3161,55 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 			self.report({'ERROR'}, "Remote node not connected")
 			return {'CANCELLED'}
 		
-		# Get selected files
-		selected_files = [f for f in context.scene.sync_files if f.selected and f.status in {'new', 'modified'}]
+		# Get selected files and stale owned inputs
+		selected_upload_paths = [
+			normalize_relative_path(f.file_path)
+			for f in context.scene.sync_files
+			if f.selected and f.status in {'new', 'modified'}
+		]
+		selected_delete_paths = [
+			normalize_relative_path(f.file_path)
+			for f in context.scene.sync_files
+			if f.selected and f.status == 'deleted'
+		]
 		
-		if not selected_files:
+		if not selected_upload_paths and not selected_delete_paths:
 			self.report({'WARNING'}, "No files selected for sync")
 			return {'CANCELLED'}
 		
-		self.report({'INFO'}, f"Syncing {len(selected_files)} files...")
+		self.report({'INFO'}, f"Syncing {len(selected_upload_paths)} files and deleting {len(selected_delete_paths)} stale inputs...")
 		
 		def sync_files():
 			try:
 				project_root = file_sync_manager.get_project_root()
 				if not project_root:
 					raise Exception("Could not determine project root")
+
+				project_cache_name = build_source_project_cache_name(props.project_name)
+				dependencies = file_sync_manager.scan_blend_dependencies()
+				local_manifest = file_sync_manager.get_referenced_files_manifest(project_root, dependencies)
+				remote_manifest = network_manager.get_remote_manifest(
+					target_node.ip,
+					target_node.port,
+					target_node.auth_token,
+					project_cache_name
+				)
+				if remote_manifest is None and selected_delete_paths:
+					raise Exception("Could not load target input manifest for stale input deletion")
+
+				sync_changes = file_sync_manager.compare_manifests(local_manifest, remote_manifest or {})
+				current_deleted_paths = {file_info['path'] for file_info in sync_changes['deleted_files']}
 				
 				success_count = 0
-				total_files = len(selected_files)
+				total_uploads = len(selected_upload_paths)
+				deleted_count = 0
+				total_deletes = 0
 				
-				for file_info in selected_files:
-					relative_path = normalize_relative_path(file_info.file_path)
+				for relative_path in selected_upload_paths:
+					if relative_path not in local_manifest:
+						print(f"Skipping upload not present in current input manifest: {relative_path}")
+						continue
+
 					local_file_path = resolve_under_root(project_root, relative_path)
 
 					if os.path.exists(local_file_path):
@@ -2996,20 +3217,42 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 							target_node.ip,
 							target_node.port,
 							target_node.auth_token,
-							props.project_name,
+							project_cache_name,
 							relative_path,
-							local_file_path
+							local_file_path,
+							local_manifest[relative_path]
 						)
 
 						if success:
 							success_count += 1
+
+				delete_paths = [
+					relative_path for relative_path in selected_delete_paths
+					if relative_path in current_deleted_paths and relative_path not in local_manifest
+				]
+				total_deletes = len(delete_paths)
+				if delete_paths:
+					delete_response = network_manager.delete_obsolete_inputs(
+						target_node.ip,
+						target_node.port,
+						target_node.auth_token,
+						project_cache_name,
+						delete_paths
+					)
+					if delete_response and delete_response.get('status') == 'success':
+						deleted_count = len(delete_response.get('deleted_paths', [])) + len(delete_response.get('missing_paths', []))
+					else:
+						print(f"Delete obsolete inputs failed: {delete_response}")
 				
 				def update_ui():
 					context = bpy.context
 					props = context.scene.remote_render_props
-					props.sync_status = f"Synced {success_count}/{total_files} files"
+					if total_deletes:
+						props.sync_status = f"Synced {success_count}/{total_uploads} files, deleted {deleted_count}/{total_deletes} stale inputs"
+					else:
+						props.sync_status = f"Synced {success_count}/{total_uploads} files"
 					
-					if success_count > 0:
+					if success_count > 0 or deleted_count > 0:
 						bpy.ops.render_remote.scan_project()
 					
 					return None
@@ -3099,11 +3342,12 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			return {'CANCELLED'}
 		
 		# Send render request
+		project_cache_name = build_source_project_cache_name(props.project_name)
 		result = network_manager.send_render_request(
 			target_node.ip,
 			target_node.port,
 			target_node.auth_token,
-			props.project_name,
+			project_cache_name,
 			blend_file_rel,
 			render_settings,
 			project_root  # Pass source project root for output sync
