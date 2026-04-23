@@ -2292,9 +2292,10 @@ class NetworkManager:
 				'project_name': project_name,
 				'blend_file': blend_file,
 				'render_settings': render_settings,
-				'source_project_root': source_project_root,
 				'timestamp': time.time()
 			}
+			if source_project_root:
+				request['source_project_root'] = source_project_root
 			return self._send_request(ip, port, request, timeout=30)
 
 		except Exception as e:
@@ -2513,7 +2514,10 @@ class RenderManager:
 			scene.frame_current = settings['frame_current']
 			
 		# Output settings
-		if 'output_path' in settings:
+		if 'output_relative_path' in settings:
+			project_root = os.path.dirname(os.path.dirname(bpy.data.filepath))
+			scene.render.filepath = resolve_under_root(project_root, settings['output_relative_path'])
+		elif 'output_path' in settings:
 			scene.render.filepath = settings['output_path']
 		if 'file_format' in settings:
 			scene.render.image_settings.file_format = settings['file_format']
@@ -2817,6 +2821,180 @@ class RemoteRenderProperties(PropertyGroup):
 	)
 
 # ----
+# Source-side Render Remote Workflow Helpers
+# ----
+
+def get_connected_remote_node(context, props):
+	"""Return the selected connected remote node, if any"""
+	for node in context.scene.discovered_nodes:
+		if node.node_id == props.selected_node and node.is_connected:
+			return node
+	return None
+
+def update_sync_ui_from_scan(context, dependencies, sync_changes=None):
+	"""Update sync UI state from dependency and manifest comparison results"""
+	props = context.scene.remote_render_props
+	props.external_files_count = len(dependencies['external'])
+	props.show_external_warning = len(dependencies['external']) > 0
+	props.missing_files_count = len(dependencies['missing'])
+	props.show_missing_warning = len(dependencies['missing']) > 0
+
+	context.scene.sync_files.clear()
+
+	if sync_changes:
+		for file_info in sync_changes['new_files']:
+			item = context.scene.sync_files.add()
+			item.file_path = file_info['path']
+			item.status = 'new'
+			item.size = file_info['size']
+
+		for file_info in sync_changes['modified_files']:
+			item = context.scene.sync_files.add()
+			item.file_path = file_info['path']
+			item.status = 'modified'
+			item.size = file_info['size']
+
+		for file_info in sync_changes['deleted_files']:
+			item = context.scene.sync_files.add()
+			item.file_path = file_info['path']
+			item.status = 'deleted'
+			item.size = 0
+
+		total_files = len(sync_changes['new_files']) + len(sync_changes['modified_files'])
+		if total_files:
+			props.sync_status = f"{total_files} files need sync"
+		elif dependencies['external'] or dependencies['missing']:
+			props.sync_status = "Unsupported references found"
+		elif sync_changes['deleted_files']:
+			props.sync_status = f"{len(sync_changes['deleted_files'])} stale remote files"
+		else:
+			props.sync_status = "Up to date"
+	else:
+		props.sync_status = "Unsupported references found" if (dependencies['external'] or dependencies['missing']) else "Up to date"
+
+	for file_path in dependencies['external']:
+		item = context.scene.sync_files.add()
+		item.file_path = file_path
+		item.status = 'external'
+		item.size = 0
+		item.selected = False
+
+	for file_path in dependencies['missing']:
+		item = context.scene.sync_files.add()
+		item.file_path = file_path
+		item.status = 'missing'
+		item.size = 0
+		item.selected = False
+
+def collect_project_sync_state(props, target_node, require_remote_manifest=True):
+	"""Scan dependencies and compare them with the target-owned input manifest"""
+	project_root = file_sync_manager.get_project_root()
+	if not project_root:
+		raise Exception("Could not determine project root")
+
+	project_cache_name = build_source_project_cache_name(props.project_name)
+	dependencies = file_sync_manager.scan_blend_dependencies()
+	local_manifest = file_sync_manager.get_referenced_files_manifest(project_root, dependencies)
+	remote_manifest = network_manager.get_remote_manifest(
+		target_node.ip,
+		target_node.port,
+		target_node.auth_token,
+		project_cache_name
+	)
+	if remote_manifest is None:
+		if require_remote_manifest:
+			raise Exception("Could not load target input manifest")
+		sync_changes = None
+	else:
+		sync_changes = file_sync_manager.compare_manifests(local_manifest, remote_manifest)
+
+	return {
+		'project_root': project_root,
+		'project_cache_name': project_cache_name,
+		'dependencies': dependencies,
+		'local_manifest': local_manifest,
+		'remote_manifest': remote_manifest,
+		'sync_changes': sync_changes
+	}
+
+def sync_project_inputs_to_target(target_node, project_cache_name, project_root, local_manifest, sync_changes, upload_paths=None, delete_paths=None):
+	"""Upload changed inputs and delete obsolete target-owned inputs"""
+	changed_upload_paths = [file_info['path'] for file_info in sync_changes['new_files'] + sync_changes['modified_files']]
+	stale_delete_paths = [file_info['path'] for file_info in sync_changes['deleted_files']]
+	upload_paths = [normalize_relative_path(path) for path in (changed_upload_paths if upload_paths is None else upload_paths)]
+	delete_paths = [normalize_relative_path(path) for path in (stale_delete_paths if delete_paths is None else delete_paths)]
+
+	upload_paths = sorted(set(path for path in upload_paths if path in local_manifest))
+	delete_paths = sorted(set(path for path in delete_paths if path not in local_manifest and path in stale_delete_paths))
+
+	result = {
+		'uploaded': 0,
+		'upload_total': len(upload_paths),
+		'deleted': 0,
+		'delete_total': len(delete_paths),
+		'failed_uploads': [],
+		'failed_deletes': []
+	}
+
+	for relative_path in upload_paths:
+		local_file_path = resolve_under_root(project_root, relative_path)
+		if not os.path.exists(local_file_path):
+			result['failed_uploads'].append(relative_path)
+			continue
+
+		success = network_manager.sync_file_to_remote(
+			target_node.ip,
+			target_node.port,
+			target_node.auth_token,
+			project_cache_name,
+			relative_path,
+			local_file_path,
+			local_manifest[relative_path]
+		)
+
+		if success:
+			result['uploaded'] += 1
+		else:
+			result['failed_uploads'].append(relative_path)
+
+	if delete_paths:
+		delete_response = network_manager.delete_obsolete_inputs(
+			target_node.ip,
+			target_node.port,
+			target_node.auth_token,
+			project_cache_name,
+			delete_paths
+		)
+		if delete_response and delete_response.get('status') == 'success':
+			result['deleted'] = len(delete_response.get('deleted_paths', [])) + len(delete_response.get('missing_paths', []))
+			result['failed_deletes'] = delete_response.get('skipped_paths', [])
+		else:
+			result['failed_deletes'] = delete_paths
+
+	return result
+
+def build_project_relative_render_settings(scene, animation, project_root):
+	"""Build render settings without source-machine absolute output paths"""
+	render_settings = {
+		'animation': animation,
+		'frame_start': scene.frame_start,
+		'frame_end': scene.frame_end,
+		'frame_current': scene.frame_current,
+		'file_format': scene.render.image_settings.file_format,
+		'resolution_x': scene.render.resolution_x,
+		'resolution_y': scene.render.resolution_y,
+		'resolution_percentage': scene.render.resolution_percentage,
+		'engine': scene.render.engine,
+		'output_path_mode': 'project_relative'
+	}
+
+	if scene.render.filepath:
+		output_path = bpy.path.abspath(scene.render.filepath)
+		render_settings['output_relative_path'] = relative_path_under_root(output_path, project_root)
+
+	return render_settings
+
+# ----
 # Operators (keeping existing ones but simplifying some logic)
 # ----
 
@@ -3029,92 +3207,22 @@ class REMOTERENDER_OT_ScanProject(Operator):
 		
 		def scan_project():
 			try:
-				dependencies = file_sync_manager.scan_blend_dependencies()
-				
-				sync_changes = None
 				context = bpy.context
 				props = context.scene.remote_render_props
+				dependencies = file_sync_manager.scan_blend_dependencies()
+				sync_changes = None
 				
 				if props.selected_node:
-					target_node = None
-					for node in context.scene.discovered_nodes:
-						if node.node_id == props.selected_node and node.is_connected:
-							target_node = node
-							break
+					target_node = get_connected_remote_node(context, props)
 
 					if target_node:
-						project_root = file_sync_manager.get_project_root()
-						if project_root:
-							project_cache_name = build_source_project_cache_name(props.project_name)
-							# Use the new method that only includes referenced files
-							local_manifest = file_sync_manager.get_referenced_files_manifest(project_root, dependencies)
-
-							remote_manifest = network_manager.get_remote_manifest(
-								target_node.ip,
-								target_node.port,
-								target_node.auth_token,
-								project_cache_name
-							)
-
-							if remote_manifest is not None:
-								sync_changes = file_sync_manager.compare_manifests(local_manifest, remote_manifest)
+						sync_state = collect_project_sync_state(props, target_node, require_remote_manifest=False)
+						dependencies = sync_state['dependencies']
+						sync_changes = sync_state['sync_changes']
 				
 				def update_ui():
 					context = bpy.context
-					props = context.scene.remote_render_props
-
-					props.external_files_count = len(dependencies['external'])
-					props.show_external_warning = len(dependencies['external']) > 0
-					props.missing_files_count = len(dependencies['missing'])
-					props.show_missing_warning = len(dependencies['missing']) > 0
-
-					context.scene.sync_files.clear()
-
-					if sync_changes:
-						for file_info in sync_changes['new_files']:
-							item = context.scene.sync_files.add()
-							item.file_path = file_info['path']
-							item.status = 'new'
-							item.size = file_info['size']
-
-						for file_info in sync_changes['modified_files']:
-							item = context.scene.sync_files.add()
-							item.file_path = file_info['path']
-							item.status = 'modified'
-							item.size = file_info['size']
-
-						for file_info in sync_changes['deleted_files']:
-							item = context.scene.sync_files.add()
-							item.file_path = file_info['path']
-							item.status = 'deleted'
-							item.size = 0
-
-						total_files = len(sync_changes['new_files']) + len(sync_changes['modified_files'])
-						if total_files:
-							props.sync_status = f"{total_files} files need sync"
-						elif dependencies['external'] or dependencies['missing']:
-							props.sync_status = "Unsupported references found"
-						elif sync_changes['deleted_files']:
-							props.sync_status = f"{len(sync_changes['deleted_files'])} stale remote files"
-						else:
-							props.sync_status = "Up to date"
-					else:
-						props.sync_status = "Unsupported references found" if (dependencies['external'] or dependencies['missing']) else "Up to date"
-
-					for file_path in dependencies['external']:
-						item = context.scene.sync_files.add()
-						item.file_path = file_path
-						item.status = 'external'
-						item.size = 0
-						item.selected = False
-
-					for file_path in dependencies['missing']:
-						item = context.scene.sync_files.add()
-						item.file_path = file_path
-						item.status = 'missing'
-						item.size = 0
-						item.selected = False
-
+					update_sync_ui_from_scan(context, dependencies, sync_changes)
 					return None
 				
 				timer_manager.register_timer(update_ui, interval=0.1)
@@ -3181,78 +3289,29 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 		
 		def sync_files():
 			try:
-				project_root = file_sync_manager.get_project_root()
-				if not project_root:
-					raise Exception("Could not determine project root")
-
-				project_cache_name = build_source_project_cache_name(props.project_name)
-				dependencies = file_sync_manager.scan_blend_dependencies()
-				local_manifest = file_sync_manager.get_referenced_files_manifest(project_root, dependencies)
-				remote_manifest = network_manager.get_remote_manifest(
-					target_node.ip,
-					target_node.port,
-					target_node.auth_token,
-					project_cache_name
+				sync_state = collect_project_sync_state(props, target_node)
+				sync_result = sync_project_inputs_to_target(
+					target_node,
+					sync_state['project_cache_name'],
+					sync_state['project_root'],
+					sync_state['local_manifest'],
+					sync_state['sync_changes'],
+					upload_paths=selected_upload_paths,
+					delete_paths=selected_delete_paths
 				)
-				if remote_manifest is None and selected_delete_paths:
-					raise Exception("Could not load target input manifest for stale input deletion")
-
-				sync_changes = file_sync_manager.compare_manifests(local_manifest, remote_manifest or {})
-				current_deleted_paths = {file_info['path'] for file_info in sync_changes['deleted_files']}
-				
-				success_count = 0
-				total_uploads = len(selected_upload_paths)
-				deleted_count = 0
-				total_deletes = 0
-				
-				for relative_path in selected_upload_paths:
-					if relative_path not in local_manifest:
-						print(f"Skipping upload not present in current input manifest: {relative_path}")
-						continue
-
-					local_file_path = resolve_under_root(project_root, relative_path)
-
-					if os.path.exists(local_file_path):
-						success = network_manager.sync_file_to_remote(
-							target_node.ip,
-							target_node.port,
-							target_node.auth_token,
-							project_cache_name,
-							relative_path,
-							local_file_path,
-							local_manifest[relative_path]
-						)
-
-						if success:
-							success_count += 1
-
-				delete_paths = [
-					relative_path for relative_path in selected_delete_paths
-					if relative_path in current_deleted_paths and relative_path not in local_manifest
-				]
-				total_deletes = len(delete_paths)
-				if delete_paths:
-					delete_response = network_manager.delete_obsolete_inputs(
-						target_node.ip,
-						target_node.port,
-						target_node.auth_token,
-						project_cache_name,
-						delete_paths
-					)
-					if delete_response and delete_response.get('status') == 'success':
-						deleted_count = len(delete_response.get('deleted_paths', [])) + len(delete_response.get('missing_paths', []))
-					else:
-						print(f"Delete obsolete inputs failed: {delete_response}")
 				
 				def update_ui():
 					context = bpy.context
 					props = context.scene.remote_render_props
-					if total_deletes:
-						props.sync_status = f"Synced {success_count}/{total_uploads} files, deleted {deleted_count}/{total_deletes} stale inputs"
+					if sync_result['delete_total']:
+						props.sync_status = f"Synced {sync_result['uploaded']}/{sync_result['upload_total']} files, deleted {sync_result['deleted']}/{sync_result['delete_total']} stale inputs"
 					else:
-						props.sync_status = f"Synced {success_count}/{total_uploads} files"
+						props.sync_status = f"Synced {sync_result['uploaded']}/{sync_result['upload_total']} files"
 					
-					if success_count > 0 or deleted_count > 0:
+					if sync_result['failed_uploads'] or sync_result['failed_deletes']:
+						props.sync_status += " with errors"
+
+					if sync_result['uploaded'] > 0 or sync_result['deleted'] > 0:
 						bpy.ops.render_remote.scan_project()
 					
 					return None
@@ -3283,7 +3342,6 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 	
 	def execute(self, context):
 		props = context.scene.remote_render_props
-		scene = context.scene
 		
 		if not props.selected_node:
 			self.report({'ERROR'}, "No remote node connected")
@@ -3304,66 +3362,112 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			self.report({'ERROR'}, "Remote node not connected")
 			return {'CANCELLED'}
 
-		if props.show_missing_warning:
-			self.report({'ERROR'}, "Referenced files are missing. Restore them and scan again before rendering remotely.")
-			return {'CANCELLED'}
+		animation = self.animation
+		props.sync_status = "Preparing remote render..."
+		props.render_status = "preparing"
+		props.monitor_render = False
+		props.render_error_message = ""
+		self.report({'INFO'}, "Preparing remote render: scanning and syncing inputs...")
 
-		if props.show_external_warning:
-			self.report({'ERROR'}, "External references outside the project root are not supported for remote rendering.")
-			return {'CANCELLED'}
-		
-		print(f"Info: Render started on remote computer")
-		
-		# Prepare render settings
-		render_settings = {
-			'animation': self.animation,
-			'frame_start': scene.frame_start,
-			'frame_end': scene.frame_end,
-			'frame_current': scene.frame_current,
-			'output_path': scene.render.filepath,
-			'file_format': scene.render.image_settings.file_format,
-			'resolution_x': scene.render.resolution_x,
-			'resolution_y': scene.render.resolution_y,
-			'resolution_percentage': scene.render.resolution_percentage,
-			'engine': scene.render.engine
-		}
-		
-		project_root = file_sync_manager.get_project_root()
-		
-		if not project_root:
-			self.report({'ERROR'}, "Could not determine project root")
-			return {'CANCELLED'}
-		
-		# Relative path of blend file
-		try:
-			blend_file_rel = relative_path_under_root(bpy.data.filepath, project_root)
-		except PathSecurityError:
-			self.report({'ERROR'}, "Blend file is outside the project root")
-			return {'CANCELLED'}
-		
-		# Send render request
-		project_cache_name = build_source_project_cache_name(props.project_name)
-		result = network_manager.send_render_request(
-			target_node.ip,
-			target_node.port,
-			target_node.auth_token,
-			project_cache_name,
-			blend_file_rel,
-			render_settings,
-			project_root  # Pass source project root for output sync
-		)
-		
-		if result and result.get('status') == 'success':
-			self.report({'INFO'}, "Render started on remote computer")
-			props.render_status = "Starting"
-			props.monitor_render = True
-			
-			# Start progress monitoring
-			self._start_progress_monitoring(context, target_node)
-		else:
-			error_msg = result.get('message', 'Unknown error') if result else 'Connection failed'
-			self.report({'ERROR'}, f"Failed to start render: {error_msg}")
-		
+		def start_render_workflow():
+			try:
+				context = bpy.context
+				props = context.scene.remote_render_props
+				scene = context.scene
+				sync_state = collect_project_sync_state(props, target_node)
+				dependencies = sync_state['dependencies']
+				sync_changes = sync_state['sync_changes']
+
+				def update_scanned():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					update_sync_ui_from_scan(context, dependencies, sync_changes)
+					return None
+
+				timer_manager.register_timer(update_scanned, interval=0.1)
+
+				if dependencies['missing']:
+					raise Exception("Referenced files are missing. Restore them and scan again before rendering remotely.")
+
+				if dependencies['external']:
+					raise Exception("External references outside the project root are not supported for remote rendering.")
+
+				render_settings = build_project_relative_render_settings(scene, animation, sync_state['project_root'])
+				blend_file_rel = relative_path_under_root(bpy.data.filepath, sync_state['project_root'])
+
+				def update_syncing():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.sync_status = "Syncing inputs for render..."
+					props.render_status = "preparing"
+					return None
+
+				timer_manager.register_timer(update_syncing, interval=0.1)
+
+				sync_result = sync_project_inputs_to_target(
+					target_node,
+					sync_state['project_cache_name'],
+					sync_state['project_root'],
+					sync_state['local_manifest'],
+					sync_changes
+				)
+
+				if sync_result['failed_uploads']:
+					raise Exception(f"Failed to sync {len(sync_result['failed_uploads'])} input files")
+
+				if sync_result['failed_deletes']:
+					raise Exception(f"Failed to delete {len(sync_result['failed_deletes'])} stale remote inputs")
+
+				def update_starting():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.sync_status = f"Inputs ready ({sync_result['uploaded']} uploaded, {sync_result['deleted']} stale deleted)"
+					props.render_status = "preparing"
+					return None
+
+				timer_manager.register_timer(update_starting, interval=0.1)
+
+				result = network_manager.send_render_request(
+					target_node.ip,
+					target_node.port,
+					target_node.auth_token,
+					sync_state['project_cache_name'],
+					blend_file_rel,
+					render_settings
+				)
+
+				if not result or result.get('status') != 'success':
+					error_msg = result.get('message', 'Unknown error') if result else 'Connection failed'
+					raise Exception(f"Failed to start render: {error_msg}")
+
+				def update_success():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.render_status = "preparing"
+					props.monitor_render = True
+					self.report({'INFO'}, "Render started on remote computer")
+					self._start_progress_monitoring(context, target_node)
+					return None
+
+				timer_manager.register_timer(update_success, interval=0.1)
+
+			except Exception as e:
+				error_message = str(e)
+				print(f"Remote render preparation failed: {error_message}")
+
+				def update_error():
+					context = bpy.context
+					props = context.scene.remote_render_props
+					props.render_status = "error"
+					props.render_error_message = error_message
+					props.monitor_render = False
+					props.sync_status = f"Render preparation failed: {error_message}"
+					self.report({'ERROR'}, error_message)
+					return None
+
+				timer_manager.register_timer(update_error, interval=0.1)
+
+		threading.Thread(target=start_render_workflow, daemon=True).start()
 		return {'FINISHED'}
 	
 	def _start_progress_monitoring(self, context, target_node):
