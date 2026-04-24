@@ -229,6 +229,15 @@ class RemoteRuntimeState(PropertyGroup):
 		default='SOURCE',
 		update=update_remote_mode_state,
 	)
+	remote_source_connection_mode: EnumProperty(
+		name="Connection",
+		description="Select how to find the remote render target",
+		items=[
+			('AUTOMATIC', "Automatic", "Scan the local network for remote render targets", "VIEWZOOM", 0),
+			('MANUAL', "Manual", "Connect to a remote render target by IP address", "NETWORK_DRIVE", 1),
+		],
+		default='AUTOMATIC',
+	)
 	remote_selected_node: StringProperty(name="Selected Node", description="Currently selected remote node")
 	remote_sync_status: StringProperty(name="Sync Status", default="Not Scanned")
 	remote_external_files_count: IntProperty(name="External Files Count", default=0)
@@ -666,15 +675,37 @@ class REMOTERENDER_OT_ConnectManual(Operator):
 			return {'CANCELLED'}
 
 		if network_manager.test_connection(prefs.remote_manual_ip, prefs.remote_manual_port, auth_token):
-			# Add manual connection to discovered nodes
-			manual_node = get_discovered_nodes(context).add()
-			manual_node.node_id = f"{prefs.remote_manual_ip}:{prefs.remote_manual_port}"
-			manual_node.name = f"Manual ({prefs.remote_manual_ip})"
-			manual_node.ip = prefs.remote_manual_ip
-			manual_node.port = prefs.remote_manual_port
+			nodes = get_discovered_nodes(context)
+			manual_node = None
+			manual_node_index = None
+			duplicate_indices = []
+			manual_node_id = f"{prefs.remote_manual_ip}:{prefs.remote_manual_port}"
+
+			for index, node in enumerate(nodes):
+				if node.ip == prefs.remote_manual_ip and node.port == prefs.remote_manual_port:
+					if manual_node is None:
+						manual_node = node
+						manual_node_index = index
+					elif manual_node.name.startswith("Manual (") and not node.name.startswith("Manual ("):
+						duplicate_indices.append(manual_node_index)
+						manual_node = node
+						manual_node_index = index
+					else:
+						duplicate_indices.append(index)
+
+			for index in reversed(duplicate_indices):
+				nodes.remove(index)
+
+			if manual_node is None:
+				manual_node = nodes.add()
+				manual_node.node_id = manual_node_id
+				manual_node.name = f"Manual ({prefs.remote_manual_ip})"
+				manual_node.ip = prefs.remote_manual_ip
+				manual_node.port = prefs.remote_manual_port
+				manual_node.requires_auth = True
+
 			manual_node.is_connected = True
 			manual_node.auth_token = auth_token or ""
-			manual_node.requires_auth = True
 
 			props.remote_selected_node = manual_node.node_id
 
@@ -1186,45 +1217,50 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		else:
 			box.label(text="Target not selected", icon='UNLINKED')
 		
-		# Network scan
-		row = box.row()
-		row.operator("render_remote.scan_network", icon='VIEWZOOM')
+		row = box.row(align=True)
+		row.prop(props, "remote_source_connection_mode", expand=True, icon='SETTINGS')
 		
-		# Discovered nodes
-		if get_discovered_nodes(context):
-			box.label(text="Discovered Nodes:")
-			for node in get_discovered_nodes(context):
-				node_box = box.box()
-				row = node_box.row()
-				
-				# Node info
-				col = row.column()
-				col.label(text=f"{node.name}")
-				col.label(text=f"{node.ip}:{node.port}")
-				if node.blender_version:
-					col.label(text=f"Blender {node.blender_version}")
-				
-				# Connection status and controls
-				col = row.column()
-				if node.is_connected:
-					col.label(text="Connected", icon='CHECKMARK')
-					if node.node_id == props.remote_selected_node:
-						col.operator("render_remote.disconnect_node", text="Disconnect")
-				else:
-					if node.requires_auth:
-						col.prop(prefs, "remote_connection_password", text="Password")
+		if props.remote_source_connection_mode == 'AUTOMATIC':
+			# Network scan
+			row = box.row()
+			row.operator("render_remote.scan_network", icon='VIEWZOOM')
+			
+			# Discovered nodes
+			if get_discovered_nodes(context):
+				box.label(text="Discovered Nodes:")
+				for node in get_discovered_nodes(context):
+					node_box = box.box()
+					row = node_box.row()
+					
+					# Node info
+					col = row.column()
+					col.label(text=f"{node.name}")
+					col.label(text=f"{node.ip}:{node.port}")
+					if node.blender_version:
+						col.label(text=f"Blender {node.blender_version}")
+					
+					# Connection status and controls
+					col = row.column()
+					if node.is_connected:
+						col.label(text="Connected", icon='CHECKMARK')
+						if node.node_id == props.remote_selected_node:
+							col.operator("render_remote.disconnect_node", text="Disconnect")
+					else:
+						if node.requires_auth:
+							col.prop(prefs, "remote_connection_password", text="Password")
 
-					op = col.operator("render_remote.connect_node", text="Connect")
-					op.node_id = node.node_id
-		
-		# Manual connection
-		box.separator()
-		box.label(text="Manual Connection:")
-		row = box.row()
-		row.prop(prefs, "remote_manual_ip", text="")
-		row.prop(prefs, "remote_manual_port", text="")
-		row.prop(prefs, "remote_connection_password", text="")
-		box.operator("render_remote.connect_manual")
+						op = col.operator("render_remote.connect_node", text="Connect")
+						op.node_id = node.node_id
+		else:
+			# Manual connection
+			row = box.row()
+			row.prop(prefs, "remote_manual_ip", text="")
+			row.prop(prefs, "remote_manual_port", text="")
+			row.prop(prefs, "remote_connection_password", text="")
+			if connected_node:
+				box.operator("render_remote.disconnect_node", text="Disconnect")
+			else:
+				box.operator("render_remote.connect_manual")
 		
 		# Project scanning and sync
 		layout.separator()
