@@ -236,23 +236,9 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		description="Name for this computer when discovered",
 		default=socket.gethostname()
 	)
-	remote_selected_node: StringProperty(name="Selected Node", description="Currently selected remote node")
 	remote_manual_ip: StringProperty(name="Manual IP", description="Manually enter IP address", default="")
 	remote_manual_port: IntProperty(name="Manual Port", description="Port for manual connection", default=5002, min=1024, max=65535)
 	remote_connection_password: StringProperty(name="Connection Password", description="Password for connecting to remote node", subtype='PASSWORD', default="")
-	remote_project_name: StringProperty(name="Project Name", description="Name for the project on the remote cache", default="Untitled")
-	remote_sync_status: StringProperty(name="Sync Status", default="Not Scanned")
-	remote_external_files_count: IntProperty(name="External Files Count", default=0)
-	remote_show_external_warning: BoolProperty(name="Show External Warning", default=False)
-	remote_missing_files_count: IntProperty(name="Missing Files Count", default=0)
-	remote_show_missing_warning: BoolProperty(name="Show Missing Warning", default=False)
-	remote_render_status: StringProperty(name="Render Status", default="Not Started")
-	remote_render_progress: FloatProperty(name="Render Progress", default=0.0, min=0.0, max=100.0, subtype='PERCENTAGE')
-	remote_current_frame: IntProperty(name="Current Frame", default=0)
-	remote_total_frames: IntProperty(name="Total Frames", default=0)
-	remote_render_elapsed_time: FloatProperty(name="Elapsed Time", default=0.0)
-	remote_render_error_message: StringProperty(name="Render Error", default="")
-	remote_monitor_render: BoolProperty(name="Monitor Render", default=False)
 	
 	
 	

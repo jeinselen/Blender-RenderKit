@@ -14,7 +14,7 @@ from .protocol import (ProtocolError, error_response, recv_file, recv_message,
                        send_file, send_message, validate_message)
 from .handlers import (cleanup_on_exit, cleanup_on_load_pre, reset_connection_status_on_load,
                        shutdown)
-from .ui import (SyncFileInfo, RemoteNodeProperties,
+from .ui import (SyncFileInfo, RemoteNodeProperties, RemoteRuntimeState,
                  REMOTERENDER_OT_StartDiscovery, REMOTERENDER_OT_StopDiscovery,
                  REMOTERENDER_OT_ScanNetwork, REMOTERENDER_OT_ConnectNode,
                  REMOTERENDER_OT_DisconnectNode, REMOTERENDER_OT_ConnectManual,
@@ -30,6 +30,7 @@ _atexit_registered = False
 classes = (
 	SyncFileInfo,
 	RemoteNodeProperties,
+	RemoteRuntimeState,
 	REMOTERENDER_OT_StartDiscovery,
 	REMOTERENDER_OT_StopDiscovery,
 	REMOTERENDER_OT_ScanNetwork,
@@ -73,6 +74,8 @@ def register():
 		bpy.types.WindowManager.remote_render_discovered_nodes = bpy.props.CollectionProperty(type=RemoteNodeProperties)
 	if not hasattr(bpy.types.WindowManager, 'remote_render_sync_files'):
 		bpy.types.WindowManager.remote_render_sync_files = bpy.props.CollectionProperty(type=SyncFileInfo)
+	if not hasattr(bpy.types.WindowManager, 'remote_render_state'):
+		bpy.types.WindowManager.remote_render_state = bpy.props.PointerProperty(type=RemoteRuntimeState)
 
 	# Register cleanup handlers
 	if cleanup_on_exit not in bpy.app.handlers.load_pre:
@@ -130,6 +133,8 @@ def unregister():
 		del bpy.types.WindowManager.remote_render_discovered_nodes
 	if hasattr(bpy.types.WindowManager, 'remote_render_sync_files'):
 		del bpy.types.WindowManager.remote_render_sync_files
+	if hasattr(bpy.types.WindowManager, 'remote_render_state'):
+		del bpy.types.WindowManager.remote_render_state
 
 	_is_registered = False
 	print("Remote Render Sync add-on unregistered")

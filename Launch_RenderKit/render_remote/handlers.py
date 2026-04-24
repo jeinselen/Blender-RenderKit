@@ -2,7 +2,7 @@ import bpy
 import threading
 import time
 from bpy.app.handlers import persistent
-from .constants import ADDON_PACKAGE, OUTPUT_SYNC_POST_PROCESS_TIMEOUT
+from .constants import OUTPUT_SYNC_POST_PROCESS_TIMEOUT
 from .timers import timer_manager
 
 @persistent
@@ -123,7 +123,6 @@ def reset_connection_status_on_load(dummy):
 	try:
 		# Clear previous connection data when opening a new project
 		context = bpy.context
-		prefs = context.preferences.addons[ADDON_PACKAGE].preferences
 
 		# Reset connection status but keep discovered nodes
 		if hasattr(context.window_manager, 'remote_render_discovered_nodes'):
@@ -132,10 +131,12 @@ def reset_connection_status_on_load(dummy):
 				node.auth_token = ""
 
 		# Reset selection and status without touching scene data
-		prefs.remote_selected_node = ""
-		prefs.remote_sync_status = "Not Scanned"
-		prefs.remote_render_status = "Not Started"
-		prefs.remote_monitor_render = False
+		if hasattr(context.window_manager, 'remote_render_state'):
+			state = context.window_manager.remote_render_state
+			state.remote_selected_node = ""
+			state.remote_sync_status = "Not Scanned"
+			state.remote_render_status = "Not Started"
+			state.remote_monitor_render = False
 
 		# Clear sync files
 		if hasattr(context.window_manager, 'remote_render_sync_files'):

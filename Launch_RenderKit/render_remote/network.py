@@ -14,7 +14,7 @@ from .constants import (ADDON_PACKAGE, ADDON_VERSION, DISCOVERY_REPLY_TIMEOUT, C
                         DISCOVERY_BROADCAST_TIMEOUT, LAN_ALLOWED_NETWORKS,
                         INPUT_MANIFEST_FILENAME, INPUT_MANIFEST_VERSION,
                         normalize_project_id, parse_ip_address, is_allowed_lan_ip,
-                        build_source_project_cache_name, default_remote_cache_directory)
+                        default_remote_cache_directory)
 from .paths import (PathSecurityError, normalize_relative_path, resolve_under_root,
                     relative_path_under_root, is_reserved_input_manifest_path)
 from .protocol import (ProtocolError, error_response, validate_message, validate_file_size,

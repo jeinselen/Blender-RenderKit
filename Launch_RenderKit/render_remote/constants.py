@@ -77,9 +77,8 @@ def normalize_project_id(project_name):
 	slug = slug[:PROJECT_ID_SLUG_LENGTH].strip('._-') or "project"
 	return f"{slug}-{digest}"
 
-def build_source_project_cache_name(project_name, blend_file_path=None):
+def build_source_project_cache_name(blend_file_path=None):
 	"""Build a stable source-side cache identity for one blend project"""
-	raw_name = str(project_name or "Untitled").strip() or "Untitled"
 	if not blend_file_path:
 		try:
 			blend_file_path = bpy.data.filepath
@@ -91,5 +90,6 @@ def build_source_project_cache_name(project_name, blend_file_path=None):
 
 	blend_path = str(Path(blend_file_path).expanduser().resolve(strict=False))
 	blend_name = Path(blend_path).name or "project.blend"
+	project_name = Path(blend_name).stem or "project"
 	blend_hash = hashlib.sha256(blend_path.encode('utf-8')).hexdigest()[:PROJECT_ID_HASH_LENGTH]
-	return f"{raw_name}-{blend_name}-{blend_hash}"
+	return f"{project_name}-{blend_name}-{blend_hash}"

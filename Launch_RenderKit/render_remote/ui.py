@@ -5,7 +5,7 @@ import shutil
 import threading
 import time
 from types import SimpleNamespace
-from bpy.props import StringProperty, BoolProperty, IntProperty
+from bpy.props import StringProperty, BoolProperty, FloatProperty, IntProperty
 from bpy.types import Operator, Panel, PropertyGroup
 from .constants import (ADDON_PACKAGE, build_source_project_cache_name,
                         OUTPUT_SYNC_POLL_INTERVAL, OUTPUT_SYNC_QUIET_PERIOD,
@@ -18,7 +18,11 @@ from .render import render_manager
 from .timers import timer_manager
 
 def get_remote_props(context):
-	"""Return preference-backed Render Remote state."""
+	"""Return transient Render Remote workflow state."""
+	return context.window_manager.remote_render_state
+
+def get_remote_preferences(context):
+	"""Return persistent Render Remote preferences."""
 	return context.preferences.addons[ADDON_PACKAGE].preferences
 
 def get_discovered_nodes(context):
@@ -173,6 +177,23 @@ class RemoteNodeProperties(PropertyGroup):
 	is_connected: BoolProperty(name="Is Connected")
 	auth_token: StringProperty(name="Auth Token")
 
+class RemoteRuntimeState(PropertyGroup):
+	"""Transient Render Remote state that should not be saved as preferences or project settings"""
+
+	remote_selected_node: StringProperty(name="Selected Node", description="Currently selected remote node")
+	remote_sync_status: StringProperty(name="Sync Status", default="Not Scanned")
+	remote_external_files_count: IntProperty(name="External Files Count", default=0)
+	remote_show_external_warning: BoolProperty(name="Show External Warning", default=False)
+	remote_missing_files_count: IntProperty(name="Missing Files Count", default=0)
+	remote_show_missing_warning: BoolProperty(name="Show Missing Warning", default=False)
+	remote_render_status: StringProperty(name="Render Status", default="Not Started")
+	remote_render_progress: FloatProperty(name="Render Progress", default=0.0, min=0.0, max=100.0, subtype='PERCENTAGE')
+	remote_current_frame: IntProperty(name="Current Frame", default=0)
+	remote_total_frames: IntProperty(name="Total Frames", default=0)
+	remote_render_elapsed_time: FloatProperty(name="Elapsed Time", default=0.0)
+	remote_render_error_message: StringProperty(name="Render Error", default="")
+	remote_monitor_render: BoolProperty(name="Monitor Render", default=False)
+
 # ----
 # Source-side Render Remote Workflow Helpers
 # ----
@@ -257,7 +278,7 @@ def collect_project_sync_state(props, target_node, require_remote_manifest=True)
 	if not project_root:
 		raise Exception("Could not determine project root")
 
-	project_cache_name = build_source_project_cache_name(props.remote_project_name)
+	project_cache_name = build_source_project_cache_name()
 	dependencies = file_sync_manager.scan_blend_dependencies()
 	local_manifest = file_sync_manager.get_referenced_files_manifest(project_root, dependencies)
 	remote_manifest = network_manager.get_remote_manifest(
@@ -419,7 +440,6 @@ class REMOTERENDER_OT_StartDiscovery(Operator):
 	bl_description = "Start the LAN listening service that allows other computers to send remote render jobs"
 
 	def execute(self, context):
-		props = get_remote_props(context)
 		prefs = context.preferences.addons[ADDON_PACKAGE].preferences
 
 		if network_manager.discovery_active:
@@ -433,13 +453,13 @@ class REMOTERENDER_OT_StartDiscovery(Operator):
 		network_manager.update_ports_from_preferences()
 
 		if not network_manager.start_discovery_server(
-			props.remote_node_name,
+			prefs.remote_node_name,
 			prefs.remote_passcode
 		):
 			self.report({'ERROR'}, "Failed to start authenticated remote render target")
 			return {'CANCELLED'}
 
-		self.report({'INFO'}, f"Remote render target enabled for {props.remote_node_name}")
+		self.report({'INFO'}, f"Remote render target enabled for {prefs.remote_node_name}")
 		return {'FINISHED'}
 
 class REMOTERENDER_OT_StopDiscovery(Operator):
@@ -494,6 +514,7 @@ class REMOTERENDER_OT_ConnectNode(Operator):
 	def execute(self, context):
 		from .constants import is_allowed_lan_ip
 		props = get_remote_props(context)
+		prefs = get_remote_preferences(context)
 
 		# Find the node to connect to
 		target_node = None
@@ -510,14 +531,14 @@ class REMOTERENDER_OT_ConnectNode(Operator):
 			self.report({'ERROR'}, "Remote node is not on an allowed LAN address")
 			return {'CANCELLED'}
 
-		if not props.remote_connection_password:
+		if not prefs.remote_connection_password:
 			self.report({'ERROR'}, "Password required for this node")
 			return {'CANCELLED'}
 
 		auth_token = network_manager.authenticate(
 			target_node.ip,
 			target_node.port,
-			props.remote_connection_password
+			prefs.remote_connection_password
 		)
 
 		if not auth_token:
@@ -569,23 +590,24 @@ class REMOTERENDER_OT_ConnectManual(Operator):
 	def execute(self, context):
 		from .constants import is_allowed_lan_ip
 		props = get_remote_props(context)
+		prefs = get_remote_preferences(context)
 
-		if not props.remote_manual_ip:
+		if not prefs.remote_manual_ip:
 			self.report({'ERROR'}, "Please enter an IP address")
 			return {'CANCELLED'}
 
-		if not is_allowed_lan_ip(props.remote_manual_ip):
+		if not is_allowed_lan_ip(prefs.remote_manual_ip):
 			self.report({'ERROR'}, "Manual IP must be a private, link-local, or loopback address")
 			return {'CANCELLED'}
 
-		if not props.remote_connection_password:
+		if not prefs.remote_connection_password:
 			self.report({'ERROR'}, "Password required for remote render nodes")
 			return {'CANCELLED'}
 
 		auth_token = network_manager.authenticate(
-			props.remote_manual_ip,
-			props.remote_manual_port,
-			props.remote_connection_password
+			prefs.remote_manual_ip,
+			prefs.remote_manual_port,
+			prefs.remote_connection_password
 		)
 
 		if not auth_token:
@@ -593,22 +615,22 @@ class REMOTERENDER_OT_ConnectManual(Operator):
 			self.report({'ERROR'}, detail or "Authentication failed - check password")
 			return {'CANCELLED'}
 
-		if network_manager.test_connection(props.remote_manual_ip, props.remote_manual_port, auth_token):
+		if network_manager.test_connection(prefs.remote_manual_ip, prefs.remote_manual_port, auth_token):
 			# Add manual connection to discovered nodes
 			manual_node = get_discovered_nodes(context).add()
-			manual_node.node_id = f"{props.remote_manual_ip}:{props.remote_manual_port}"
-			manual_node.name = f"Manual ({props.remote_manual_ip})"
-			manual_node.ip = props.remote_manual_ip
-			manual_node.port = props.remote_manual_port
+			manual_node.node_id = f"{prefs.remote_manual_ip}:{prefs.remote_manual_port}"
+			manual_node.name = f"Manual ({prefs.remote_manual_ip})"
+			manual_node.ip = prefs.remote_manual_ip
+			manual_node.port = prefs.remote_manual_port
 			manual_node.is_connected = True
 			manual_node.auth_token = auth_token or ""
 			manual_node.requires_auth = True
 
 			props.remote_selected_node = manual_node.node_id
 
-			self.report({'INFO'}, f"Connected to {props.remote_manual_ip}")
+			self.report({'INFO'}, f"Connected to {prefs.remote_manual_ip}")
 		else:
-			self.report({'ERROR'}, f"Failed to connect to {props.remote_manual_ip}")
+			self.report({'ERROR'}, f"Failed to connect to {prefs.remote_manual_ip}")
 			return {'CANCELLED'}
 
 		return {'FINISHED'}
@@ -1054,12 +1076,12 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		# Mode Selection
 		box = layout.box()
 		box.label(text="Operation Mode:", icon='SETTINGS')
-		box.prop(props, "remote_mode", expand=True)
+		box.prop(prefs, "remote_mode", expand=True)
 
 		layout.separator()
 
 		# Dynamic UI based on selected mode
-		if props.remote_mode == 'TARGET':
+		if prefs.remote_mode == 'TARGET':
 			self.draw_target_mode(layout, props, prefs)
 		else:  # SOURCE mode
 			self.draw_source_mode(layout, props, prefs)
@@ -1077,7 +1099,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		status_box.label(text="Turning off Render Remote or leaving Target mode stops this service.", icon='INFO')
 
 		col = box.column()
-		col.prop(props, "remote_node_name")
+		col.prop(prefs, "remote_node_name")
 
 		# Show authentication status from preferences
 		if prefs.remote_passcode:
@@ -1133,7 +1155,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 						col.operator("render_remote.disconnect_node", text="Disconnect")
 				else:
 					if node.requires_auth:
-						col.prop(props, "remote_connection_password", text="Password")
+						col.prop(prefs, "remote_connection_password", text="Password")
 
 					op = col.operator("render_remote.connect_node", text="Connect")
 					op.node_id = node.node_id
@@ -1142,9 +1164,9 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		box.separator()
 		box.label(text="Manual Connection:")
 		col = box.column()
-		col.prop(props, "remote_manual_ip")
-		col.prop(props, "remote_manual_port")
-		col.prop(props, "remote_connection_password", text="Password")
+		col.prop(prefs, "remote_manual_ip")
+		col.prop(prefs, "remote_manual_port")
+		col.prop(prefs, "remote_connection_password", text="Password")
 		col.operator("render_remote.connect_manual")
 
 		# Selected connection info
@@ -1154,12 +1176,6 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		elif props.remote_selected_node:
 			box.separator()
 			box.label(text="Selected target is no longer connected", icon='ERROR')
-
-		# Project settings
-		layout.separator()
-		box = layout.box()
-		box.label(text="Project Settings:", icon='FILE_FOLDER')
-		box.prop(props, "remote_project_name")
 
 		# Project scanning and sync
 		layout.separator()
