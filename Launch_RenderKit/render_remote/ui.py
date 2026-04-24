@@ -7,15 +7,11 @@ import time
 from types import SimpleNamespace
 from bpy.props import StringProperty, BoolProperty, EnumProperty, FloatProperty, IntProperty
 from bpy.types import Operator, Panel, PropertyGroup
-from .constants import (ADDON_PACKAGE, build_source_project_cache_name,
-                        OUTPUT_SYNC_POLL_INTERVAL, OUTPUT_SYNC_QUIET_PERIOD,
-                        OUTPUT_SYNC_POST_PROCESS_TIMEOUT)
+from .constants import (ADDON_PACKAGE, build_source_project_cache_name, OUTPUT_SYNC_POLL_INTERVAL, OUTPUT_SYNC_QUIET_PERIOD, OUTPUT_SYNC_POST_PROCESS_TIMEOUT)
 from .paths import PathSecurityError, normalize_relative_path, resolve_under_root, relative_path_under_root
 from .protocol import error_response
 from .file_sync import file_sync_manager
-from .local_state import (default_remote_node_name, get_local_lan_ip,
-                          get_local_remote_mode,
-                          set_local_remote_mode)
+from .local_state import (default_remote_node_name, get_local_lan_ip, get_local_remote_mode, set_local_remote_mode)
 from .network import network_manager
 from .render import render_manager
 from .timers import timer_manager
@@ -74,14 +70,189 @@ def update_remote_mode_state(self, context):
 
 def start_remote_render_progress_monitoring(target_node):
 	"""Start monitoring render progress and reconciling rendered outputs."""
-	downloaded_hashes = {}
-	last_manifest_signature = None
-	last_manifest_change = time.time()
-	completion_observed_at = None
-	consecutive_failures = 0
+	state = {
+		'downloaded_hashes': {},
+		'last_manifest_signature': None,
+		'last_manifest_change': time.time(),
+		'completion_observed_at': None,
+		'consecutive_failures': 0,
+		'in_flight': False,
+	}
+	state_lock = threading.Lock()
+	source_project_root = file_sync_manager.get_project_root()
+	target_node_id = getattr(target_node, 'node_id', f"{target_node.ip}:{target_node.port}")
+
+	def schedule_monitor_update(update):
+		def apply_update():
+			context = bpy.context
+			props = get_remote_props(context)
+			
+			if props.remote_selected_node != target_node_id:
+				return None
+			if not props.remote_monitor_render:
+				return None
+			
+			status = update.get('status')
+			if status:
+				props.remote_render_status = status.get('status', 'Unknown')
+				props.remote_render_progress = status.get('progress', 0.0)
+				props.remote_current_frame = status.get('current_frame', 0)
+				props.remote_total_frames = status.get('frame_count', 0)
+				props.remote_render_elapsed_time = status.get('elapsed_time', 0.0)
+				props.remote_render_error_message = sanitize_ui_message(status.get('error_message', ''))
+			
+			if update.get('render_error_message') is not None:
+				props.remote_render_error_message = sanitize_ui_message(update.get('render_error_message'))
+			
+			if update.get('render_status') is not None:
+				props.remote_render_status = update.get('render_status')
+			
+			if update.get('sync_status') is not None:
+				props.remote_sync_status = update.get('sync_status')
+			
+			if update.get('stop_monitor'):
+				props.remote_monitor_render = False
+			
+			return None
+		
+		timer_manager.register_timer(apply_update, interval=0.1)
+	
+	def poll_and_sync_outputs():
+		nonlocal source_project_root
+		update = {}
+		try:
+			status = network_manager.get_render_status(
+				target_node.ip,
+				target_node.port,
+				target_node.auth_token
+			)
+
+			if status:
+				update['status'] = status
+
+			manifest = None
+			try:
+				manifest = network_manager.get_output_manifest(
+					target_node.ip,
+					target_node.port,
+					target_node.auth_token
+				)
+			except Exception as e:
+				print(f"Error checking output manifest: {e}")
+				manifest = None
+
+			now = time.time()
+			with state_lock:
+				if status is None and manifest is None:
+					state['consecutive_failures'] += 1
+					if state['consecutive_failures'] >= 5:
+						update.update({
+							'stop_monitor': True,
+							'render_status': 'error',
+							'render_error_message': 'Lost connection to remote target',
+							'sync_status': 'Disconnected',
+						})
+					return
+
+				state['consecutive_failures'] = 0
+
+			download_count = 0
+			if manifest is not None:
+				manifest_signature = tuple(
+					(path, entry.get('hash'), entry.get('size'), entry.get('timestamp'))
+					for path, entry in sorted(manifest.items())
+				)
+				with state_lock:
+					if manifest_signature != state['last_manifest_signature']:
+						state['last_manifest_signature'] = manifest_signature
+						state['last_manifest_change'] = now
+
+				for relative_path, entry in sorted(manifest.items()):
+					expected_hash = entry.get('hash')
+					local_output_exists = False
+					if source_project_root:
+						try:
+							local_output_exists = os.path.exists(resolve_under_root(source_project_root, relative_path))
+						except PathSecurityError:
+							local_output_exists = False
+					with state_lock:
+						already_downloaded = expected_hash and state['downloaded_hashes'].get(relative_path) == expected_hash
+					if already_downloaded and local_output_exists:
+						continue
+					if already_downloaded and not local_output_exists:
+						delete_outputs = getattr(network_manager, "delete_output_files_on_target", None)
+						if callable(delete_outputs) and expected_hash:
+							response = delete_outputs(
+								target_node.ip,
+								target_node.port,
+								target_node.auth_token,
+								[{"relative_path": relative_path, "hash": expected_hash}]
+							)
+							if response and response.get('status') == 'success':
+								continue
+
+					print(f"Syncing output from target: {relative_path}")
+					try:
+						try:
+							success = network_manager.request_file_from_target(
+								target_node.ip,
+								target_node.port,
+								target_node.auth_token,
+								relative_path,
+								entry,
+								source_project_root=source_project_root
+							)
+						except TypeError:
+							success = network_manager.request_file_from_target(
+								target_node.ip,
+								target_node.port,
+								target_node.auth_token,
+								relative_path,
+								entry
+							)
+					except Exception as e:
+						print(f"Failed to sync output {relative_path}: {e}")
+						success = False
+					if success:
+						with state_lock:
+							state['downloaded_hashes'][relative_path] = expected_hash
+						download_count += 1
+					else:
+						print(f"Failed to sync output: {relative_path}")
+
+			if download_count:
+				update['sync_status'] = f"Downloading outputs ({download_count} updated)"
+			else:
+				render_status = status.get('status') if status else update.get('render_status')
+				if render_status in ['preparing', 'rendering']:
+					update['sync_status'] = "Rendering..."
+				else:
+					update['sync_status'] = "Downloading outputs..."
+
+			if status and status.get('status') in ['preparing', 'rendering']:
+				return
+
+			with state_lock:
+				if status and state['completion_observed_at'] is None:
+					state['completion_observed_at'] = now
+
+				if state['completion_observed_at'] is None:
+					return
+
+				quiet_reference = max(state['last_manifest_change'], state['completion_observed_at'])
+				post_process_deadline = state['completion_observed_at'] + OUTPUT_SYNC_POST_PROCESS_TIMEOUT + OUTPUT_SYNC_QUIET_PERIOD
+				if now < post_process_deadline or now - quiet_reference < OUTPUT_SYNC_QUIET_PERIOD:
+					return
+
+			update['stop_monitor'] = True
+			update['sync_status'] = "Complete"
+		finally:
+			if update:
+				schedule_monitor_update(update)
+			with state_lock:
+				state['in_flight'] = False
 
 	def monitor_progress():
-		nonlocal last_manifest_signature, last_manifest_change, completion_observed_at, consecutive_failures
 		context = bpy.context
 		props = get_remote_props(context)
 
@@ -90,105 +261,18 @@ def start_remote_render_progress_monitoring(target_node):
 		if not props.remote_selected_node:
 			props.remote_monitor_render = False
 			return None
+		if props.remote_selected_node != target_node_id:
+			return None
 
-		status = network_manager.get_render_status(
-			target_node.ip,
-			target_node.port,
-			target_node.auth_token
-		)
+		with state_lock:
+			if state['in_flight']:
+				return OUTPUT_SYNC_POLL_INTERVAL
+			state['in_flight'] = True
 
-		if status:
-			props.remote_render_status = status.get('status', 'Unknown')
-			props.remote_render_progress = status.get('progress', 0.0)
-			props.remote_current_frame = status.get('current_frame', 0)
-			props.remote_total_frames = status.get('frame_count', 0)
-			props.remote_render_elapsed_time = status.get('elapsed_time', 0.0)
-			props.remote_render_error_message = sanitize_ui_message(status.get('error_message', ''))
-
-		manifest = None
-		try:
-			manifest = network_manager.get_output_manifest(
-				target_node.ip,
-				target_node.port,
-				target_node.auth_token
-			)
-		except Exception as e:
-			print(f"Error checking output manifest: {e}")
-			manifest = None
-
-		now = time.time()
-		if status is None and manifest is None:
-			consecutive_failures += 1
-			if consecutive_failures >= 5:
-				props.remote_monitor_render = False
-				props.remote_render_status = "error"
-				props.remote_render_error_message = "Lost connection to remote target"
-				props.remote_sync_status = "Disconnected"
-				return None
-			return OUTPUT_SYNC_POLL_INTERVAL
-
-		consecutive_failures = 0
-		download_count = 0
-		if manifest is not None:
-			manifest_signature = tuple(
-				(path, entry.get('hash'), entry.get('size'), entry.get('timestamp'))
-				for path, entry in sorted(manifest.items())
-			)
-			if manifest_signature != last_manifest_signature:
-				last_manifest_signature = manifest_signature
-				last_manifest_change = now
-
-			source_project_root = file_sync_manager.get_project_root()
-			for relative_path, entry in sorted(manifest.items()):
-				expected_hash = entry.get('hash')
-				local_output_exists = False
-				if source_project_root:
-					try:
-						local_output_exists = os.path.exists(resolve_under_root(source_project_root, relative_path))
-					except PathSecurityError:
-						local_output_exists = False
-				if expected_hash and downloaded_hashes.get(relative_path) == expected_hash and local_output_exists:
-					continue
-
-				print(f"Syncing output from target: {relative_path}")
-				success = network_manager.request_file_from_target(
-					target_node.ip,
-					target_node.port,
-					target_node.auth_token,
-					relative_path,
-					entry
-				)
-				if success:
-					downloaded_hashes[relative_path] = expected_hash
-					download_count += 1
-				else:
-					print(f"Failed to sync output: {relative_path}")
-
-		if download_count:
-			props.remote_sync_status = f"Downloading outputs ({download_count} updated)"
-		elif props.remote_monitor_render:
-			if props.remote_render_status in ['preparing', 'rendering']:
-				props.remote_sync_status = "Rendering..."
-			else:
-				props.remote_sync_status = "Downloading outputs..."
-
-		if status and props.remote_render_status in ['preparing', 'rendering']:
-			return OUTPUT_SYNC_POLL_INTERVAL
-
-		if status and completion_observed_at is None:
-			completion_observed_at = now
-
-		if completion_observed_at is None:
-			return OUTPUT_SYNC_POLL_INTERVAL
-
-		quiet_reference = max(last_manifest_change, completion_observed_at)
-		post_process_deadline = completion_observed_at + OUTPUT_SYNC_POST_PROCESS_TIMEOUT + OUTPUT_SYNC_QUIET_PERIOD
-		if now < post_process_deadline or now - quiet_reference < OUTPUT_SYNC_QUIET_PERIOD:
-			return OUTPUT_SYNC_POLL_INTERVAL
-
-		props.remote_monitor_render = False
-		props.remote_sync_status = "Complete"
-		return None
+		worker = threading.Thread(target=poll_and_sync_outputs, daemon=True)
+		worker.start()
+		worker.join(0.05)
+		return OUTPUT_SYNC_POLL_INTERVAL
 
 	timer_manager.register_timer(monitor_progress, interval=1.0, persistent=True)
 
@@ -487,6 +571,20 @@ def format_render_status_label(status):
 		return mapping[status_key]
 	text = str(status or "").strip()
 	return text.replace('_', ' ').title() if text else 'Unknown'
+
+def draw_progress_indicator(layout, props):
+	"""Draw a non-interactive render progress indicator with a compatibility fallback."""
+	progress = max(0.0, min(100.0, float(props.remote_render_progress or 0.0)))
+	if hasattr(layout, "progress"):
+		try:
+			layout.progress(factor=progress / 100.0, type='BAR', text="")
+			return
+		except TypeError:
+			pass
+
+	row = layout.row()
+	row.enabled = False
+	row.prop(props, "remote_render_progress", text="", slider=True)
 
 # ----
 # Operators (keeping existing ones but simplifying some logic)
@@ -1386,6 +1484,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			progress_box.label(text=f"Render Status: {format_render_status_label(props.remote_render_status)}", icon='RENDER_ANIMATION')
 			
 			if props.remote_render_progress > 0:
+				draw_progress_indicator(progress_box, props)
 				row = progress_box.row()
 				row.label(text=f"Progress: {props.remote_render_progress:.1f}%")
 			

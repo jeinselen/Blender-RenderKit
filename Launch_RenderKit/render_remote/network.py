@@ -1282,7 +1282,7 @@ class NetworkManager:
 
 		return None
 
-	def request_file_from_target(self, ip, port, auth_token, relative_path, manifest_entry=None):
+	def request_file_from_target(self, ip, port, auth_token, relative_path, manifest_entry=None, source_project_root=None):
 		"""Request and verify a specific output file from the target computer"""
 		relative_path = normalize_relative_path(relative_path)
 		manifest_entry = manifest_entry or {}
@@ -1313,7 +1313,8 @@ class NetworkManager:
 
 					print(f"Receiving file: {target_relative_path} ({file_size} bytes)")
 
-					source_project_root = file_sync_manager.get_project_root()
+					if not source_project_root:
+						source_project_root = file_sync_manager.get_project_root()
 					if not source_project_root:
 						raise PathSecurityError("Could not determine source project root")
 
