@@ -13,7 +13,8 @@ from .constants import (ADDON_PACKAGE, build_source_project_cache_name,
 from .paths import PathSecurityError, normalize_relative_path, resolve_under_root, relative_path_under_root
 from .protocol import error_response
 from .file_sync import file_sync_manager
-from .local_state import (default_remote_node_name, get_local_remote_mode,
+from .local_state import (default_remote_node_name, get_local_lan_ip,
+                          get_local_remote_mode,
                           set_local_remote_mode)
 from .network import network_manager
 from .render import render_manager
@@ -1159,7 +1160,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			button.active = False
 			robuttonw.enabled = False
 		else:
-			info.label(text=f"Name: {get_remote_node_name()}  IP: NEED LAN IP", icon='BLANK1')
+			info.label(text=f"Name: {get_remote_node_name()}  IP: {get_local_lan_ip()}", icon='BLANK1')
 		
 		# Discovery control
 		if network_manager.discovery_active:

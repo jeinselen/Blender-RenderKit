@@ -2,6 +2,7 @@ import json
 import os
 import platform
 import socket
+import ipaddress
 from pathlib import Path
 
 try:
@@ -64,6 +65,56 @@ def default_remote_node_name():
 		if name:
 			return name
 	return "Render Target"
+
+
+def _is_lan_display_ip(ip_address):
+	"""Return whether an address is useful for manual LAN entry."""
+	try:
+		address = ipaddress.ip_address(str(ip_address or "").split("%", 1)[0])
+	except ValueError:
+		return False
+
+	return address.version == 4 and not address.is_loopback and (
+		address.is_private or address.is_link_local
+	)
+
+
+def get_local_lan_ip():
+	"""Return the best local IPv4 LAN address for display in target mode."""
+	candidates = []
+
+	try:
+		hostname = socket.gethostname()
+	except OSError:
+		hostname = ""
+
+	if hostname:
+		try:
+			candidates.append(socket.gethostbyname(hostname))
+		except OSError:
+			pass
+		try:
+			for host_info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+				candidates.append(host_info[4][0])
+		except OSError:
+			pass
+
+	for candidate in candidates:
+		if _is_lan_display_ip(candidate):
+			return candidate
+
+	try:
+		with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+			sock.connect(("8.8.8.8", 80))
+			candidates.append(sock.getsockname()[0])
+	except OSError:
+		pass
+
+	for candidate in candidates:
+		if _is_lan_display_ip(candidate):
+			return candidate
+
+	return "Unavailable"
 
 
 def load_local_settings():
