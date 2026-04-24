@@ -295,7 +295,6 @@ class RemoteNodeProperties(PropertyGroup):
 	port: IntProperty(name="Port")
 	blender_version: StringProperty(name="Blender Version")
 	plugin_version: StringProperty(name="Plugin Version")
-	requires_auth: BoolProperty(name="Requires Authentication")
 	is_connected: BoolProperty(name="Is Connected")
 	auth_token: StringProperty(name="Auth Token")
 
@@ -317,12 +316,13 @@ class RemoteRuntimeState(PropertyGroup):
 		name="Connection",
 		description="Select how to find the remote render target",
 		items=[
-			('AUTOMATIC', "Automatic", "Scan the local network for remote render targets", "VIEWZOOM", 0),
-			('MANUAL', "Manual", "Connect to a remote render target by IP address", "NETWORK_DRIVE", 1),
+			('SEARCH', "Search", "Scan the local network for remote render targets"),
+#			('SEARCH', "Search", "Scan the local network for remote render targets", "VIEWZOOM", 0),
+			('MANUAL', "Manual", "Connect to a remote render target by IP address"),
+#			('MANUAL', "Manual", "Connect to a remote render target by IP address", "NETWORK_DRIVE", 1),
 		],
-		default='AUTOMATIC',
+		default='SEARCH',
 	)
-	remote_selected_node: StringProperty(name="Selected Node", description="Currently selected remote node")
 	remote_sync_status: StringProperty(name="Sync Status", default="Not Scanned")
 	remote_external_files_count: IntProperty(name="External Files Count", default=0)
 	remote_show_external_warning: BoolProperty(name="Show External Warning", default=False)
@@ -352,7 +352,7 @@ def format_connected_remote_label(node):
 	if not node:
 		return "Not connected"
 	if node.name and node.ip:
-		return f"{node.name} ({node.ip}:{node.port})"
+		return f"{node.ip}:{node.port}  {node.name}"
 	if node.name:
 		return node.name
 	if node.ip:
@@ -651,7 +651,6 @@ class REMOTERENDER_OT_ScanNetwork(Operator):
 					item.ip = node_info['ip']
 					item.port = node_info['port']
 					item.blender_version = node_info['blender_version']
-					item.requires_auth = node_info['requires_auth']
 
 				return None
 
@@ -707,7 +706,6 @@ class REMOTERENDER_OT_ConnectNode(Operator):
 		if network_manager.test_connection(target_node.ip, target_node.port, auth_token):
 			target_node.is_connected = True
 			target_node.auth_token = auth_token or ""
-			props.remote_selected_node = self.node_id
 
 			self.report({'INFO'}, f"Connected to {target_node.name}")
 		else:
@@ -1271,31 +1269,32 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		"""Draw UI for Target mode"""
 		box = layout.box()
 		
-		# Status
+		# Info placement
+		info = box.row()
+		# Status placement
+		status = box.row()
+		# Button placement
+		button = box.row()
+		
+		# Enable/Disable Target
+		if network_manager.discovery_active:
+			button.operator("render_remote.stop_discovery", icon='PAUSE')
+		else:
+			button.operator("render_remote.start_discovery", icon='PLAY')
+		
+		# Status content
 		if network_manager.discovery_active:
 			box.label(text="Listening for LAN remote render jobs", icon='CHECKMARK')
 		else:
 			box.label(text="Not listening for remote render jobs", icon='PAUSE')
 		
-		# Info placement
-		info = box.row()
-		
-		# Operator button placement
-		button = box.row()
-		
-		# Show authentication status from preferences
+		# Info content and Button disable
 		if not prefs.remote_passcode:
 			info.label(text="Set passcode in Preferences before allowing remote rendering.", icon='PREFERENCES')
 			button.active = False
-			robuttonw.enabled = False
+			button.enabled = False
 		else:
-			info.label(text=f"Name: {get_remote_node_name()}  IP: {get_local_lan_ip()}", icon='BLANK1')
-		
-		# Discovery control
-		if network_manager.discovery_active:
-			button.operator("render_remote.stop_discovery", icon='PAUSE')
-		else:
-			button.operator("render_remote.start_discovery", icon='PLAY')
+			info.label(text=f'{get_local_lan_ip()}   name: {get_remote_node_name()}', icon='BLANK1')
 	
 	
 	
@@ -1307,58 +1306,56 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		connected_node = get_connected_remote_node(context, props)
 		box = layout.box()
 		
-		# Status
+		# Status and Mode
+		row = box.row()
 		if connected_node:
-			box.label(text=f"Connected to {format_connected_remote_label(connected_node)}", icon='LINKED')
+			row.label(text=f"{format_connected_remote_label(connected_node)}", icon='LINKED')
 		elif props.remote_selected_node:
-			box.label(text="Target not connected", icon='ERROR')
+			row.label(text="Target not connected", icon='ERROR')
 		else:
-			box.label(text="Target not selected", icon='UNLINKED')
+			row.label(text="Not connected", icon='UNLINKED')
+		subrow = row.row(align=True)
+		subrow.prop(props, "remote_source_connection_mode", expand=True)
 		
-		row = box.row(align=True)
-		row.prop(props, "remote_source_connection_mode", expand=True, icon='SETTINGS')
-		
-		if props.remote_source_connection_mode == 'AUTOMATIC':
+		# Search mode
+		if props.remote_source_connection_mode == 'SEARCH':
 			# Network scan
-			row = box.row()
-			row.operator("render_remote.scan_network", icon='VIEWZOOM')
+			box.operator("render_remote.scan_network", icon='VIEWZOOM')
 			
 			# Discovered nodes
 			if get_discovered_nodes(context):
-				box.label(text="Discovered Nodes:")
 				for node in get_discovered_nodes(context):
 					node_box = box.box()
-					row = node_box.row()
 					
 					# Node info
-					col = row.column()
-					col.label(text=f"{node.name}")
-					col.label(text=f"{node.ip}:{node.port}")
+					row = node_box.row()
+					row.label(text=f"{node.name}")
+					row.label(text=f"{node.ip}:{node.port}")
 					if node.blender_version:
-						col.label(text=f"Blender {node.blender_version}")
+						row.label(text=f"Blender {node.blender_version}")
 					
-					# Connection status and controls
-					col = row.column()
+					# Connection controls
+					row2 = node_box.row()
 					if node.is_connected:
-						col.label(text="Connected", icon='CHECKMARK')
+						row2.label(text="Connected", icon='CHECKMARK')
 						if node.node_id == props.remote_selected_node:
-							col.operator("render_remote.disconnect_node", text="Disconnect")
+							row2.operator("render_remote.disconnect_node", text="Disconnect")
 					else:
-						if node.requires_auth:
-							col.prop(prefs, "remote_connection_password", text="Password")
-
-						op = col.operator("render_remote.connect_node", text="Connect")
+						row2.prop(prefs, "remote_connection_password", text="")
+						op = row2.operator("render_remote.connect_node", text="Connect")
 						op.node_id = node.node_id
+		
+		# Manual mode
 		else:
 			# Manual connection
-			row = box.row()
+			row = box.row(align=True)
 			row.prop(prefs, "remote_manual_ip", text="")
 			row.prop(prefs, "remote_manual_port", text="")
 			row.prop(prefs, "remote_connection_password", text="")
 			if connected_node:
-				box.operator("render_remote.disconnect_node", text="Disconnect")
+				row.operator("render_remote.disconnect_node", text="Disconnect")
 			else:
-				box.operator("render_remote.connect_manual")
+				row.operator("render_remote.connect_manual")
 		
 		# Project scanning and sync
 		layout.separator()
@@ -1529,12 +1526,4 @@ class REMOTERENDER_PT_MainPanel(Panel):
 				
 				if props.remote_render_error_message:
 					status_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
-		
-		# Show project root info
-		if bpy.data.filepath:
-			project_root = file_sync_manager.get_project_root()
-			if project_root:
-				box.label(text=f"Project root: {os.path.basename(project_root)}/", icon='FILE_FOLDER')
-		else:
-			box.label(text="(Save your project to see sync info)", icon='INFO')
-			
+					

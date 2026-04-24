@@ -216,7 +216,7 @@ class NetworkManager:
 		self.discovery_active = True
 		self.discovery_thread = threading.Thread(
 			target=self._discovery_server_loop,
-			args=(node_name, bool(passcode)),
+			args=(node_name,),
 			daemon=True
 		)
 		self.discovery_thread.start()
@@ -354,7 +354,7 @@ class NetworkManager:
 		self.is_rendering = False
 		print("Network manager shut down")
 
-	def _discovery_server_loop(self, node_name, requires_auth):
+	def _discovery_server_loop(self, node_name):
 		"""Discovery server main loop"""
 		sock = None
 		try:
@@ -381,7 +381,6 @@ class NetworkManager:
 							'port': self.communication_port,
 							'blender_version': bpy.app.version_string,
 							'plugin_version': ADDON_VERSION,
-							'requires_auth': requires_auth,
 							'fingerprint': self.security.get_cert_fingerprint(),
 							'timestamp': time.time()
 						}
@@ -1050,7 +1049,6 @@ class NetworkManager:
 							'port': response['port'],
 							'blender_version': response['blender_version'],
 							'plugin_version': response['plugin_version'],
-							'requires_auth': response['requires_auth'],
 							'fingerprint': response.get('fingerprint'),
 							'last_seen': time.time()
 						}

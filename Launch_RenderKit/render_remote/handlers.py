@@ -133,7 +133,6 @@ def reset_connection_status_on_load(dummy):
 		# Reset selection and status without touching scene data
 		if hasattr(context.window_manager, 'remote_render_state'):
 			state = context.window_manager.remote_render_state
-			state.remote_selected_node = ""
 			state.remote_sync_status = "Not Scanned"
 			state.remote_render_status = "Not Started"
 			state.remote_monitor_render = False
