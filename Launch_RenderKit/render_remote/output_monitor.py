@@ -108,17 +108,12 @@ class OutputFileMonitor:
 
 	def _configure_scene_output_paths(self, scene):
 		"""Rewrite output destinations to stay inside the target workspace and record roots"""
-		output_roots = set()
-
 		if scene.render.filepath:
 			main_output_path = self._resolve_output_path_under_workspace(
 				bpy.path.abspath(scene.render.filepath),
 				"renders"
 			)
 			scene.render.filepath = main_output_path
-			output_root = self._get_output_root_from_path(main_output_path)
-			if output_root:
-				output_roots.add(output_root)
 
 		for index, node in enumerate(self._iter_output_file_nodes(scene) or []):
 			path_attr = 'directory' if hasattr(node, 'directory') else 'base_path'
@@ -129,13 +124,8 @@ class OutputFileMonitor:
 				fallback_relative
 			)
 			setattr(node, path_attr, target_directory)
-			output_roots.add(target_directory)
 
-		self.output_roots = {
-			str(Path(root).expanduser().resolve(strict=False))
-			for root in output_roots
-			if root and self._is_within_workspace(root)
-		}
+		self.output_roots = {self.project_root} if self._is_within_workspace(self.project_root) else set()
 		print(f"Configured output roots: {sorted(self.output_roots)}")
 
 	def _add_output_root(self, output_root):
@@ -145,21 +135,8 @@ class OutputFileMonitor:
 			self.output_roots.add(normalized_root)
 
 	def _refresh_renderkit_output_roots(self, scene):
-		"""Capture RenderKit FFmpeg output directories after variables have expanded."""
-		settings = getattr(scene, 'render_kit_settings', None)
-		if not settings:
-			return
-
-		for attr_name in (
-			'autosave_video_prores_path',
-			'autosave_video_mp4_path',
-			'autosave_video_custom_path',
-		):
-			output_path = getattr(settings, attr_name, '')
-			if not output_path:
-				continue
-			output_root = self._get_output_root_from_path(bpy.path.abspath(output_path))
-			self._add_output_root(output_root)
+		"""Retained for handler compatibility; the whole project cache is monitored."""
+		self._add_output_root(self.project_root)
 
 	def _iter_sidecar_files(self):
 		"""Yield RenderKit sidecar files such as the total render time log."""
@@ -184,10 +161,9 @@ class OutputFileMonitor:
 				continue
 
 			for root, dirs, files in os.walk(output_root):
-				dirs[:] = [d for d in dirs if not FileFilter.should_ignore_file(os.path.join(root, d))]
 				for file_name in files:
 					file_path = os.path.join(root, file_name)
-					if file_path in seen_paths or FileFilter.should_ignore_file(file_path):
+					if file_path in seen_paths:
 						continue
 					if not self._is_within_workspace(file_path):
 						continue

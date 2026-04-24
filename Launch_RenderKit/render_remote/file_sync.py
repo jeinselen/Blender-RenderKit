@@ -41,7 +41,7 @@ class FileSyncManager:
 	def _get_renderkit_sidecar_names(self, blend_file_path):
 		"""Return RenderKit-managed sidecar file names for a blend file."""
 		project_name = os.path.splitext(os.path.basename(blend_file_path))[0]
-		sidecar_names = {"RenderKit-TotalTime.txt"}
+		sidecar_names = {"RenderKit-TotalTime.txt", "ProductionKit-Palette.txt"}
 
 		try:
 			prefs = bpy.context.preferences.addons[ADDON_PACKAGE].preferences
