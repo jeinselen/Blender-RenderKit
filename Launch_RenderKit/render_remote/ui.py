@@ -1244,9 +1244,9 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		
 		# Status content
 		if network_manager.discovery_active:
-			box.label(text="Listening for LAN remote render jobs", icon='CHECKMARK')
+			status.label(text="Listening for LAN remote render jobs", icon='CHECKMARK')
 		else:
-			box.label(text="Not listening for remote render jobs", icon='PAUSE')
+			status.label(text="Not listening for remote render jobs", icon='PAUSE')
 		
 		# Info content and Button disable
 		if not prefs.remote_passcode:
@@ -1254,7 +1254,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			button.active = False
 			button.enabled = False
 		else:
-			info.label(text=f'{get_local_lan_ip()}   name: {get_remote_node_name()}', icon='BLANK1')
+			info.label(text=f'{get_remote_node_name()}   {get_local_lan_ip()}:PORT', icon='NETWORK_DRIVE') # BLANK1 LINK_BLEND NETWORK_DRIVE
 	
 	
 	
@@ -1271,14 +1271,17 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			layout.label(text="Save project to continue", icon='ERROR')
 			return
 
-		# Status and Mode
-		row = box.row()
+		# Status
 		if connected_node:
-			row.label(text=f"{format_connected_remote_label(connected_node)}", icon='LINKED')
+			box.label(text=f"{format_connected_remote_label(connected_node)}", icon='LINKED')
 		else:
-			row.label(text="Not connected", icon='UNLINKED')
-		subrow = row.row(align=True)
-		subrow.prop(props, "remote_source_connection_mode", expand=True)
+			box.label(text="Not connected", icon='UNLINKED')
+		
+		grid = box.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=False, align=False)
+		grid.separator()
+		row = grid.row(align=True)
+		row.prop(props, "remote_source_connection_mode", expand=True)
+		grid.separator()
 		
 		# Search mode
 		if props.remote_source_connection_mode == 'SEARCH':
@@ -1291,33 +1294,31 @@ class REMOTERENDER_PT_MainPanel(Panel):
 					node_box = box.box()
 					
 					# Node info
-					row = node_box.row()
-					row.label(text=f"{node.name}")
-					row.label(text=f"{node.ip}:{node.port}")
-					if node.blender_version:
-						row.label(text=f"Blender {node.blender_version}")
+					node_label = f"{node.name}   {node.ip}:{node.port}"
+					if node.blender_version: node_label += f"   v{node.blender_version}"
+					node_box.label(text=node_label, icon="NETWORK_DRIVE")
 					
 					# Connection controls
-					row2 = node_box.row()
+					row = node_box.row()
 					if node.is_connected:
-						row2.label(text="Connected", icon='CHECKMARK')
-						row2.operator("render_remote.disconnect_node", text="Disconnect")
+						row.label(text="Connected", icon='CHECKMARK')
+						row.operator("render_remote.disconnect_node", text="Disconnect")
 					else:
-						row2.prop(prefs, "remote_connection_password", text="")
-						op = row2.operator("render_remote.connect_node", text="Connect")
+						row.prop(prefs, "remote_connection_password", text="")
+						op = row.operator("render_remote.connect_node", text="Connect")
 						op.node_id = node.node_id
 		
 		# Manual mode
 		else:
 			# Manual connection
-			row = box.row(align=True)
-			row.prop(prefs, "remote_manual_ip", text="")
-			row.prop(prefs, "remote_manual_port", text="")
-			row.prop(prefs, "remote_connection_password", text="")
+			grid = box.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
+			grid.prop(prefs, "remote_manual_ip", text="")
+			grid.prop(prefs, "remote_manual_port", text="")
+			grid.prop(prefs, "remote_connection_password", text="")
 			if connected_node:
-				row.operator("render_remote.disconnect_node", text="Disconnect")
+				grid.operator("render_remote.disconnect_node", text="Disconnect")
 			else:
-				row.operator("render_remote.connect_manual", text="Connect")
+				grid.operator("render_remote.connect_manual", text="Connect")
 		
 		# Project scanning and sync
 		layout.separator()
@@ -1337,14 +1338,10 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		# Show project root directory
 		project_root = file_sync_manager.get_project_root()
 		if project_root:
-			box.label(text=f"Project root: {os.path.basename(project_root)}/", icon='FILE_REFRESH') # FILE_FOLDER FILE_REFRESH
+			box.label(text=f"Sync root:  {os.path.basename(project_root)}/", icon='FILE_REFRESH') # FILE_FOLDER FILE_REFRESH
 		else:
 			box.label(text="Project root not found", icon='ERROR')
-
-		# Status
-		row = box.row()
-		row.label(text="Sync:", icon='FILE_REFRESH')
-
+		
 		# Scan button and status
 		box.operator("render_remote.scan_project", icon='VIEWZOOM')
 		
@@ -1400,10 +1397,10 @@ class REMOTERENDER_PT_MainPanel(Panel):
 					subrow.label(text=f"{size_str}")
 				else:
 					subrow.label(text=sync_file.status.upper())
-
+			
 			row = box.row()
-			row.operator("render_remote.sync_files", text="Sync", icon='FILE_REFRESH')
 			row.label(text=f"{props.remote_sync_status}", icon='INFO')
+			row.operator("render_remote.sync_files", text="Sync", icon='FILE_REFRESH')
 		
 		elif props.remote_sync_status == "Up to date":
 			box.label(text="All files are synchronized!", icon='CHECKMARK')
@@ -1422,7 +1419,8 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		box = layout.box()
 		
 		# Status
-		box.label(text="Remote Rendering:", icon='RENDER_ANIMATION')
+		box.label(text=f"Render: {format_render_status_label(props.remote_render_status)}", icon='RENDER_ANIMATION')
+		
 		active_workflow = props.remote_monitor_render or props.remote_render_status in ['preparing', 'rendering']
 		
 		# Render controls
@@ -1434,7 +1432,6 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			
 			progress_box = box.box()
 			progress_box.label(text=f"Phase: {props.remote_sync_status}", icon='INFO')
-			progress_box.label(text=f"Render Status: {format_render_status_label(props.remote_render_status)}", icon='RENDER_ANIMATION')
 			
 			if props.remote_render_progress > 0:
 				draw_progress_indicator(progress_box, props)
@@ -1468,10 +1465,6 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			row.enabled = not (props.remote_show_external_warning or props.remote_show_missing_warning)
 			op = row.operator("render_remote.start_remote_render", text="Render Animation", icon='RENDER_ANIMATION')
 			op.animation = True
-			
-			# Status refresh
-			row = box.row()
-			row.operator("render_remote.refresh_render_status", icon='FILE_REFRESH')
 			
 			# Show last status if available
 			if props.remote_render_status and props.remote_render_status != "Not Started":
