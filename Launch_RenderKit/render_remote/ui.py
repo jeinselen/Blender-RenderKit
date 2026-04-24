@@ -37,16 +37,13 @@ def get_sync_files(context):
 	"""Return transient sync-file storage that is not saved into blend files."""
 	return context.window_manager.remote_render_sync_files
 
-
 def get_remote_mode(context):
 	"""Return the host-local Render Remote operation mode."""
 	return get_remote_props(context).remote_mode
 
-
 def get_remote_node_name():
 	"""Return the local machine name used for target discovery."""
 	return default_remote_node_name()
-
 
 def initialize_remote_runtime_state(context):
 	"""Hydrate transient runtime state from host-local settings."""
@@ -57,7 +54,6 @@ def initialize_remote_runtime_state(context):
 		props.remote_mode = get_local_remote_mode()
 	finally:
 		_SYNCING_LOCAL_REMOTE_STATE = False
-
 
 def update_remote_mode_state(self, context):
 	"""Persist host-local mode changes and stop target services when leaving target mode."""
@@ -208,7 +204,6 @@ class SyncFileInfo(PropertyGroup):
 
 class RemoteNodeProperties(PropertyGroup):
 	"""Properties for remote node information"""
-
 	node_id: StringProperty(name="Node ID")
 	name: StringProperty(name="Node Name")
 	ip: StringProperty(name="IP Address")
@@ -221,13 +216,14 @@ class RemoteNodeProperties(PropertyGroup):
 
 class RemoteRuntimeState(PropertyGroup):
 	"""Transient Render Remote state that should not be saved as preferences or project settings"""
-
 	remote_mode: EnumProperty(
 		name="Mode",
 		description="Select operation mode for this computer",
 		items=[
-			('SOURCE', "Source", "Control remote rendering from this computer"),
-			('TARGET', "Target", "Allow this computer to be used for remote rendering"),
+#			('SOURCE', "Source", "Control remote rendering from this computer"),
+			('SOURCE', "Source", "Control remote rendering from this computer", "DESKTOP", 0),
+#			('TARGET', "Target", "Allow this computer to be used for remote rendering"),
+			('TARGET', "Target", "Allow this computer to be used for remote rendering", "NETWORK_DRIVE", 1),
 		],
 		default='SOURCE',
 		update=update_remote_mode_state,
@@ -637,7 +633,7 @@ class REMOTERENDER_OT_DisconnectNode(Operator):
 
 class REMOTERENDER_OT_ConnectManual(Operator):
 	bl_idname = "render_remote.connect_manual"
-	bl_label = "Connect Manual"
+	bl_label = "Connect"
 	bl_description = "Connect to manually entered IP address"
 
 	def execute(self, context):
@@ -1080,7 +1076,7 @@ class REMOTERENDER_OT_DeselectAllSyncFiles(Operator):
 
 class REMOTERENDER_OT_ClearCache(Operator):
 	bl_idname = "render_remote.clear_cache"
-	bl_label = "Clear Cache"
+	bl_label = "Clear Local Cache"
 	bl_description = "Clear local cache directory"
 
 	def execute(self, context):
@@ -1113,93 +1109,100 @@ class REMOTERENDER_PT_MainPanel(Panel):
 	bl_category = "Launch"
 	bl_options = {'DEFAULT_CLOSED'}
 	bl_order = 64
-
+	
 	@classmethod
 	def poll(cls, context):
 		try:
 			return context.preferences.addons[ADDON_PACKAGE].preferences.remote_enable
 		except (AttributeError, KeyError):
 			return False
-
+	
 	def draw(self, context):
 		layout = self.layout
 		props = get_remote_props(context)
 		prefs = context.preferences.addons[ADDON_PACKAGE].preferences
-
+		
 		# Mode Selection
-		box = layout.box()
-		box.label(text="Operation Mode:", icon='SETTINGS')
-		box.prop(props, "remote_mode", expand=True)
-
+		layout.prop(props, "remote_mode", expand=True, icon='SETTINGS')
+		
 		layout.separator()
-
+		
 		# Dynamic UI based on selected mode
 		if props.remote_mode == 'TARGET':
 			self.draw_target_mode(layout, props, prefs)
 		else:  # SOURCE mode
 			self.draw_source_mode(layout, props, prefs)
-
+	
+	
+	
+	########## TARGET MODE ##########
+	
 	def draw_target_mode(self, layout, props, prefs):
 		"""Draw UI for Target mode"""
 		box = layout.box()
-		box.label(text="Target Mode:", icon='NETWORK_DRIVE')
-
-		status_box = box.box()
+		
+		# Status
 		if network_manager.discovery_active:
-			status_box.label(text="Listening for LAN remote render jobs", icon='CHECKMARK')
+			box.label(text="Listening for LAN remote render jobs", icon='CHECKMARK')
 		else:
-			status_box.label(text="Not listening for remote render jobs", icon='PAUSE')
-		status_box.label(text="Turning off Render Remote or leaving Target mode stops this service.", icon='INFO')
-
-		col = box.column()
-		col.label(text=f"This Computer: {get_remote_node_name()}", icon='DESKTOP')
-
+			box.label(text="Not listening for remote render jobs", icon='PAUSE')
+		
+		# Info placement
+		info = box.row()
+		
+		# Operator button placement
+		button = box.row()
+		
 		# Show authentication status from preferences
-		if prefs.remote_passcode:
-			col.label(text="Authentication: Passcode required", icon='LOCKED')
-			col.label(text="Configure passcode in Add-on Preferences.", icon='PREFERENCES')
+		if not prefs.remote_passcode:
+			info.label(text="Set passcode in Preferences before allowing remote rendering.", icon='PREFERENCES')
+			button.active = False
+			robuttonw.enabled = False
 		else:
-			auth_box = box.box()
-			auth_box.alert = True
-			auth_box.label(text="Set a passcode before allowing remote rendering.", icon='ERROR')
-			auth_box.label(text="Configure passcode in Add-on Preferences.", icon='PREFERENCES')
-
-		# Discovery controls
-		row = box.row(align=True)
+			info.label(text=f"Name: {get_remote_node_name()}  IP: NEED LAN IP", icon='BLANK1')
+		
+		# Discovery control
 		if network_manager.discovery_active:
-			row.operator("render_remote.stop_discovery", icon='PAUSE')
-			row.label(text="Listening", icon='CHECKMARK')
+			button.operator("render_remote.stop_discovery", icon='PAUSE')
 		else:
-			row.operator("render_remote.start_discovery", icon='PLAY')
-			row.label(text="Stopped", icon='X')
-
+			button.operator("render_remote.start_discovery", icon='PLAY')
+	
+	
+	
+	########## SOURCE MODE: NETWORK ##########
+	
 	def draw_source_mode(self, layout, props, prefs):
 		"""Draw UI for Source mode"""
 		context = bpy.context
 		connected_node = get_connected_remote_node(context, props)
 		box = layout.box()
-		box.label(text="Source Mode:", icon='DESKTOP')
-		box.label(text="Source mode uses outbound LAN connections only.", icon='INFO')
-		box.label(text="It does not listen for incoming remote render jobs.")
-
+		
+		# Status
+		if connected_node:
+			box.label(text=f"Connected to {format_connected_remote_label(connected_node)}", icon='LINKED')
+		elif props.remote_selected_node:
+			box.label(text="Target not connected", icon='ERROR')
+		else:
+			box.label(text="Target not selected", icon='UNLINKED')
+		
 		# Network scan
 		row = box.row()
 		row.operator("render_remote.scan_network", icon='VIEWZOOM')
-
+		
 		# Discovered nodes
 		if get_discovered_nodes(context):
 			box.label(text="Discovered Nodes:")
 			for node in get_discovered_nodes(context):
 				node_box = box.box()
 				row = node_box.row()
-
+				
 				# Node info
 				col = row.column()
 				col.label(text=f"{node.name}")
 				col.label(text=f"{node.ip}:{node.port}")
 				if node.blender_version:
 					col.label(text=f"Blender {node.blender_version}")
-
+				
 				# Connection status and controls
 				col = row.column()
 				if node.is_connected:
@@ -1212,38 +1215,50 @@ class REMOTERENDER_PT_MainPanel(Panel):
 
 					op = col.operator("render_remote.connect_node", text="Connect")
 					op.node_id = node.node_id
-
+		
 		# Manual connection
 		box.separator()
 		box.label(text="Manual Connection:")
-		col = box.column()
-		col.prop(prefs, "remote_manual_ip")
-		col.prop(prefs, "remote_manual_port")
-		col.prop(prefs, "remote_connection_password", text="Password")
-		col.operator("render_remote.connect_manual")
-
-		# Selected connection info
-		if connected_node:
-			box.separator()
-			box.label(text=f"Connected Target: {format_connected_remote_label(connected_node)}", icon='LINKED')
-		elif props.remote_selected_node:
-			box.separator()
-			box.label(text="Selected target is no longer connected", icon='ERROR')
-
+		row = box.row()
+		row.prop(prefs, "remote_manual_ip", text="")
+		row.prop(prefs, "remote_manual_port", text="")
+		row.prop(prefs, "remote_connection_password", text="")
+		box.operator("render_remote.connect_manual")
+		
 		# Project scanning and sync
 		layout.separator()
-		self.draw_sync_interface(layout, context, props)
-
+		if bpy.data.filepath:
+			if get_connected_remote_node(context, props):
+				self.draw_sync_interface(layout, context, props)
+			else:
+				layout.label(text="Connect target to continue", icon='ERROR')
+		else:
+			layout.label(text="Save project to continue", icon='ERROR')
+	
+	
+	
+	# SOURCE MODE: SYNC #
+	
 	def draw_sync_interface(self, layout, context, props):
 		"""Draw file synchronization interface"""
 		box = layout.box()
-		box.label(text="Input Sync:", icon='FILE_REFRESH')
-
+		
+		# Status
+		row = box.row()
+		row.label(text="Sync:", icon='FILE_REFRESH')
+		row.label(text=f"{props.remote_sync_status}", icon='INFO')
+		
+		# Show project root directory
+		if bpy.data.filepath:
+			project_root = file_sync_manager.get_project_root()
+			if project_root:
+				box.label(text=f"Project root: {os.path.basename(project_root)}/", icon='FILE_FOLDER')
+			else:
+				box.label(text="Project root not found", icon='ERROR')
+		
 		# Scan button and status
-		row = box.row(align=True)
-		row.operator("render_remote.scan_project", icon='VIEWZOOM')
-		row.label(text=f"Phase: {props.remote_sync_status}", icon='INFO')
-
+		box.operator("render_remote.scan_project", icon='VIEWZOOM')
+		
 		# External files warning
 		if props.remote_show_external_warning:
 			warning_box = box.box()
@@ -1251,28 +1266,31 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			warning_box.label(text=f"Warning: {props.remote_external_files_count} external files detected!", icon='ERROR')
 			warning_box.label(text="External files will NOT be synced to target computer.")
 			warning_box.label(text="Only files within the project folder structure are supported.")
-
+		
 		if props.remote_show_missing_warning:
 			warning_box = box.box()
 			warning_box.alert = True
 			warning_box.label(text=f"Warning: {props.remote_missing_files_count} referenced files are missing!", icon='ERROR')
 			warning_box.label(text="Missing files must be restored before remote rendering.")
-
+		
 		# Sync files list
 		if get_sync_files(context):
 			box.label(text="Files to Sync:")
-
-			# Select all/none buttons
-			row = box.row()
-			row.operator("render_remote.select_all_sync_files", text="Select All")
-			row.operator("render_remote.deselect_all_sync_files", text="Deselect All")
-
+			
+			# Select all/none buttons, Sync button
+			row = box.row(align=False)
+			subrow = row.row(align=True)
+			subrow.operator("render_remote.select_all_sync_files", text="All", icon="CHECKBOX_HLT")
+			subrow.operator("render_remote.deselect_all_sync_files", text="None", icon="CHECKBOX_DEHLT")
+#			row.separator()
+			row.operator("render_remote.sync_files", text="Sync", icon='FILE_REFRESH')
+			
 			# File list
 			sync_box = box.box()
 			for sync_file in get_sync_files(context):
-				row = sync_box.row()
+				row = sync_box.row(align=True)
 				row.prop(sync_file, "selected", text="")
-
+				
 				# File status icon
 				if sync_file.status == 'new':
 					row.label(text="", icon='FILE_NEW')
@@ -1284,65 +1302,69 @@ class REMOTERENDER_PT_MainPanel(Panel):
 					row.label(text="", icon='ERROR')
 				else:
 					row.label(text="", icon='FILE')
-
+				
 				# File info
 				col = row.column()
-				col.label(text=sync_file.file_path)
+				subrow = col.row(align=False)
+				subrow.label(text=sync_file.file_path)
 				if sync_file.size > 0:
 					size_mb = sync_file.size / (1024 * 1024)
 					if size_mb < 1:
 						size_str = f"{sync_file.size / 1024:.1f} KB"
 					else:
 						size_str = f"{size_mb:.1f} MB"
-					col.label(text=f"{sync_file.status.upper()} - {size_str}")
+					subrow.label(text=f"{size_str}")
 				else:
-					col.label(text=sync_file.status.upper())
-
-			# Sync button
-			box.operator("render_remote.sync_files", icon='FILE_REFRESH')
-
+					subrow.label(text=sync_file.status.upper())
+		
 		elif props.remote_sync_status == "Up to date":
 			box.label(text="All files are synchronized!", icon='CHECKMARK')
-
+		
 		# Render Management Interface
 		if get_connected_remote_node(context, props):
 			layout.separator()
 			self.draw_render_interface(layout, context, props)
-
+	
+	
+	
+	# SOURCE MODE: RENDER #
+	
 	def draw_render_interface(self, layout, context, props):
 		"""Draw render management interface"""
 		box = layout.box()
+		
+		# Status
 		box.label(text="Remote Rendering:", icon='RENDER_ANIMATION')
 		active_workflow = props.remote_monitor_render or props.remote_render_status in ['preparing', 'rendering']
-
+		
 		# Render controls
 		if active_workflow:
 			row = box.row(align=True)
 			if props.remote_render_status in ['preparing', 'rendering']:
 				row.operator("render_remote.cancel_remote_render", icon='X')
 			row.operator("render_remote.refresh_render_status", icon='FILE_REFRESH')
-
+			
 			progress_box = box.box()
 			progress_box.label(text=f"Phase: {props.remote_sync_status}", icon='INFO')
 			progress_box.label(text=f"Render Status: {format_render_status_label(props.remote_render_status)}", icon='RENDER_ANIMATION')
-
+			
 			if props.remote_render_progress > 0:
 				row = progress_box.row()
 				row.label(text=f"Progress: {props.remote_render_progress:.1f}%")
-
+			
 			if props.remote_total_frames > 1:
 				row = progress_box.row()
 				row.label(text=f"Frame: {props.remote_current_frame} / {props.remote_total_frames}")
-
+			
 			if props.remote_render_elapsed_time > 0:
 				elapsed_minutes = int(props.remote_render_elapsed_time // 60)
 				elapsed_seconds = int(props.remote_render_elapsed_time % 60)
 				row = progress_box.row()
 				row.label(text=f"Elapsed: {elapsed_minutes:02d}:{elapsed_seconds:02d}")
-
+			
 			if props.remote_monitor_render and props.remote_render_status not in ['preparing', 'rendering']:
 				progress_box.label(text="Waiting for output sync to settle.", icon='INFO')
-
+			
 			if props.remote_render_error_message:
 				error_box = progress_box.box()
 				error_box.alert = True
@@ -1352,33 +1374,26 @@ class REMOTERENDER_PT_MainPanel(Panel):
 				warning_box = box.box()
 				warning_box.alert = True
 				warning_box.label(text="Resolve missing or unsupported references before rendering.", icon='ERROR')
-
+			
 			row = box.row()
 			row.enabled = not (props.remote_show_external_warning or props.remote_show_missing_warning)
 			op = row.operator("render_remote.start_remote_render", text="Render Animation", icon='RENDER_ANIMATION')
 			op.animation = True
-
+			
 			# Status refresh
 			row = box.row()
 			row.operator("render_remote.refresh_render_status", icon='FILE_REFRESH')
-
+			
 			# Show last status if available
 			if props.remote_render_status and props.remote_render_status != "Not Started":
 				status_box = box.box()
 				status_box.label(text=f"Last Status: {format_render_status_label(props.remote_render_status)}")
 				if props.remote_sync_status not in {"Not Scanned", "Up to date"}:
 					status_box.label(text=f"Last Phase: {props.remote_sync_status}", icon='INFO')
-
+				
 				if props.remote_render_error_message:
 					status_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
-
-		# Output monitoring info
-		box.separator()
-		box.label(text="Output File Sync:", icon='FILE_REFRESH')
-		box.label(text="Outputs are pulled back into this project automatically")
-		box.label(text="Relative folder structure is preserved")
-		box.label(text="Source mode initiates the transfer connections")
-
+		
 		# Show project root info
 		if bpy.data.filepath:
 			project_root = file_sync_manager.get_project_root()
@@ -1386,3 +1401,4 @@ class REMOTERENDER_PT_MainPanel(Panel):
 				box.label(text=f"Project root: {os.path.basename(project_root)}/", icon='FILE_FOLDER')
 		else:
 			box.label(text="(Save your project to see sync info)", icon='INFO')
+			

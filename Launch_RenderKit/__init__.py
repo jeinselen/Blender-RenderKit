@@ -140,7 +140,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			],
 		default='OFF')
 	
-	# Render remote
+	# Render Remote Preferences
 	def update_remote_enable(self, context):
 		try:
 			if self.remote_enable:
@@ -451,7 +451,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		
 		layout = self.layout
 		
-		########## Render Region, Render Batch, Render Proxy, Render Node ##########
+		########## GENERAL: Render Region, Render Batch, Render Proxy, Render Node ##########
 		
 		layout.label(text="General", icon="PREFERENCES") # TOOL_SETTINGS SETTINGS PREFERENCES
 		grid0 = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
@@ -510,36 +510,10 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			subgrid.prop(self, "proxy_resolutionMultiplier")
 			subgrid.prop(self, "proxy_format", text="")
 		
-		# Remote settings
-		grid0.prop(self, "remote_enable")
-		input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-		if not self.remote_enable:
-			input.active = False
-			input.enabled = False
-			input.prop(self, "remote_show_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
-		elif self.remote_show_settings:
-			input.prop(self, "remote_show_settings", icon = "DISCLOSURE_TRI_DOWN", emboss = False)
-		else:
-			input.prop(self, "remote_show_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
-		input.separator()
-		
-		if self.remote_enable and self.remote_show_settings:
-			# Subgrid Layout
-			margin = layout.row()
-			margin.separator(factor=2.0)
-			subgrid = margin.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-			margin.separator(factor=2.0)
-			
-			subgrid.prop(self, "remote_cache_directory", text="")
-			subgrid.prop(self, "remote_passcode", text="")
-			subgrid.operator("render_remote.clear_cache", icon='TRASH')
-			subgrid.prop(self, "remote_discovery_port", text="")
-			subgrid.separator()
-			subgrid.prop(self, "remote_communication_port", text="")
 		
 		
 		
-		########## Output Variables ##########
+		########## SAVING: Output Variables, Autosave Videos, Autosave Images ##########
 		
 		layout.separator(factor = 2.0)
 		layout.label(text="Saving", icon="FILE_FOLDER") # CURRENT_FILE FILE_CACHE FILE_FOLDER FILEBROWSER
@@ -552,10 +526,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			input.enabled = False
 		input.prop(self, "variable_category", text="")
 		
-		
-		
-		########## Autosave Videos ##########
-		
+		# Autosave Videos
 		grid1.prop(self, "ffmpeg_processing")
 		input = grid1.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
 		if not self.ffmpeg_processing:
@@ -568,10 +539,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		else:
 			input.label(text="✘ missing")
 		
-		
-		
-		########## Autosave Images ##########
-		
+		# Autosave Images
 		grid1.prop(self, "enable_autosave_render")
 		grid1.prop(self, "override_autosave_render")
 		
@@ -613,7 +581,41 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		
 		
 		
-		########## Render Time Data ##########
+		########## REMOTE: Render Remote ##########
+		
+		layout.label(text="Remote", icon="NETWORK_DRIVE") # NETWORK_DRIVE DISK_DRIVE RENDER_ANIMATION
+		grid0 = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+		
+		# Render Remote settings
+		grid0.prop(self, "remote_enable")
+		input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+		if not self.remote_enable:
+			input.active = False
+			input.enabled = False
+			input.prop(self, "remote_show_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
+		elif self.remote_show_settings:
+			input.prop(self, "remote_show_settings", icon = "DISCLOSURE_TRI_DOWN", emboss = False)
+		else:
+			input.prop(self, "remote_show_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
+		input.separator()
+		
+		if self.remote_enable and self.remote_show_settings:
+			# Subgrid Layout
+			margin = layout.row()
+			margin.separator(factor=2.0)
+			subgrid = margin.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+			margin.separator(factor=2.0)
+			
+			subgrid.prop(self, "remote_cache_directory", text="")
+			subgrid.prop(self, "remote_passcode", text="")
+			subgrid.operator("render_remote.clear_cache", icon='TRASH')
+			subrow = subgrid.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+			subrow.prop(self, "remote_discovery_port", text="")
+			subrow.prop(self, "remote_communication_port", text="")
+		
+		
+		
+		########## TIME: Render Time Data ##########
 		
 		layout.separator(factor = 2.0)
 		layout.label(text="Time", icon="TIME") # TIME MOD_TIME SORTTIME PREVIEW_RANGE
@@ -639,7 +641,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		
 		
 		
-		########## Render Completed Notifications ##########
+		########## ALERTS: Render Completed Notifications ##########
 		
 		layout.separator(factor = 2.0)
 		layout.label(text="Alerts", icon="ERROR") # ERROR RECOVER_LAST
@@ -1189,3 +1191,4 @@ def unregister():
 
 if __package__ == "__main__":
 	register()
+	
