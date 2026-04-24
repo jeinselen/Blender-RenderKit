@@ -577,6 +577,9 @@ class NetworkManager:
 		elif msg_type == 'get_output_manifest':
 			return self._handle_get_output_manifest(message)
 
+		elif msg_type == 'delete_output_files':
+			return self._handle_delete_output_files(message)
+
 		elif msg_type == 'request_file':
 			return self._handle_request_file(message, client_sock)
 
@@ -667,6 +670,24 @@ class NetworkManager:
 		except Exception as e:
 			print(f"Get output manifest request failed: {e}")
 			return error_response('output_manifest_failed', 'Failed to get output manifest')
+
+	def _handle_delete_output_files(self, message):
+		"""Delete target-side outputs that the source has safely downloaded."""
+		from .render import render_manager
+		try:
+			outputs = message.get('outputs', [])
+			if not isinstance(outputs, list):
+				return error_response('invalid_outputs', 'Outputs must be a list')
+
+			if not render_manager or not render_manager.output_file_monitor:
+				return error_response('outputs_unavailable', 'No output files available')
+
+			result = render_manager.output_file_monitor.delete_output_files(outputs)
+			json.dumps(result)
+			return result
+		except Exception as e:
+			print(f"Delete output files request failed: {e}")
+			return error_response('delete_outputs_failed', 'Failed to delete output files')
 
 	def _handle_request_file(self, message, client_sock):
 		"""Handle request for a specific file - with better error handling"""
@@ -1277,6 +1298,24 @@ class NetworkManager:
 
 		except Exception as e:
 			print(f"Get output manifest request failed: {e}")
+
+		return None
+
+	def delete_output_files_on_target(self, ip, port, auth_token, outputs):
+		"""Ask the target to delete manifest-owned output files."""
+		try:
+			request = {
+				'type': 'delete_output_files',
+				'auth_token': auth_token,
+				'outputs': outputs,
+				'timestamp': time.time()
+			}
+			response = self._send_request(ip, port, request, timeout=10)
+			if response.get('status') == 'success':
+				return response
+			print(f"Delete output files request failed: {response.get('message', 'Unknown error')}")
+		except Exception as e:
+			print(f"Delete output files request failed: {e}")
 
 		return None
 

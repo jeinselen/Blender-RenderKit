@@ -1,4 +1,5 @@
 import bpy
+import hmac
 import os
 import re
 import threading
@@ -401,6 +402,62 @@ class OutputFileMonitor:
 	def get_pending_files(self):
 		"""Backward-compatible view of outputs as manifest entries"""
 		return list(self.get_output_manifest().values())
+
+	def delete_output_files(self, outputs):
+		"""Delete manifest-owned output files after the source confirms download."""
+		result = {
+			'status': 'success',
+			'deleted_paths': [],
+			'missing_paths': [],
+			'skipped_paths': [],
+		}
+
+		for output in outputs or []:
+			try:
+				relative_path = normalize_relative_path(output.get('relative_path', ''))
+				expected_hash = str(output.get('hash') or '')
+				if not relative_path or is_reserved_input_manifest_path(relative_path):
+					continue
+
+				with self.manifest_lock:
+					manifest_entry = self.output_manifest.get(relative_path)
+
+				file_path = resolve_under_root(self.project_root, relative_path)
+				normalized_path = self._normalize_existing_path(file_path)
+				if not manifest_entry or not normalized_path or not self._is_within_workspace(normalized_path):
+					result['skipped_paths'].append(relative_path)
+					continue
+
+				manifest_hash = str(manifest_entry.get('hash') or '')
+				if expected_hash and not hmac.compare_digest(expected_hash, manifest_hash):
+					result['skipped_paths'].append(relative_path)
+					continue
+
+				if not os.path.exists(normalized_path):
+					result['missing_paths'].append(relative_path)
+					with self.manifest_lock:
+						self.output_manifest.pop(relative_path, None)
+					self.known_files.pop(normalized_path, None)
+					continue
+
+				if not os.path.isfile(normalized_path):
+					result['skipped_paths'].append(relative_path)
+					continue
+
+				os.remove(normalized_path)
+				result['deleted_paths'].append(relative_path)
+				with self.manifest_lock:
+					self.output_manifest.pop(relative_path, None)
+					self.last_output_change = time.time()
+				self.known_files.pop(normalized_path, None)
+			except (AttributeError, OSError, PathSecurityError, ValueError, TypeError):
+				if isinstance(output, dict) and output.get('relative_path'):
+					try:
+						result['skipped_paths'].append(normalize_relative_path(output.get('relative_path')))
+					except (PathSecurityError, ValueError, TypeError):
+						pass
+
+		return result
 
 	def remove_pending_file(self, file_path):
 		"""Legacy no-op retained for older call sites"""

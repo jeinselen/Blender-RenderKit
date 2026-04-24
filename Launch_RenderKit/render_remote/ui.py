@@ -86,8 +86,9 @@ def start_remote_render_progress_monitoring(target_node):
 		def apply_update():
 			context = bpy.context
 			props = get_remote_props(context)
+			connected_node = get_connected_remote_node(context, props)
 			
-			if props.remote_selected_node != target_node_id:
+			if not connected_node or connected_node.node_id != target_node_id:
 				return None
 			if not props.remote_monitor_render:
 				return None
@@ -255,13 +256,14 @@ def start_remote_render_progress_monitoring(target_node):
 	def monitor_progress():
 		context = bpy.context
 		props = get_remote_props(context)
+		connected_node = get_connected_remote_node(context, props)
 
 		if not props.remote_monitor_render:
 			return None
-		if not props.remote_selected_node:
+		if not connected_node:
 			props.remote_monitor_render = False
 			return None
-		if props.remote_selected_node != target_node_id:
+		if connected_node.node_id != target_node_id:
 			return None
 
 		with state_lock:
@@ -340,12 +342,20 @@ class RemoteRuntimeState(PropertyGroup):
 # Source-side Render Remote Workflow Helpers
 # ----
 
-def get_connected_remote_node(context, props):
-	"""Return the selected connected remote node, if any"""
+def get_connected_remote_node(context, props=None):
+	"""Return the connected remote node, if any."""
 	for node in get_discovered_nodes(context):
-		if node.node_id == props.remote_selected_node and node.is_connected:
+		if node.is_connected:
 			return node
 	return None
+
+def clear_connected_remote_nodes(context, keep_node=None):
+	"""Clear active source-side connections except an optional node."""
+	for node in get_discovered_nodes(context):
+		if keep_node is not None and node is keep_node:
+			continue
+		node.is_connected = False
+		node.auth_token = ""
 
 def format_connected_remote_label(node):
 	"""Human-friendly label for the connected render target"""
@@ -704,6 +714,7 @@ class REMOTERENDER_OT_ConnectNode(Operator):
 
 		# Test connection
 		if network_manager.test_connection(target_node.ip, target_node.port, auth_token):
+			clear_connected_remote_nodes(context, keep_node=target_node)
 			target_node.is_connected = True
 			target_node.auth_token = auth_token or ""
 
@@ -722,14 +733,7 @@ class REMOTERENDER_OT_DisconnectNode(Operator):
 	def execute(self, context):
 		props = get_remote_props(context)
 
-		# Find connected node and disconnect
-		for node in get_discovered_nodes(context):
-			if node.node_id == props.remote_selected_node:
-				node.is_connected = False
-				node.auth_token = ""
-				break
-
-		props.remote_selected_node = ""
+		clear_connected_remote_nodes(context)
 		props.remote_sync_status = "Not Scanned"
 		props.remote_monitor_render = False
 		props.remote_render_status = "Not Started"
@@ -798,12 +802,10 @@ class REMOTERENDER_OT_ConnectManual(Operator):
 				manual_node.name = f"Manual ({prefs.remote_manual_ip})"
 				manual_node.ip = prefs.remote_manual_ip
 				manual_node.port = prefs.remote_manual_port
-				manual_node.requires_auth = True
 
+			clear_connected_remote_nodes(context, keep_node=manual_node)
 			manual_node.is_connected = True
 			manual_node.auth_token = auth_token or ""
-
-			props.remote_selected_node = manual_node.node_id
 
 			self.report({'INFO'}, f"Connected to {prefs.remote_manual_ip}")
 		else:
@@ -833,14 +835,12 @@ class REMOTERENDER_OT_ScanProject(Operator):
 				props = get_remote_props(context)
 				dependencies = file_sync_manager.scan_blend_dependencies()
 				sync_changes = None
+				target_node = get_connected_remote_node(context, props)
 
-				if props.remote_selected_node:
-					target_node = get_connected_remote_node(context, props)
-
-					if target_node:
-						sync_state = collect_project_sync_state(props, target_node, require_remote_manifest=False)
-						dependencies = sync_state['dependencies']
-						sync_changes = sync_state['sync_changes']
+				if target_node:
+					sync_state = collect_project_sync_state(props, target_node, require_remote_manifest=False)
+					dependencies = sync_state['dependencies']
+					sync_changes = sync_state['sync_changes']
 
 				def update_ui():
 					context = bpy.context
@@ -872,21 +872,11 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 	def execute(self, context):
 		props = get_remote_props(context)
 
-		if not props.remote_selected_node:
-			self.report({'ERROR'}, "No remote node connected")
-			return {'CANCELLED'}
-
 		if not bpy.data.filepath:
 			self.report({'ERROR'}, "Please save your blend file first")
 			return {'CANCELLED'}
 
-		# Find connected node
-		target_node = None
-		for node in get_discovered_nodes(context):
-			if node.node_id == props.remote_selected_node and node.is_connected:
-				target_node = node
-				break
-
+		target_node = get_connected_remote_node(context, props)
 		if not target_node:
 			self.report({'ERROR'}, "Remote node not connected")
 			return {'CANCELLED'}
@@ -969,21 +959,11 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 	def execute(self, context):
 		props = get_remote_props(context)
 
-		if not props.remote_selected_node:
-			self.report({'ERROR'}, "No remote node connected")
-			return {'CANCELLED'}
-
 		if not bpy.data.filepath:
 			self.report({'ERROR'}, "Please save your blend file first")
 			return {'CANCELLED'}
 
-		# Find connected node
-		target_node = None
-		for node in get_discovered_nodes(context):
-			if node.node_id == props.remote_selected_node and node.is_connected:
-				target_node = node
-				break
-
+		target_node = get_connected_remote_node(context, props)
 		if not target_node:
 			self.report({'ERROR'}, "Remote node not connected")
 			return {'CANCELLED'}
@@ -1106,17 +1086,7 @@ class REMOTERENDER_OT_CancelRemoteRender(Operator):
 	def execute(self, context):
 		props = get_remote_props(context)
 
-		if not props.remote_selected_node:
-			self.report({'ERROR'}, "No remote node connected")
-			return {'CANCELLED'}
-
-		# Find connected node
-		target_node = None
-		for node in get_discovered_nodes(context):
-			if node.node_id == props.remote_selected_node and node.is_connected:
-				target_node = node
-				break
-
+		target_node = get_connected_remote_node(context, props)
 		if not target_node:
 			self.report({'ERROR'}, "Remote node not connected")
 			return {'CANCELLED'}
@@ -1146,17 +1116,7 @@ class REMOTERENDER_OT_RefreshRenderStatus(Operator):
 	def execute(self, context):
 		props = get_remote_props(context)
 
-		if not props.remote_selected_node:
-			self.report({'ERROR'}, "No remote node connected")
-			return {'CANCELLED'}
-
-		# Find connected node
-		target_node = None
-		for node in get_discovered_nodes(context):
-			if node.node_id == props.remote_selected_node and node.is_connected:
-				target_node = node
-				break
-
+		target_node = get_connected_remote_node(context, props)
 		if not target_node:
 			self.report({'ERROR'}, "Remote node not connected")
 			return {'CANCELLED'}
@@ -1305,13 +1265,16 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		context = bpy.context
 		connected_node = get_connected_remote_node(context, props)
 		box = layout.box()
-		
+
+		# Skip if file is unsaved
+		if not bpy.data.filepath:
+			layout.label(text="Save project to continue", icon='ERROR')
+			return
+
 		# Status and Mode
 		row = box.row()
 		if connected_node:
 			row.label(text=f"{format_connected_remote_label(connected_node)}", icon='LINKED')
-		elif props.remote_selected_node:
-			row.label(text="Target not connected", icon='ERROR')
 		else:
 			row.label(text="Not connected", icon='UNLINKED')
 		subrow = row.row(align=True)
@@ -1338,8 +1301,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 					row2 = node_box.row()
 					if node.is_connected:
 						row2.label(text="Connected", icon='CHECKMARK')
-						if node.node_id == props.remote_selected_node:
-							row2.operator("render_remote.disconnect_node", text="Disconnect")
+						row2.operator("render_remote.disconnect_node", text="Disconnect")
 					else:
 						row2.prop(prefs, "remote_connection_password", text="")
 						op = row2.operator("render_remote.connect_node", text="Connect")
@@ -1355,17 +1317,14 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			if connected_node:
 				row.operator("render_remote.disconnect_node", text="Disconnect")
 			else:
-				row.operator("render_remote.connect_manual")
+				row.operator("render_remote.connect_manual", text="Connect")
 		
 		# Project scanning and sync
 		layout.separator()
-		if bpy.data.filepath:
-			if get_connected_remote_node(context, props):
-				self.draw_sync_interface(layout, context, props)
-			else:
-				layout.label(text="Connect target to continue", icon='ERROR')
+		if get_connected_remote_node(context, props):
+			self.draw_sync_interface(layout, context, props)
 		else:
-			layout.label(text="Save project to continue", icon='ERROR')
+			layout.label(text="Connect target to continue", icon='ERROR')
 	
 	
 	
@@ -1375,19 +1334,17 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		"""Draw file synchronization interface"""
 		box = layout.box()
 		
+		# Show project root directory
+		project_root = file_sync_manager.get_project_root()
+		if project_root:
+			box.label(text=f"Project root: {os.path.basename(project_root)}/", icon='FILE_REFRESH') # FILE_FOLDER FILE_REFRESH
+		else:
+			box.label(text="Project root not found", icon='ERROR')
+
 		# Status
 		row = box.row()
 		row.label(text="Sync:", icon='FILE_REFRESH')
-		row.label(text=f"{props.remote_sync_status}", icon='INFO')
-		
-		# Show project root directory
-		if bpy.data.filepath:
-			project_root = file_sync_manager.get_project_root()
-			if project_root:
-				box.label(text=f"Project root: {os.path.basename(project_root)}/", icon='FILE_FOLDER')
-			else:
-				box.label(text="Project root not found", icon='ERROR')
-		
+
 		# Scan button and status
 		box.operator("render_remote.scan_project", icon='VIEWZOOM')
 		
@@ -1407,15 +1364,10 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		
 		# Sync files list
 		if get_sync_files(context):
-			box.label(text="Files to Sync:")
-			
 			# Select all/none buttons, Sync button
 			row = box.row(align=False)
-			subrow = row.row(align=True)
-			subrow.operator("render_remote.select_all_sync_files", text="All", icon="CHECKBOX_HLT")
-			subrow.operator("render_remote.deselect_all_sync_files", text="None", icon="CHECKBOX_DEHLT")
-#			row.separator()
-			row.operator("render_remote.sync_files", text="Sync", icon='FILE_REFRESH')
+			row.operator("render_remote.select_all_sync_files", text="All", icon="CHECKBOX_HLT")
+			row.operator("render_remote.deselect_all_sync_files", text="None", icon="CHECKBOX_DEHLT")
 			
 			# File list
 			sync_box = box.box()
@@ -1448,6 +1400,10 @@ class REMOTERENDER_PT_MainPanel(Panel):
 					subrow.label(text=f"{size_str}")
 				else:
 					subrow.label(text=sync_file.status.upper())
+
+			row = box.row()
+			row.operator("render_remote.sync_files", text="Sync", icon='FILE_REFRESH')
+			row.label(text=f"{props.remote_sync_status}", icon='INFO')
 		
 		elif props.remote_sync_status == "Up to date":
 			box.label(text="All files are synchronized!", icon='CHECKMARK')
@@ -1523,7 +1479,6 @@ class REMOTERENDER_PT_MainPanel(Panel):
 				status_box.label(text=f"Last Status: {format_render_status_label(props.remote_render_status)}")
 				if props.remote_sync_status not in {"Not Scanned", "Up to date"}:
 					status_box.label(text=f"Last Phase: {props.remote_sync_status}", icon='INFO')
-				
+
 				if props.remote_render_error_message:
 					status_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
-					
