@@ -1,6 +1,5 @@
 # General features
 import bpy
-import socket
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 
 # FFmpeg system access
@@ -211,31 +210,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		update=update_remote_passcode
 	)
 
-	def update_remote_mode(self, context):
-		try:
-			if self.remote_mode != 'TARGET' and render_remote.is_registered():
-				if render_remote.network_manager.discovery_active:
-					render_remote.network_manager.stop_discovery_server(force=True)
-				if render_remote.network_manager.communication_active:
-					render_remote.network_manager.stop_communication_server(force=True)
-		except Exception as e:
-			print(f"Remote render mode update failed: {e}")
-
-	remote_mode: EnumProperty(
-		name="Mode",
-		description="Select operation mode",
-		items=[
-			('SOURCE', "Source", "Control remote rendering from this computer"),
-			('TARGET', "Target", "Allow this computer to be used for remote rendering")
-		],
-		default='SOURCE',
-		update=update_remote_mode
-	)
-	remote_node_name: StringProperty(
-		name="Node Name",
-		description="Name for this computer when discovered",
-		default=socket.gethostname()
-	)
 	remote_manual_ip: StringProperty(name="Manual IP", description="Manually enter IP address", default="")
 	remote_manual_port: IntProperty(name="Manual Port", description="Port for manual connection", default=5002, min=1024, max=65535)
 	remote_connection_password: StringProperty(name="Connection Password", description="Password for connecting to remote node", subtype='PASSWORD', default="")

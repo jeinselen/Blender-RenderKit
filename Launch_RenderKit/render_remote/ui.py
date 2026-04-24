@@ -5,7 +5,7 @@ import shutil
 import threading
 import time
 from types import SimpleNamespace
-from bpy.props import StringProperty, BoolProperty, FloatProperty, IntProperty
+from bpy.props import StringProperty, BoolProperty, EnumProperty, FloatProperty, IntProperty
 from bpy.types import Operator, Panel, PropertyGroup
 from .constants import (ADDON_PACKAGE, build_source_project_cache_name,
                         OUTPUT_SYNC_POLL_INTERVAL, OUTPUT_SYNC_QUIET_PERIOD,
@@ -13,9 +13,13 @@ from .constants import (ADDON_PACKAGE, build_source_project_cache_name,
 from .paths import PathSecurityError, normalize_relative_path, resolve_under_root, relative_path_under_root
 from .protocol import error_response
 from .file_sync import file_sync_manager
+from .local_state import (default_remote_node_name, get_local_remote_mode,
+                          set_local_remote_mode)
 from .network import network_manager
 from .render import render_manager
 from .timers import timer_manager
+
+_SYNCING_LOCAL_REMOTE_STATE = False
 
 def get_remote_props(context):
 	"""Return transient Render Remote workflow state."""
@@ -32,6 +36,44 @@ def get_discovered_nodes(context):
 def get_sync_files(context):
 	"""Return transient sync-file storage that is not saved into blend files."""
 	return context.window_manager.remote_render_sync_files
+
+
+def get_remote_mode(context):
+	"""Return the host-local Render Remote operation mode."""
+	return get_remote_props(context).remote_mode
+
+
+def get_remote_node_name():
+	"""Return the local machine name used for target discovery."""
+	return default_remote_node_name()
+
+
+def initialize_remote_runtime_state(context):
+	"""Hydrate transient runtime state from host-local settings."""
+	global _SYNCING_LOCAL_REMOTE_STATE
+	props = get_remote_props(context)
+	_SYNCING_LOCAL_REMOTE_STATE = True
+	try:
+		props.remote_mode = get_local_remote_mode()
+	finally:
+		_SYNCING_LOCAL_REMOTE_STATE = False
+
+
+def update_remote_mode_state(self, context):
+	"""Persist host-local mode changes and stop target services when leaving target mode."""
+	if _SYNCING_LOCAL_REMOTE_STATE:
+		return
+
+	mode = str(self.remote_mode or "SOURCE").upper()
+	set_local_remote_mode(mode)
+	try:
+		if mode != 'TARGET' and render_manager and network_manager:
+			if network_manager.discovery_active:
+				network_manager.stop_discovery_server(force=True)
+			if network_manager.communication_active:
+				network_manager.stop_communication_server(force=True)
+	except Exception as e:
+		print(f"Remote render mode update failed: {e}")
 
 def start_remote_render_progress_monitoring(target_node):
 	"""Start monitoring render progress and reconciling rendered outputs."""
@@ -180,6 +222,16 @@ class RemoteNodeProperties(PropertyGroup):
 class RemoteRuntimeState(PropertyGroup):
 	"""Transient Render Remote state that should not be saved as preferences or project settings"""
 
+	remote_mode: EnumProperty(
+		name="Mode",
+		description="Select operation mode for this computer",
+		items=[
+			('SOURCE', "Source", "Control remote rendering from this computer"),
+			('TARGET', "Target", "Allow this computer to be used for remote rendering"),
+		],
+		default='SOURCE',
+		update=update_remote_mode_state,
+	)
 	remote_selected_node: StringProperty(name="Selected Node", description="Currently selected remote node")
 	remote_sync_status: StringProperty(name="Sync Status", default="Not Scanned")
 	remote_external_files_count: IntProperty(name="External Files Count", default=0)
@@ -441,6 +493,7 @@ class REMOTERENDER_OT_StartDiscovery(Operator):
 
 	def execute(self, context):
 		prefs = context.preferences.addons[ADDON_PACKAGE].preferences
+		node_name = get_remote_node_name()
 
 		if network_manager.discovery_active:
 			self.report({'WARNING'}, "Discovery already active")
@@ -453,13 +506,13 @@ class REMOTERENDER_OT_StartDiscovery(Operator):
 		network_manager.update_ports_from_preferences()
 
 		if not network_manager.start_discovery_server(
-			prefs.remote_node_name,
+			node_name,
 			prefs.remote_passcode
 		):
 			self.report({'ERROR'}, "Failed to start authenticated remote render target")
 			return {'CANCELLED'}
 
-		self.report({'INFO'}, f"Remote render target enabled for {prefs.remote_node_name}")
+		self.report({'INFO'}, f"Remote render target enabled for {node_name}")
 		return {'FINISHED'}
 
 class REMOTERENDER_OT_StopDiscovery(Operator):
@@ -1032,7 +1085,7 @@ class REMOTERENDER_OT_ClearCache(Operator):
 
 	def execute(self, context):
 		prefs = context.preferences.addons[ADDON_PACKAGE].preferences
-		cache_dir = bpy.path.abspath(prefs.remote_cache_directory)
+		cache_dir = network_manager._resolve_cache_root(prefs.remote_cache_directory)
 
 		if os.path.exists(cache_dir):
 			try:
@@ -1076,12 +1129,12 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		# Mode Selection
 		box = layout.box()
 		box.label(text="Operation Mode:", icon='SETTINGS')
-		box.prop(prefs, "remote_mode", expand=True)
+		box.prop(props, "remote_mode", expand=True)
 
 		layout.separator()
 
 		# Dynamic UI based on selected mode
-		if prefs.remote_mode == 'TARGET':
+		if props.remote_mode == 'TARGET':
 			self.draw_target_mode(layout, props, prefs)
 		else:  # SOURCE mode
 			self.draw_source_mode(layout, props, prefs)
@@ -1099,7 +1152,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		status_box.label(text="Turning off Render Remote or leaving Target mode stops this service.", icon='INFO')
 
 		col = box.column()
-		col.prop(prefs, "remote_node_name")
+		col.label(text=f"This Computer: {get_remote_node_name()}", icon='DESKTOP')
 
 		# Show authentication status from preferences
 		if prefs.remote_passcode:
