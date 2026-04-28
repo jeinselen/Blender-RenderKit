@@ -14,12 +14,12 @@ from .file_sync import file_sync_manager
 class OutputFileMonitor:
 	"""Monitors target-side render outputs and exposes them as a manifest"""
 
-	def __init__(self, project_root, source_project_root):
+	def __init__(self, project_root, source_project_root, blend_file_path=None, scene=None, configure_scene=True):
 		self.project_root = str(Path(project_root).expanduser().resolve(strict=False))
 		self.source_project_root = None
 		if source_project_root:
 			self.source_project_root = str(Path(source_project_root).expanduser().resolve(strict=False))
-		self.blend_file_path = bpy.data.filepath
+		self.blend_file_path = blend_file_path or bpy.data.filepath
 		self.monitoring = False
 		self.monitor_thread = None
 		self._stop_event = threading.Event()
@@ -32,7 +32,13 @@ class OutputFileMonitor:
 		self.last_scan_time = 0.0
 		self.last_output_change = time.time()
 
-		self._configure_scene_output_paths(bpy.context.scene)
+		if scene is None:
+			scene = getattr(bpy.context, 'scene', None)
+		if configure_scene and scene:
+			self._configure_scene_output_paths(scene)
+		else:
+			self.output_roots = {self.project_root} if self._is_within_workspace(self.project_root) else set()
+			print(f"Configured output roots: {sorted(self.output_roots)}")
 		self._scan_initial_files()
 
 	def _make_safe_segment(self, value, fallback="output"):

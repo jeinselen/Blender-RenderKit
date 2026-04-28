@@ -17,6 +17,35 @@ from .render import render_manager
 from .timers import timer_manager
 
 _SYNCING_LOCAL_REMOTE_STATE = False
+_REMOTE_WORKFLOW_LOCK = threading.Lock()
+_REMOTE_WORKFLOW_ID = 0
+_REMOTE_WORKFLOW_CANCEL_EVENT = threading.Event()
+
+class RemoteWorkflowCancelled(Exception):
+	"""Raised when the source-side remote render workflow is cancelled."""
+	pass
+
+def begin_remote_workflow():
+	"""Create a cancellation token for the active source-side workflow."""
+	global _REMOTE_WORKFLOW_ID, _REMOTE_WORKFLOW_CANCEL_EVENT
+	with _REMOTE_WORKFLOW_LOCK:
+		_REMOTE_WORKFLOW_CANCEL_EVENT.set()
+		_REMOTE_WORKFLOW_ID += 1
+		_REMOTE_WORKFLOW_CANCEL_EVENT = threading.Event()
+		return _REMOTE_WORKFLOW_ID, _REMOTE_WORKFLOW_CANCEL_EVENT
+
+def cancel_remote_workflows():
+	"""Signal all active source-side remote render work to stop."""
+	with _REMOTE_WORKFLOW_LOCK:
+		_REMOTE_WORKFLOW_CANCEL_EVENT.set()
+
+def is_current_remote_workflow(workflow_id):
+	with _REMOTE_WORKFLOW_LOCK:
+		return workflow_id == _REMOTE_WORKFLOW_ID
+
+def raise_if_workflow_cancelled(cancel_event):
+	if cancel_event and cancel_event.is_set():
+		raise RemoteWorkflowCancelled()
 
 def get_remote_props(context):
 	"""Return transient Render Remote workflow state."""
@@ -68,7 +97,7 @@ def update_remote_mode_state(self, context):
 	except Exception as e:
 		print(f"Remote render mode update failed: {e}")
 
-def start_remote_render_progress_monitoring(target_node):
+def start_remote_render_progress_monitoring(target_node, cancel_event=None):
 	"""Start monitoring render progress and reconciling rendered outputs."""
 	state = {
 		'downloaded_hashes': {},
@@ -122,6 +151,9 @@ def start_remote_render_progress_monitoring(target_node):
 		nonlocal source_project_root
 		update = {}
 		try:
+			if cancel_event and cancel_event.is_set():
+				return
+
 			status = network_manager.get_render_status(
 				target_node.ip,
 				target_node.port,
@@ -169,6 +201,8 @@ def start_remote_render_progress_monitoring(target_node):
 						state['last_manifest_change'] = now
 
 				for relative_path, entry in sorted(manifest.items()):
+					if cancel_event and cancel_event.is_set():
+						return
 					expected_hash = entry.get('hash')
 					local_output_exists = False
 					if source_project_root:
@@ -201,7 +235,8 @@ def start_remote_render_progress_monitoring(target_node):
 								target_node.auth_token,
 								relative_path,
 								entry,
-								source_project_root=source_project_root
+								source_project_root=source_project_root,
+								cancel_event=cancel_event
 							)
 						except TypeError:
 							success = network_manager.request_file_from_target(
@@ -455,7 +490,7 @@ def collect_project_sync_state(props, target_node, require_remote_manifest=True)
 		'sync_changes': sync_changes
 	}
 
-def sync_project_inputs_to_target(target_node, project_cache_name, project_root, local_manifest, sync_changes, upload_paths=None, delete_paths=None, status_callback=None):
+def sync_project_inputs_to_target(target_node, project_cache_name, project_root, local_manifest, sync_changes, upload_paths=None, delete_paths=None, status_callback=None, cancel_event=None):
 	"""Upload changed inputs and delete obsolete target-owned inputs"""
 	changed_upload_paths = [file_info['path'] for file_info in sync_changes['new_files'] + sync_changes['modified_files']]
 	stale_delete_paths = [file_info['path'] for file_info in sync_changes['deleted_files']]
@@ -478,6 +513,7 @@ def sync_project_inputs_to_target(target_node, project_cache_name, project_root,
 		status_callback("Uploading inputs...")
 
 	for relative_path in upload_paths:
+		raise_if_workflow_cancelled(cancel_event)
 		local_file_path = resolve_under_root(project_root, relative_path)
 		if not os.path.exists(local_file_path):
 			result['failed_uploads'].append(relative_path)
@@ -490,15 +526,18 @@ def sync_project_inputs_to_target(target_node, project_cache_name, project_root,
 			project_cache_name,
 			relative_path,
 			local_file_path,
-			local_manifest[relative_path]
+			local_manifest[relative_path],
+			cancel_event=cancel_event
 		)
 
 		if success:
 			result['uploaded'] += 1
 		else:
 			result['failed_uploads'].append(relative_path)
+		raise_if_workflow_cancelled(cancel_event)
 
 	if delete_paths:
+		raise_if_workflow_cancelled(cancel_event)
 		if status_callback:
 			status_callback("Deleting stale inputs...")
 		delete_response = network_manager.delete_obsolete_inputs(
@@ -513,6 +552,7 @@ def sync_project_inputs_to_target(target_node, project_cache_name, project_root,
 			result['failed_deletes'] = delete_response.get('skipped_paths', [])
 		else:
 			result['failed_deletes'] = delete_paths
+		raise_if_workflow_cancelled(cancel_event)
 
 	return result
 
@@ -537,9 +577,13 @@ def build_project_relative_render_settings(scene, animation, project_root):
 
 	return render_settings
 
-def schedule_remote_status_update(sync_status=None, render_status=None, render_error_message=None, monitor_render=None):
+def schedule_remote_status_update(sync_status=None, render_status=None, render_error_message=None, monitor_render=None, workflow_id=None, cancel_event=None):
 	"""Schedule a UI-safe status update on the main thread"""
 	def update():
+		if workflow_id is not None and not is_current_remote_workflow(workflow_id):
+			return None
+		if cancel_event and cancel_event.is_set():
+			return None
 		context = bpy.context
 		if not context:
 			return None
@@ -975,6 +1019,7 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 			port=target_node.port,
 			auth_token=target_node.auth_token,
 		)
+		workflow_id, cancel_event = begin_remote_workflow()
 		animation = self.animation
 		props.remote_sync_status = "Scanning inputs..."
 		props.remote_render_status = "preparing"
@@ -984,14 +1029,18 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 
 		def start_render_workflow():
 			try:
+				raise_if_workflow_cancelled(cancel_event)
 				context = bpy.context
 				props = get_remote_props(context)
 				scene = context.scene
 				sync_state = collect_project_sync_state(props, target_node)
+				raise_if_workflow_cancelled(cancel_event)
 				dependencies = sync_state['dependencies']
 				sync_changes = sync_state['sync_changes']
 
 				def update_scanned():
+					if not is_current_remote_workflow(workflow_id) or cancel_event.is_set():
+						return None
 					context = bpy.context
 					props = get_remote_props(context)
 					update_sync_ui_from_scan(context, dependencies, sync_changes)
@@ -1014,8 +1063,15 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 					sync_state['project_root'],
 					sync_state['local_manifest'],
 					sync_changes,
-					status_callback=lambda message: schedule_remote_status_update(sync_status=message, render_status="preparing")
+					status_callback=lambda message: schedule_remote_status_update(
+						sync_status=message,
+						render_status="preparing",
+						workflow_id=workflow_id,
+						cancel_event=cancel_event
+					),
+					cancel_event=cancel_event
 				)
+				raise_if_workflow_cancelled(cancel_event)
 
 				if sync_result['failed_uploads']:
 					raise Exception(f"Failed to sync {len(sync_result['failed_uploads'])} input files")
@@ -1024,6 +1080,8 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 					raise Exception(f"Failed to delete {len(sync_result['failed_deletes'])} stale remote inputs")
 
 				def update_starting():
+					if not is_current_remote_workflow(workflow_id) or cancel_event.is_set():
+						return None
 					context = bpy.context
 					props = get_remote_props(context)
 					props.remote_sync_status = "Rendering..."
@@ -1041,26 +1099,50 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 					render_settings,
 					sync_state['project_root']
 				)
+				if cancel_event.is_set():
+					network_manager.cancel_remote_render(
+						target_node.ip,
+						target_node.port,
+						target_node.auth_token
+					)
+					raise RemoteWorkflowCancelled()
 
 				if not result or result.get('status') != 'success':
 					error_msg = result.get('message', 'Unknown error') if result else 'Connection failed'
 					raise Exception(f"Failed to start render: {error_msg}")
 
 				def update_success():
+					if not is_current_remote_workflow(workflow_id) or cancel_event.is_set():
+						return None
 					context = bpy.context
 					props = get_remote_props(context)
 					props.remote_render_status = "preparing"
 					props.remote_monitor_render = True
-					start_remote_render_progress_monitoring(target_node)
+					start_remote_render_progress_monitoring(target_node, cancel_event=cancel_event)
 					return None
 
 				timer_manager.register_timer(update_success, interval=0.1)
+
+			except RemoteWorkflowCancelled:
+				def update_cancelled():
+					if not is_current_remote_workflow(workflow_id):
+						return None
+					context = bpy.context
+					props = get_remote_props(context)
+					props.remote_render_status = "cancelled"
+					props.remote_monitor_render = False
+					props.remote_sync_status = "Cancelled"
+					return None
+
+				timer_manager.register_timer(update_cancelled, interval=0.1)
 
 			except Exception as e:
 				error_message = str(e)
 				print(f"Remote render preparation failed: {error_message}")
 
 				def update_error():
+					if not is_current_remote_workflow(workflow_id) or cancel_event.is_set():
+						return None
 					context = bpy.context
 					props = get_remote_props(context)
 					props.remote_render_status = "error"
@@ -1085,10 +1167,14 @@ class REMOTERENDER_OT_CancelRemoteRender(Operator):
 
 	def execute(self, context):
 		props = get_remote_props(context)
+		cancel_remote_workflows()
 
 		target_node = get_connected_remote_node(context, props)
 		if not target_node:
-			self.report({'ERROR'}, "Remote node not connected")
+			props.remote_render_status = "cancelled"
+			props.remote_sync_status = "Cancelled"
+			props.remote_monitor_render = False
+			self.report({'INFO'}, "Local remote render workflow cancelled")
 			return {'CANCELLED'}
 
 		# Send cancel request
@@ -1105,6 +1191,9 @@ class REMOTERENDER_OT_CancelRemoteRender(Operator):
 			props.remote_monitor_render = False
 		else:
 			self.report({'ERROR'}, "Failed to cancel render")
+			props.remote_render_status = "cancelled"
+			props.remote_sync_status = "Cancel requested"
+			props.remote_monitor_render = False
 
 		return {'FINISHED'}
 

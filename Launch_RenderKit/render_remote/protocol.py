@@ -78,7 +78,7 @@ def recv_message(sock):
 	except (UnicodeDecodeError, json.JSONDecodeError):
 		raise ProtocolError("Invalid JSON message")
 
-def send_file(sock, file_path, file_size=None):
+def send_file(sock, file_path, file_size=None, should_cancel=None):
 	"""Send a bounded file payload"""
 	if file_size is None:
 		file_size = os.path.getsize(file_path)
@@ -86,13 +86,15 @@ def send_file(sock, file_path, file_size=None):
 	bytes_sent = 0
 	with open(file_path, 'rb') as f:
 		while bytes_sent < file_size:
+			if should_cancel and should_cancel():
+				raise ProtocolError("File transfer cancelled")
 			chunk = f.read(min(FILE_TRANSFER_CHUNK_SIZE, file_size - bytes_sent))
 			if not chunk:
 				raise ProtocolError("Incomplete file read")
 			sock.sendall(chunk)
 			bytes_sent += len(chunk)
 
-def recv_file(sock, target_file_path, file_size):
+def recv_file(sock, target_file_path, file_size, should_cancel=None):
 	"""Receive a bounded file payload into a temporary sibling path"""
 	file_size = validate_file_size(file_size)
 	temp_file_path = f"{target_file_path}.part"
@@ -100,6 +102,8 @@ def recv_file(sock, target_file_path, file_size):
 	try:
 		with open(temp_file_path, 'wb') as f:
 			while bytes_received < file_size:
+				if should_cancel and should_cancel():
+					raise ProtocolError("File transfer cancelled")
 				chunk = recv_exact(sock, min(FILE_TRANSFER_CHUNK_SIZE, file_size - bytes_received))
 				f.write(chunk)
 				bytes_received += len(chunk)

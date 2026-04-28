@@ -1175,7 +1175,7 @@ class NetworkManager:
 
 		return None
 
-	def sync_file_to_remote(self, ip, port, auth_token, project_name, file_path, local_file_path, manifest_entry=None):
+	def sync_file_to_remote(self, ip, port, auth_token, project_name, file_path, local_file_path, manifest_entry=None, cancel_event=None):
 		"""Sync a file to remote node"""
 		try:
 			relative_path = normalize_relative_path(file_path)
@@ -1183,6 +1183,7 @@ class NetworkManager:
 				return False
 			file_size = validate_file_size(os.path.getsize(local_file_path))
 			manifest_entry = file_sync_manager.sanitize_manifest_entry(manifest_entry or {})
+			should_cancel = (lambda: cancel_event.is_set()) if cancel_event else None
 
 			with self._create_connection(ip, port, timeout=30) as sock:
 				request = {
@@ -1196,7 +1197,7 @@ class NetworkManager:
 				}
 
 				send_message(sock, request)
-				send_file(sock, local_file_path, file_size)
+				send_file(sock, local_file_path, file_size, should_cancel=should_cancel)
 				response = recv_message(sock)
 
 				return response.get('status') == 'success'
@@ -1319,13 +1320,16 @@ class NetworkManager:
 
 		return None
 
-	def request_file_from_target(self, ip, port, auth_token, relative_path, manifest_entry=None, source_project_root=None):
+	def request_file_from_target(self, ip, port, auth_token, relative_path, manifest_entry=None, source_project_root=None, cancel_event=None):
 		"""Request and verify a specific output file from the target computer"""
 		relative_path = normalize_relative_path(relative_path)
 		manifest_entry = manifest_entry or {}
+		should_cancel = (lambda: cancel_event.is_set()) if cancel_event else None
 		delays = [0, 1, 2, 4]
 		last_error = None
 		for attempt, delay in enumerate(delays):
+			if should_cancel and should_cancel():
+				return False
 			if delay:
 				time.sleep(delay)
 			try:
@@ -1361,7 +1365,7 @@ class NetworkManager:
 					os.makedirs(target_dir, exist_ok=True)
 
 					download_path = f"{target_path}.download"
-					recv_file(sock, download_path, file_size)
+					recv_file(sock, download_path, file_size, should_cancel=should_cancel)
 
 					if expected_hash:
 						download_hash = file_sync_manager.calculate_file_hash(download_path)
