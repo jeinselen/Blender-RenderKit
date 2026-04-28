@@ -168,9 +168,12 @@ class OutputFileMonitor:
 				continue
 
 			for root, dirs, files in os.walk(output_root):
+				dirs[:] = [d for d in dirs if not FileFilter.should_ignore_file(os.path.join(root, d))]
 				for file_name in files:
 					file_path = os.path.join(root, file_name)
 					if file_path in seen_paths:
+						continue
+					if FileFilter.should_ignore_file(file_path):
 						continue
 					if not self._is_within_workspace(file_path):
 						continue

@@ -10,13 +10,17 @@ class PathSecurityError(Exception):
 class FileFilter:
 	"""Centralized file filtering logic"""
 
-	# Files that should never be synced (OS, temp, backup files)
+	# Files that should never be synced (OS, temp, backup files) - matched by extension
 	IGNORE_EXTENSIONS = {
 		'.tmp', '.temp', '.log', '.lock', '.bak', '.backup',
 		'.blend1', '.blend2', '.blend3',  # Blender backups
-		'.ds_store', '._.ds_store',  # macOS
-		'thumbs.db', 'desktop.ini',  # Windows
-		'.directory',  # Linux
+	}
+
+	# Files that should never be synced - matched by exact lowercase filename
+	IGNORE_FILENAMES = {
+		'.ds_store', '._.ds_store',  # macOS metadata
+		'thumbs.db', 'ehthumbs.db', 'desktop.ini',  # Windows thumbnail/config files
+		'.directory',  # Linux KDE metadata
 	}
 
 	# Directories that should never be synced
@@ -38,8 +42,8 @@ class FileFilter:
 		file_name = os.path.basename(file_path).lower()
 		file_ext = os.path.splitext(file_name)[1].lower()
 
-		# Always ignore certain extensions
-		if file_ext in cls.IGNORE_EXTENSIONS or file_name in cls.IGNORE_EXTENSIONS:
+		# Always ignore certain filenames and extensions
+		if file_name in cls.IGNORE_FILENAMES or file_ext in cls.IGNORE_EXTENSIONS:
 			return True
 
 		# Check if it's in an ignored directory
