@@ -353,10 +353,10 @@ class RemoteRuntimeState(PropertyGroup):
 		name="Connection",
 		description="Select how to find the remote render target",
 		items=[
-			('SEARCH', "Search", "Scan the local network for remote render targets"),
-#			('SEARCH', "Search", "Scan the local network for remote render targets", "VIEWZOOM", 0),
 			('MANUAL', "Manual", "Connect to a remote render target by IP address"),
-#			('MANUAL', "Manual", "Connect to a remote render target by IP address", "NETWORK_DRIVE", 1),
+#			('MANUAL', "Manual", "Connect to a remote render target by IP address", "NETWORK_DRIVE", 0),
+			('SEARCH', "Search", "Scan the local network for remote render targets"),
+#			('SEARCH', "Search", "Scan the local network for remote render targets", "VIEWZOOM", 1),
 		],
 		default='SEARCH',
 	)
@@ -397,7 +397,7 @@ def format_connected_remote_label(node):
 	if not node:
 		return "Not connected"
 	if node.name and node.ip:
-		return f"{node.ip}:{node.port}  {node.name}"
+		return f"{node.name}   {node.ip}:{node.port}"
 	if node.name:
 		return node.name
 	if node.ip:
@@ -1366,16 +1366,14 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		else:
 			box.label(text="Not connected", icon='UNLINKED')
 		
-		grid = box.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=False, align=False)
-		grid.separator()
-		row = grid.row(align=True)
-		row.prop(props, "remote_source_connection_mode", expand=True)
-		grid.separator()
+		grid = box.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=False)
+		subrow = grid.row(align=True)
+		subrow.prop(props, "remote_source_connection_mode", expand=True)
 		
 		# Search mode
 		if props.remote_source_connection_mode == 'SEARCH':
 			# Network scan
-			box.operator("render_remote.scan_network", icon='VIEWZOOM')
+			grid.operator("render_remote.scan_network", icon='VIEWZOOM')
 			
 			# Discovered nodes
 			if get_discovered_nodes(context):
@@ -1383,8 +1381,9 @@ class REMOTERENDER_PT_MainPanel(Panel):
 					node_box = box.box()
 					
 					# Node info
-					node_label = f"{node.name}   {node.ip}:{node.port}"
-					if node.blender_version: node_label += f"   v{node.blender_version}"
+#					node_label = f"{node.name}   {node.ip}:{node.port}"
+					node_label = f"{node.name}"
+					if node.blender_version: node_label += f"   Blender {node.blender_version}"
 					node_box.label(text=node_label, icon="NETWORK_DRIVE")
 					
 					# Connection controls
@@ -1399,6 +1398,9 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		
 		# Manual mode
 		else:
+			# Grid spacer
+			grid.separator()
+			
 			# Manual connection
 			grid = box.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
 			grid.prop(prefs, "remote_manual_ip", text="")
@@ -1520,7 +1522,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			row.operator("render_remote.refresh_render_status", icon='FILE_REFRESH')
 			
 			progress_box = box.box()
-			progress_box.label(text=f"Phase: {props.remote_sync_status}", icon='INFO')
+			progress_box.label(text=f"Phase: {props.remote_sync_status}") # , icon='INFO'
 			
 			if props.remote_render_progress > 0:
 				draw_progress_indicator(progress_box, props)
@@ -1558,9 +1560,8 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			# Show last status if available
 			if props.remote_render_status and props.remote_render_status != "Not Started":
 				status_box = box.box()
-				status_box.label(text=f"Last Status: {format_render_status_label(props.remote_render_status)}")
-				if props.remote_sync_status not in {"Not Scanned", "Up to date"}:
-					status_box.label(text=f"Last Phase: {props.remote_sync_status}", icon='INFO')
-
+#				status_box.label(text=f"Last Status: {format_render_status_label(props.remote_render_status)}")
+#				if props.remote_sync_status not in {"Not Scanned", "Up to date"}:
+#					status_box.label(text=f"Last Phase: {props.remote_sync_status}", icon='INFO')
 				if props.remote_render_error_message:
 					status_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
