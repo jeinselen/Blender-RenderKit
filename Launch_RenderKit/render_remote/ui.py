@@ -127,6 +127,8 @@ def start_remote_render_progress_monitoring(target_node, cancel_event=None):
 				props.remote_render_status = status.get('status', 'Unknown')
 				props.remote_render_progress = status.get('progress', 0.0)
 				props.remote_render_elapsed_time = status.get('elapsed_time', 0.0)
+				estimated = status.get('estimated_time')
+				props.remote_render_estimated_time = float(estimated) if estimated is not None else 0.0
 				props.remote_render_error_message = sanitize_ui_message(status.get('error_message', ''))
 			
 			if update.get('render_error_message') is not None:
@@ -366,6 +368,7 @@ class RemoteRuntimeState(PropertyGroup):
 	remote_render_status: StringProperty(name="Render Status", default="Not Started")
 	remote_render_progress: FloatProperty(name="Render Progress", default=0.0, min=0.0, max=100.0, subtype='PERCENTAGE')
 	remote_render_elapsed_time: FloatProperty(name="Elapsed Time", default=0.0)
+	remote_render_estimated_time: FloatProperty(name="Estimated Time Remaining", default=0.0)
 	remote_render_error_message: StringProperty(name="Render Error", default="")
 	remote_monitor_render: BoolProperty(name="Monitor Render", default=False)
 
@@ -1319,6 +1322,12 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		if network_manager.discovery_active and network_manager.is_rendering:
 			progress_box = box.box()
 			render_progress = render_manager.render_progress
+			render_status = render_manager.render_status
+			finalizing = render_status == 'completed'
+			
+			# Finalizing label
+			if finalizing:
+				progress_box.label(text="Finalizing outputs...", icon='FILE_REFRESH')
 			
 			# Progress Bar
 			if render_progress > 0:
@@ -1330,14 +1339,16 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			if render_progress > 0 or render_manager.render_start_time:
 				grid = progress_box.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=False)
 				
-				# Elapsed Time
+				# Elapsed Time — frozen at render end when finalizing
 				if render_manager.render_start_time:
-					elapsed_time = time.time() - render_manager.render_start_time
+					if finalizing:
+						elapsed_time = render_manager.render_elapsed_time or (time.time() - render_manager.render_start_time)
+					else:
+						elapsed_time = time.time() - render_manager.render_start_time
 					elapsed_minutes = int(elapsed_time // 60)
 					elapsed_seconds = int(elapsed_time % 60)
 					grid.label(text=f"{elapsed_minutes:02d}:{elapsed_seconds:02d}")
 				else:
-					elapsed_time = 0.0
 					grid.separator()
 				
 				# Progress Percentage
@@ -1346,9 +1357,9 @@ class REMOTERENDER_PT_MainPanel(Panel):
 				else:
 					grid.separator()
 				
-				# Estimated Time
-				if elapsed_time > 1 and 1 < render_progress < 100:
-					estimated_time = elapsed_time * (100.0 - render_progress) / render_progress
+				# Estimated Time — from target computation, hidden when finalizing
+				estimated_time = render_manager.render_estimated_time
+				if not finalizing and estimated_time is not None and estimated_time > 0 and render_progress < 100:
 					estimated_minutes = int(estimated_time // 60)
 					estimated_seconds = int(estimated_time % 60)
 					grid.label(text=f"{estimated_minutes:02d}:{estimated_seconds:02d}")
@@ -1544,7 +1555,8 @@ class REMOTERENDER_PT_MainPanel(Panel):
 				draw_progress_indicator(progress_box, props)
 			
 			# Elapsed Time, Progress Percentage, Estimated Time
-			if props.remote_render_progress > 0 or props.remote_render_elapsed_time > 0:
+			render_progress = float(props.remote_render_progress)
+			if render_progress > 0 or props.remote_render_elapsed_time > 0:
 				grid = progress_box.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=False)
 				
 				# Elapsed Time
@@ -1554,19 +1566,17 @@ class REMOTERENDER_PT_MainPanel(Panel):
 					elapsed_seconds = int(elapsed_time % 60)
 					grid.label(text=f"{elapsed_minutes:02d}:{elapsed_seconds:02d}")
 				else:
-					elapsed_time = 0.0
 					grid.separator()
 				
 				# Progress Percentage
-				render_progress = float(props.remote_render_progress)
 				if render_progress > 0:
 					grid.label(text=f"{render_progress:.1f}%")
 				else:
 					grid.separator()
 				
-				# Estimated Time
-				if elapsed_time > 1 and 1 < render_progress < 100:
-					estimated_time = elapsed_time * (100.0 - render_progress) / render_progress
+				# Estimated Time — from target computation
+				estimated_time = props.remote_render_estimated_time
+				if estimated_time > 0 and render_progress < 100:
 					estimated_minutes = int(estimated_time // 60)
 					estimated_seconds = int(estimated_time % 60)
 					grid.label(text=f"{estimated_minutes:02d}:{estimated_seconds:02d}")

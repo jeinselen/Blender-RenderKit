@@ -278,10 +278,16 @@ class NetworkManager:
 			self._authenticated_peers.pop(ip, None)
 		return result
 
+	def _is_actively_rendering(self):
+		"""Return True only when a render is genuinely in progress (not post-process finalizing)."""
+		from .render import render_manager
+		if not self.is_rendering:
+			return False
+		return render_manager.render_status in ('preparing', 'rendering')
+
 	def stop_discovery_server(self, force=False):
 		"""Stop discovery server"""
-		# Don't stop if we're actively rendering
-		if self.is_rendering and not force:
+		if self._is_actively_rendering() and not force:
 			print("Skipping discovery server stop - rendering in progress")
 			return
 
@@ -342,8 +348,7 @@ class NetworkManager:
 
 	def stop_communication_server(self, force=False):
 		"""Stop communication server"""
-		# Don't stop if we're actively rendering
-		if self.is_rendering and not force:
+		if self._is_actively_rendering() and not force:
 			print("Skipping communication server stop - rendering in progress")
 			return
 
@@ -354,7 +359,7 @@ class NetworkManager:
 
 	def shutdown(self, force=False):
 		"""Stop all network activity and clear network-owned state"""
-		if self.is_rendering and not force:
+		if self._is_actively_rendering() and not force:
 			print("Skipping network shutdown - rendering in progress")
 			return
 

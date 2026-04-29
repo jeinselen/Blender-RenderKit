@@ -22,6 +22,8 @@ class RenderManager:
 		self.render_progress = 0.0
 		self.render_status = "idle"
 		self.render_start_time = None
+		self.render_elapsed_time = None
+		self.render_estimated_time = None
 		self.render_error_message = ""
 		self.frame_count = 0
 		self.current_frame = 0
@@ -81,6 +83,8 @@ class RenderManager:
 
 		self.render_status = "preparing"
 		self.render_start_time = time.time()
+		self.render_elapsed_time = None
+		self.render_estimated_time = None
 		self.render_progress = 0.0
 		self.render_error_message = ""
 		self.active_render = True
@@ -143,6 +147,16 @@ class RenderManager:
 		)
 		self.render_thread.start()
 
+	def _update_progress(self, progress, now):
+		"""Write render_progress and recompute render_estimated_time from coherent data."""
+		self.render_progress = progress
+		if self.render_start_time and progress > 0:
+			elapsed = now - self.render_start_time
+			if elapsed > 0:
+				self.render_estimated_time = elapsed * (100.0 - progress) / progress
+		else:
+			self.render_estimated_time = None
+
 	def _watch_background_render(self, process, render_settings):
 		"""Stream stdout from the child Blender process and publish live render state."""
 		from .network import network_manager
@@ -177,9 +191,10 @@ class RenderManager:
 				m_saved = _RE_SAVED.search(line)
 				if m_saved:
 					frames_completed += 1
+					now = time.time()
 					if frame_count > 0:
-						self.render_progress = (frames_completed / frame_count) * 100.0
-					frame_start_time = time.time()
+						self._update_progress((frames_completed / frame_count) * 100.0, now)
+					frame_start_time = now
 
 				m_samples = _RE_SAMPLES.search(line)
 				if m_samples and not m_saved:
@@ -191,7 +206,7 @@ class RenderManager:
 							frame_base = frames_completed / frame_count
 							frame_share = 1.0 / frame_count
 							sample_frac = done_samples / total_samples
-							self.render_progress = (frame_base + frame_share * sample_frac) * 100.0
+							self._update_progress((frame_base + frame_share * sample_frac) * 100.0, time.time())
 
 		except Exception as e:
 			last_line = str(e)
@@ -217,6 +232,8 @@ class RenderManager:
 		elif return_code == 0:
 			self.render_status = "completed"
 			self.render_progress = 100.0
+			if self.render_start_time:
+				self.render_elapsed_time = time.time() - self.render_start_time
 			if self.output_file_monitor:
 				time.sleep(OUTPUT_SYNC_POST_PROCESS_TIMEOUT)
 				self.output_file_monitor.stop_monitoring()
@@ -275,14 +292,18 @@ class RenderManager:
 
 	def get_render_status(self):
 		"""Get current render status"""
-		elapsed_time = 0
-		if self.render_start_time:
+		if self.render_elapsed_time is not None:
+			elapsed_time = self.render_elapsed_time
+		elif self.render_start_time:
 			elapsed_time = time.time() - self.render_start_time
+		else:
+			elapsed_time = 0.0
 
 		return {
 			'status': self.render_status,
 			'progress': self.render_progress,
 			'elapsed_time': elapsed_time,
+			'estimated_time': self.render_estimated_time,
 			'error_message': self.render_error_message
 		}
 
