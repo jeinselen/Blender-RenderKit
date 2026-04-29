@@ -47,6 +47,8 @@ class NetworkManager:
 		self._discovery_start_error = None
 		self._communication_start_error = None
 		self.last_error = ""
+		self._pending_names: dict = {}
+		self._authenticated_peers: dict = {}
 
 	@property
 	def is_rendering(self):
@@ -251,12 +253,30 @@ class NetworkManager:
 	def revoke_auth_sessions(self):
 		"""Revoke active tokens and challenges while keeping the configured passcode"""
 		self.security.clear_authentication()
+		self._pending_names.clear()
+		self._authenticated_peers.clear()
 
 	def clear_authentication(self):
 		"""Clear active authentication state for stopped services"""
 		self.security.clear_authentication()
 		self.stored_password_hash = None
 		self.stored_salt = None
+		self._pending_names.clear()
+		self._authenticated_peers.clear()
+
+	def get_connected_source_name(self):
+		"""Return the name of the first authenticated source peer, or None if none are live."""
+		stale = []
+		result = None
+		for ip, name in list(self._authenticated_peers.items()):
+			if self.security.verify_auth_token_for_ip(ip):
+				if result is None:
+					result = name
+			else:
+				stale.append(ip)
+		for ip in stale:
+			self._authenticated_peers.pop(ip, None)
+		return result
 
 	def stop_discovery_server(self, force=False):
 		"""Stop discovery server"""
@@ -595,6 +615,11 @@ class NetworkManager:
 			return error_response('auth_not_configured', 'Authentication is not configured')
 
 		challenge = self.security.create_challenge(addr[0], self.stored_salt)
+
+		client_node_name = str(message.get('client_node_name') or '').strip()
+		if client_node_name:
+			self._pending_names[challenge['server_nonce']] = client_node_name
+
 		return {
 			'status': 'success',
 			'challenge': challenge
@@ -628,6 +653,11 @@ class NetworkManager:
 			return error_response('auth_failed', 'Invalid authentication response')
 
 		auth_token = self.security.issue_auth_token(addr[0])
+
+		pending_name = self._pending_names.pop(server_nonce, None)
+		if pending_name:
+			self._authenticated_peers[addr[0]] = pending_name
+
 		from .constants import AUTH_TOKEN_TIMEOUT
 		return {
 			'status': 'success',
@@ -1114,10 +1144,12 @@ class NetworkManager:
 	def authenticate(self, ip, port, password):
 		"""Authenticate with a remote node"""
 		from .constants import AUTH_PBKDF2_ITERATIONS
+		from .local_state import default_remote_node_name
 		self.last_error = ""
 		try:
 			challenge_request = {
 				'type': 'auth_challenge',
+				'client_node_name': default_remote_node_name(),
 				'timestamp': time.time()
 			}
 			challenge_response = self._send_request(ip, port, challenge_request, timeout=5)

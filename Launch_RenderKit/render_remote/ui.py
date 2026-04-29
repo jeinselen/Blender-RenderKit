@@ -126,8 +126,6 @@ def start_remote_render_progress_monitoring(target_node, cancel_event=None):
 			if status:
 				props.remote_render_status = status.get('status', 'Unknown')
 				props.remote_render_progress = status.get('progress', 0.0)
-				props.remote_current_frame = status.get('current_frame', 0)
-				props.remote_total_frames = status.get('frame_count', 0)
 				props.remote_render_elapsed_time = status.get('elapsed_time', 0.0)
 				props.remote_render_error_message = sanitize_ui_message(status.get('error_message', ''))
 			
@@ -367,8 +365,6 @@ class RemoteRuntimeState(PropertyGroup):
 	remote_show_missing_warning: BoolProperty(name="Show Missing Warning", default=False)
 	remote_render_status: StringProperty(name="Render Status", default="Not Started")
 	remote_render_progress: FloatProperty(name="Render Progress", default=0.0, min=0.0, max=100.0, subtype='PERCENTAGE')
-	remote_current_frame: IntProperty(name="Current Frame", default=0)
-	remote_total_frames: IntProperty(name="Total Frames", default=0)
 	remote_render_elapsed_time: FloatProperty(name="Elapsed Time", default=0.0)
 	remote_render_error_message: StringProperty(name="Render Error", default="")
 	remote_monitor_render: BoolProperty(name="Monitor Render", default=False)
@@ -1197,40 +1193,6 @@ class REMOTERENDER_OT_CancelRemoteRender(Operator):
 
 		return {'FINISHED'}
 
-class REMOTERENDER_OT_RefreshRenderStatus(Operator):
-	bl_idname = "render_remote.refresh_render_status"
-	bl_label = "Refresh Status"
-	bl_description = "Refresh render status from remote computer"
-
-	def execute(self, context):
-		props = get_remote_props(context)
-
-		target_node = get_connected_remote_node(context, props)
-		if not target_node:
-			self.report({'ERROR'}, "Remote node not connected")
-			return {'CANCELLED'}
-
-		# Get render status
-		status = network_manager.get_render_status(
-			target_node.ip,
-			target_node.port,
-			target_node.auth_token
-		)
-
-		if status:
-			props.remote_render_status = status.get('status', 'Unknown')
-			props.remote_render_progress = status.get('progress', 0.0)
-			props.remote_current_frame = status.get('current_frame', 0)
-			props.remote_total_frames = status.get('frame_count', 0)
-			props.remote_render_elapsed_time = status.get('elapsed_time', 0.0)
-			props.remote_render_error_message = sanitize_ui_message(status.get('error_message', ''))
-
-			self.report({'INFO'}, f"Status: {format_render_status_label(props.remote_render_status)}")
-		else:
-			self.report({'ERROR'}, "Failed to get render status")
-
-		return {'FINISHED'}
-
 class REMOTERENDER_OT_SelectAllSyncFiles(Operator):
 	bl_idname = "render_remote.select_all_sync_files"
 	bl_label = "Select All"
@@ -1316,6 +1278,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 	
 	def draw_target_mode(self, layout, props, prefs):
 		"""Draw UI for Target mode"""
+		from .render import render_manager
 		box = layout.box()
 		
 		# Info placement
@@ -1331,9 +1294,16 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		else:
 			button.operator("render_remote.start_discovery", icon='PLAY')
 		
-		# Status content
+		# Status content — three states when active
 		if network_manager.discovery_active:
-			status.label(text="Listening for LAN remote render jobs", icon='CHECKMARK')
+			if network_manager.is_rendering:
+				status.label(text="Remote render in progress", icon='RENDER_ANIMATION')
+			else:
+				source_name = network_manager.get_connected_source_name()
+				if source_name:
+					status.label(text=f"Connected: {source_name}", icon='LINKED')
+				else:
+					status.label(text="Listening for LAN remote render jobs", icon='CHECKMARK')
 		else:
 			status.label(text="Not listening for remote render jobs", icon='PAUSE')
 		
@@ -1343,7 +1313,53 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			button.active = False
 			button.enabled = False
 		else:
-			info.label(text=f'{get_remote_node_name()}   {get_local_lan_ip()}:PORT', icon='NETWORK_DRIVE') # BLANK1 LINK_BLEND NETWORK_DRIVE
+			info.label(text=f'{get_remote_node_name()}   {get_local_lan_ip()}:{network_manager.communication_port}', icon='NETWORK_DRIVE')
+		
+		# Render progress when a remote render is running on this target
+		if network_manager.discovery_active and network_manager.is_rendering:
+			progress_box = box.box()
+			render_progress = render_manager.render_progress
+			
+			# Progress Bar
+			if render_progress > 0:
+				from types import SimpleNamespace
+				proxy = SimpleNamespace(remote_render_progress=render_progress)
+				draw_progress_indicator(progress_box, proxy)
+			
+			# Elapsed Time, Progress Percentage, Estimated Time
+			if render_progress > 0 or render_manager.render_start_time:
+				grid = progress_box.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=False)
+				
+				# Elapsed Time
+				if render_manager.render_start_time:
+					elapsed_time = time.time() - render_manager.render_start_time
+					elapsed_minutes = int(elapsed_time // 60)
+					elapsed_seconds = int(elapsed_time % 60)
+					grid.label(text=f"{elapsed_minutes:02d}:{elapsed_seconds:02d}")
+				else:
+					elapsed_time = 0.0
+					grid.separator()
+				
+				# Progress Percentage
+				if render_progress > 0:
+					grid.label(text=f"{render_progress:.1f}%")
+				else:
+					grid.separator()
+				
+				# Estimated Time
+				if elapsed_time > 1 and 1 < render_progress < 100:
+					estimated_time = elapsed_time * (100.0 - render_progress) / render_progress
+					estimated_minutes = int(estimated_time // 60)
+					estimated_seconds = int(estimated_time % 60)
+					grid.label(text=f"{estimated_minutes:02d}:{estimated_seconds:02d}")
+				else:
+					grid.separator()
+			
+			# Error message
+			if render_manager.render_error_message:
+				error_box = progress_box.box()
+				error_box.alert = True
+				error_box.label(text=f"Error: {sanitize_ui_message(render_manager.render_error_message)}", icon='ERROR')
 	
 	
 	
@@ -1452,11 +1468,6 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		
 		# Sync files list
 		if get_sync_files(context):
-			# Select all/none buttons, Sync button
-			row = box.row(align=False)
-			row.operator("render_remote.select_all_sync_files", text="All", icon="CHECKBOX_HLT")
-			row.operator("render_remote.deselect_all_sync_files", text="None", icon="CHECKBOX_DEHLT")
-			
 			# File list
 			sync_box = box.box()
 			for sync_file in get_sync_files(context):
@@ -1489,12 +1500,18 @@ class REMOTERENDER_PT_MainPanel(Panel):
 				else:
 					subrow.label(text=sync_file.status.upper())
 			
-			row = box.row()
-			row.label(text=f"{props.remote_sync_status}", icon='INFO')
-			row.operator("render_remote.sync_files", text="Sync", icon='FILE_REFRESH')
+#			row = box.row()
+#			row.label(text=f"{props.remote_sync_status}", icon='INFO')
+			
+			# Select all/none buttons, Sync button
+			grid = box.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=False)
+			subrow = grid.row(align=True)
+			subrow.operator("render_remote.deselect_all_sync_files", text="None", icon="CHECKBOX_DEHLT")
+			subrow.operator("render_remote.select_all_sync_files", text="All", icon="CHECKBOX_HLT")
+			grid.operator("render_remote.sync_files", text="Sync", icon='FILE_REFRESH')
 		
 		elif props.remote_sync_status == "Up to date":
-			box.label(text="All files are synchronized!", icon='CHECKMARK')
+			box.label(text="All dependencies are synced", icon='CHECKMARK')
 		
 		# Render Management Interface
 		if get_connected_remote_node(context, props):
@@ -1516,28 +1533,45 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		
 		# Render controls
 		if active_workflow:
-			row = box.row(align=True)
 			if props.remote_render_status in ['preparing', 'rendering']:
-				row.operator("render_remote.cancel_remote_render", icon='X')
-			row.operator("render_remote.refresh_render_status", icon='FILE_REFRESH')
+				box.operator("render_remote.cancel_remote_render", icon='X')
 			
 			progress_box = box.box()
-			progress_box.label(text=f"Phase: {props.remote_sync_status}") # , icon='INFO'
+			progress_box.label(text=f"Status: {props.remote_sync_status}") # , icon='INFO'
 			
+			# Progress Bar
 			if props.remote_render_progress > 0:
 				draw_progress_indicator(progress_box, props)
-				row = progress_box.row()
-				row.label(text=f"Progress: {props.remote_render_progress:.1f}%")
 			
-			if props.remote_total_frames > 1:
-				row = progress_box.row()
-				row.label(text=f"Frame: {props.remote_current_frame} / {props.remote_total_frames}")
-			
-			if props.remote_render_elapsed_time > 0:
-				elapsed_minutes = int(props.remote_render_elapsed_time // 60)
-				elapsed_seconds = int(props.remote_render_elapsed_time % 60)
-				row = progress_box.row()
-				row.label(text=f"Elapsed: {elapsed_minutes:02d}:{elapsed_seconds:02d}")
+			# Elapsed Time, Progress Percentage, Estimated Time
+			if props.remote_render_progress > 0 or props.remote_render_elapsed_time > 0:
+				grid = progress_box.grid_flow(row_major=True, columns=3, even_columns=True, even_rows=True, align=False)
+				
+				# Elapsed Time
+				if props.remote_render_elapsed_time > 0:
+					elapsed_time = props.remote_render_elapsed_time
+					elapsed_minutes = int(elapsed_time // 60)
+					elapsed_seconds = int(elapsed_time % 60)
+					grid.label(text=f"{elapsed_minutes:02d}:{elapsed_seconds:02d}")
+				else:
+					elapsed_time = 0.0
+					grid.separator()
+				
+				# Progress Percentage
+				render_progress = float(props.remote_render_progress)
+				if render_progress > 0:
+					grid.label(text=f"{render_progress:.1f}%")
+				else:
+					grid.separator()
+				
+				# Estimated Time
+				if elapsed_time > 1 and 1 < render_progress < 100:
+					estimated_time = elapsed_time * (100.0 - render_progress) / render_progress
+					estimated_minutes = int(estimated_time // 60)
+					estimated_seconds = int(estimated_time % 60)
+					grid.label(text=f"{estimated_minutes:02d}:{estimated_seconds:02d}")
+				else:
+					grid.separator()
 			
 			if props.remote_monitor_render and props.remote_render_status not in ['preparing', 'rendering']:
 				progress_box.label(text="Waiting for output sync to settle.", icon='INFO')
@@ -1557,11 +1591,8 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			op = row.operator("render_remote.start_remote_render", text="Render Animation", icon='RENDER_ANIMATION')
 			op.animation = True
 			
-			# Show last status if available
-			if props.remote_render_status and props.remote_render_status != "Not Started":
+			# Show error if available
+			if props.remote_render_status and props.remote_render_status != "Not Started" and props.remote_render_error_message:
 				status_box = box.box()
-#				status_box.label(text=f"Last Status: {format_render_status_label(props.remote_render_status)}")
-#				if props.remote_sync_status not in {"Not Scanned", "Up to date"}:
-#					status_box.label(text=f"Last Phase: {props.remote_sync_status}", icon='INFO')
-				if props.remote_render_error_message:
-					status_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
+				status_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
+				

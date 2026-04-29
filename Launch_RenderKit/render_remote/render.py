@@ -1,12 +1,17 @@
 import bpy
 import os
+import re
 import subprocess
 import threading
 import time
 from .timers import timer_manager
 from .output_monitor import OutputFileMonitor
-from .constants import OUTPUT_SYNC_POST_PROCESS_TIMEOUT
+from .constants import OUTPUT_SYNC_POST_PROCESS_TIMEOUT, RENDER_SAMPLE_PROGRESS_THRESHOLD
 from .paths import resolve_under_root
+
+_RE_FRAME     = re.compile(r'Fra:(\d+)')
+_RE_SAMPLES   = re.compile(r'Rendering\s+(\d+)\s*/\s*(\d+)\s+samples')
+_RE_SAVED     = re.compile(r'\bSaved\b', re.IGNORECASE)
 
 class RenderManager:
 	"""Manages rendering operations on target computers"""
@@ -23,7 +28,6 @@ class RenderManager:
 		self.output_paths = []
 		self.original_output_path = ""
 		self.render_queue = []
-		self._handlers_registered = False
 		self.output_file_monitor = None
 		self.render_process = None
 		self._render_process_lock = threading.Lock()
@@ -43,7 +47,6 @@ class RenderManager:
 
 		self.render_queue.append(render_request)
 
-		# Process the render request using timer
 		def process_render():
 			from .network import network_manager
 			if not self.render_queue:
@@ -88,7 +91,7 @@ class RenderManager:
 			self.frame_count = 1
 		self.current_frame = render_settings.get('frame_current', render_settings.get('frame_start', 1))
 
-		self._setup_output_file_monitoring(source_project_root, blend_file_path=blend_file_path, configure_scene=False)
+		self._setup_output_file_monitoring(source_project_root, blend_file_path=blend_file_path)
 		self._start_background_render(blend_file_path, render_settings)
 
 	def _build_background_render_command(self, blender_binary, blend_file_path, render_settings):
@@ -135,21 +138,69 @@ class RenderManager:
 
 		self.render_thread = threading.Thread(
 			target=self._watch_background_render,
-			args=(process,),
+			args=(process, render_settings),
 			daemon=True
 		)
 		self.render_thread.start()
 
-	def _watch_background_render(self, process):
-		"""Wait for the child Blender process and publish final render state."""
+	def _watch_background_render(self, process, render_settings):
+		"""Stream stdout from the child Blender process and publish live render state."""
 		from .network import network_manager
-		output = ""
+
+		is_animation = render_settings.get('animation', False)
+		frame_start  = render_settings.get('frame_start', 1)
+		frame_count  = self.frame_count
+
+		frames_completed = 0
+		current_frame_number = self.current_frame
+		frame_start_time = time.time()
+		last_line = ""
+
 		try:
-			output, _stderr = process.communicate()
-			return_code = process.returncode
+			for raw_line in process.stdout:
+				with self._render_process_lock:
+					if self.render_process is not process:
+						break
+
+				line = raw_line.rstrip()
+				if line:
+					last_line = line
+
+				m_frame = _RE_FRAME.search(line)
+				if m_frame:
+					new_frame = int(m_frame.group(1))
+					if new_frame != current_frame_number:
+						current_frame_number = new_frame
+						self.current_frame = new_frame
+						frame_start_time = time.time()
+
+				m_saved = _RE_SAVED.search(line)
+				if m_saved:
+					frames_completed += 1
+					if frame_count > 0:
+						self.render_progress = (frames_completed / frame_count) * 100.0
+					frame_start_time = time.time()
+
+				m_samples = _RE_SAMPLES.search(line)
+				if m_samples and not m_saved:
+					elapsed = time.time() - frame_start_time
+					if elapsed >= RENDER_SAMPLE_PROGRESS_THRESHOLD:
+						done_samples  = int(m_samples.group(1))
+						total_samples = int(m_samples.group(2))
+						if total_samples > 0 and frame_count > 0:
+							frame_base = frames_completed / frame_count
+							frame_share = 1.0 / frame_count
+							sample_frac = done_samples / total_samples
+							self.render_progress = (frame_base + frame_share * sample_frac) * 100.0
+
 		except Exception as e:
-			output = str(e)
-			return_code = -1
+			last_line = str(e)
+
+		return_code = -1
+		try:
+			return_code = process.wait()
+		except Exception:
+			pass
 
 		with self._render_process_lock:
 			if self.render_process is not process:
@@ -171,7 +222,7 @@ class RenderManager:
 				self.output_file_monitor.stop_monitoring()
 		else:
 			self.render_status = "error"
-			lines = [line for line in str(output or "").splitlines() if line.strip()]
+			lines = [l for l in last_line.splitlines() if l.strip()]
 			self.render_error_message = lines[-1][-500:] if lines else f"Blender exited with code {return_code}"
 			if self.output_file_monitor:
 				self.output_file_monitor.stop_monitoring()
@@ -180,48 +231,8 @@ class RenderManager:
 		network_manager.is_rendering = False
 		print(f"Background remote render finished with status: {self.render_status}")
 
-	def _apply_render_settings(self, settings):
-		"""Apply render settings to scene"""
-		from .paths import resolve_under_root
-		scene = bpy.context.scene
-
-		# Store original output path
-		self.original_output_path = scene.render.filepath
-
-		# Frame range for animation
-		if 'frame_start' in settings:
-			scene.frame_start = settings['frame_start']
-		if 'frame_end' in settings:
-			scene.frame_end = settings['frame_end']
-		if 'frame_current' in settings:
-			scene.frame_current = settings['frame_current']
-
-		# Output settings
-		if 'output_relative_path' in settings:
-			project_root = os.path.dirname(os.path.dirname(bpy.data.filepath))
-			scene.render.filepath = resolve_under_root(project_root, settings['output_relative_path'])
-		if 'file_format' in settings:
-			scene.render.image_settings.file_format = settings['file_format']
-		if 'resolution_x' in settings:
-			scene.render.resolution_x = settings['resolution_x']
-		if 'resolution_y' in settings:
-			scene.render.resolution_y = settings['resolution_y']
-		if 'resolution_percentage' in settings:
-			scene.render.resolution_percentage = settings['resolution_percentage']
-
-		# Engine specific settings
-		if 'engine' in settings:
-			scene.render.engine = settings['engine']
-
-		# Calculate frame count for animation
-		if settings.get('animation', False):
-			self.frame_count = scene.frame_end - scene.frame_start + 1
-		else:
-			self.frame_count = 1
-
-	def _setup_output_file_monitoring(self, source_project_root, blend_file_path=None, configure_scene=True):
+	def _setup_output_file_monitoring(self, source_project_root, blend_file_path=None):
 		"""Set up monitoring for newly created files during rendering"""
-		# Get the project root directory (parent of blend file)
 		blend_file_path = blend_file_path or bpy.data.filepath
 		if not blend_file_path:
 			return
@@ -232,82 +243,9 @@ class RenderManager:
 			project_root,
 			source_project_root,
 			blend_file_path=blend_file_path,
-			configure_scene=configure_scene
+			configure_scene=False
 		)
 		self.output_file_monitor.start_monitoring()
-
-	def _setup_render_monitoring(self):
-		"""Set up render progress monitoring"""
-		# Clear previous handlers
-		self._clear_render_handlers()
-
-		# Add render handlers only if not already registered
-		if not self._handlers_registered:
-			from .handlers import (
-				_render_pre_handler, _render_post_handler, _render_cancel_handler,
-				_render_complete_handler, _render_write_handler
-			)
-			bpy.app.handlers.render_pre.append(_render_pre_handler)
-			bpy.app.handlers.render_post.append(_render_post_handler)
-			bpy.app.handlers.render_cancel.append(_render_cancel_handler)
-			bpy.app.handlers.render_complete.append(_render_complete_handler)
-			bpy.app.handlers.render_write.append(_render_write_handler)
-			self._handlers_registered = True
-
-	def _clear_render_handlers(self):
-		"""Remove all render handlers"""
-		if not self._handlers_registered:
-			return
-
-		from .handlers import (  # noqa: PLC0415 — late import avoids circular dependency
-			_render_pre_handler, _render_post_handler, _render_cancel_handler,
-			_render_complete_handler, _render_write_handler
-		)
-		handlers_to_remove = [
-			(bpy.app.handlers.render_pre, _render_pre_handler),
-			(bpy.app.handlers.render_post, _render_post_handler),
-			(bpy.app.handlers.render_cancel, _render_cancel_handler),
-			(bpy.app.handlers.render_complete, _render_complete_handler),
-			(bpy.app.handlers.render_write, _render_write_handler),
-		]
-
-		for handler_list, handler_func in handlers_to_remove:
-			if handler_func in handler_list:
-				handler_list.remove(handler_func)
-
-		self._handlers_registered = False
-
-	def _start_still_render(self):
-		"""Start still image render"""
-		def render_callback():
-			from .network import network_manager
-			try:
-				self.render_status = "rendering"
-				bpy.ops.render.render('INVOKE_DEFAULT')
-			except Exception as e:
-				self.render_status = "error"
-				self.render_error_message = str(e)
-				self.active_render = False
-				network_manager.is_rendering = False
-			return None
-
-		timer_manager.register_timer(render_callback, interval=0.1)
-
-	def _start_animation_render(self):
-		"""Start animation render"""
-		def render_callback():
-			from .network import network_manager
-			try:
-				self.render_status = "rendering"
-				bpy.ops.render.render('INVOKE_DEFAULT', animation=True)
-			except Exception as e:
-				self.render_status = "error"
-				self.render_error_message = str(e)
-				self.active_render = False
-				network_manager.is_rendering = False
-			return None
-
-		timer_manager.register_timer(render_callback, interval=0.1)
 
 	def cancel_render(self):
 		"""Cancel active render"""
@@ -331,7 +269,6 @@ class RenderManager:
 			self.output_file_monitor.stop_monitoring()
 			self.output_file_monitor = None
 
-		self._clear_render_handlers()
 		self.render_status = "cancelled"
 		self.active_render = False
 		network_manager.is_rendering = False
@@ -345,8 +282,6 @@ class RenderManager:
 		return {
 			'status': self.render_status,
 			'progress': self.render_progress,
-			'current_frame': self.current_frame,
-			'frame_count': self.frame_count,
 			'elapsed_time': elapsed_time,
 			'error_message': self.render_error_message
 		}
@@ -357,14 +292,10 @@ class RenderManager:
 		self.render_queue.clear()
 		self.active_render = False
 
-		# Stop output file monitoring
 		if self.output_file_monitor:
 			self.output_file_monitor.stop_monitoring()
 			self.output_file_monitor = None
 
-		self._clear_render_handlers()
-
-		# Reset rendering flag
 		network_manager.is_rendering = False
 
 # Global render manager singleton

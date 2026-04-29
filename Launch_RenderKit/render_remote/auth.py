@@ -236,6 +236,15 @@ class SecureConnection:
 				return False
 			return True
 
+	def verify_auth_token_for_ip(self, ip):
+		"""Return True if any live auth token is bound to the given peer IP."""
+		with self._lock:
+			now = time.time()
+			for token_info in self.auth_tokens.values():
+				if token_info.get('ip') == ip and token_info.get('expires', 0) >= now:
+					return True
+		return False
+
 	def cleanup_expired_auth(self):
 		"""Remove expired auth tokens and challenges"""
 		with self._lock:
