@@ -360,6 +360,7 @@ class RemoteRuntimeState(PropertyGroup):
 		],
 		default='SEARCH',
 	)
+	remote_network_scanning: BoolProperty(name="Network Scanning", default=False)
 	remote_sync_status: StringProperty(name="Sync Status", default="Not Scanned")
 	remote_external_files_count: IntProperty(name="External Files Count", default=0)
 	remote_show_external_warning: BoolProperty(name="Show External Warning", default=False)
@@ -689,12 +690,14 @@ class REMOTERENDER_OT_ScanNetwork(Operator):
 
 	def execute(self, context):
 		self.report({'INFO'}, "Scanning network for remote nodes...")
+		get_remote_props(context).remote_network_scanning = True
 
 		def scan_network():
 			discovered = network_manager.discover_nodes()
 
 			def update_ui():
 				context = bpy.context
+				props = get_remote_props(context)
 				get_discovered_nodes(context).clear()
 
 				for node_id, node_info in discovered.items():
@@ -705,6 +708,7 @@ class REMOTERENDER_OT_ScanNetwork(Operator):
 					item.port = node_info['port']
 					item.blender_version = node_info['blender_version']
 
+				props.remote_network_scanning = False
 				return None
 
 			timer_manager.register_timer(update_ui, interval=0.1)
@@ -1286,10 +1290,10 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		
 		# Info placement
 		info = box.row()
-		# Status placement
-		status = box.row()
 		# Button placement
 		button = box.row()
+		# Status placement
+		status = box.row()
 		
 		# Enable/Disable Target
 		if network_manager.discovery_active:
@@ -1308,7 +1312,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 				else:
 					status.label(text="Listening for LAN remote render jobs", icon='CHECKMARK')
 		else:
-			status.label(text="Not listening for remote render jobs", icon='PAUSE')
+			status.label(text="Not listening for remote render jobs", icon='PAUSE') # PAUSE BLANK1
 		
 		# Info content and Button disable
 		if not prefs.remote_passcode:
@@ -1379,14 +1383,16 @@ class REMOTERENDER_PT_MainPanel(Panel):
 	def draw_source_mode(self, layout, props, prefs):
 		"""Draw UI for Source mode"""
 		context = bpy.context
-		connected_node = get_connected_remote_node(context, props)
-		box = layout.box()
-
+		
 		# Skip if file is unsaved
 		if not bpy.data.filepath:
 			layout.label(text="Save project to continue", icon='ERROR')
 			return
-
+		
+		# General setup
+		connected_node = get_connected_remote_node(context, props)
+		box = layout.box()
+		
 		# Status
 		if connected_node:
 			box.label(text=f"{format_connected_remote_label(connected_node)}", icon='LINKED')
@@ -1401,27 +1407,37 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		if props.remote_source_connection_mode == 'SEARCH':
 			# Network scan
 			grid.operator("render_remote.scan_network", icon='VIEWZOOM')
-			
-			# Discovered nodes
+
+			# Discovered nodes, otherwise scanning status or blank separator
 			if get_discovered_nodes(context):
 				for node in get_discovered_nodes(context):
 					node_box = box.box()
+					col = node_box.column(align=True)
+					row1 = col.row(align=True)
+					row2 = col.row(align=True)
 					
 					# Node info
-#					node_label = f"{node.name}   {node.ip}:{node.port}"
 					node_label = f"{node.name}"
+#					node_label += f"   {node.ip}:{node.port}"
 					if node.blender_version: node_label += f"   Blender {node.blender_version}"
-					node_box.label(text=node_label, icon="NETWORK_DRIVE")
+					row1.label(text=node_label, icon="NETWORK_DRIVE")
 					
 					# Connection controls
-					row = node_box.row()
 					if node.is_connected:
-						row.label(text="Connected", icon='CHECKMARK')
-						row.operator("render_remote.disconnect_node", text="Disconnect")
+						row2.label(text="Connected", icon='CHECKMARK')
+						row2.operator("render_remote.disconnect_node", text="Disconnect")
 					else:
-						row.prop(prefs, "remote_connection_password", text="")
-						op = row.operator("render_remote.connect_node", text="Connect")
+						row2.prop(prefs, "remote_connection_password", text="")
+						op = row2.operator("render_remote.connect_node", text="Connect")
 						op.node_id = node.node_id
+			
+			# Scanning status label (occupies grid cell; replaced by spacer when idle)
+			elif props.remote_network_scanning:
+				grid.label(text="Scanning...", icon='SORTTIME')
+			
+			# Spacer when no scan has been performed yet
+			else:
+				grid.separator()
 		
 		# Manual mode
 		else:
@@ -1432,10 +1448,11 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			grid = box.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
 			grid.prop(prefs, "remote_manual_ip", text="")
 			grid.prop(prefs, "remote_manual_port", text="")
-			grid.prop(prefs, "remote_connection_password", text="")
 			if connected_node:
+				grid.label(text="Connected", icon='CHECKMARK')
 				grid.operator("render_remote.disconnect_node", text="Disconnect")
 			else:
+				grid.prop(prefs, "remote_connection_password", text="")
 				grid.operator("render_remote.connect_manual", text="Connect")
 		
 		# Project scanning and sync
@@ -1523,6 +1540,8 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		
 		elif props.remote_sync_status == "Up to date":
 			box.label(text="All dependencies are synced", icon='CHECKMARK')
+		else:
+			box.label(text="")
 		
 		# Render Management Interface
 		if get_connected_remote_node(context, props):
@@ -1605,4 +1624,3 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			if props.remote_render_status and props.remote_render_status != "Not Started" and props.remote_render_error_message:
 				status_box = box.box()
 				status_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
-				
