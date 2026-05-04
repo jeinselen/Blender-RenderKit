@@ -7,7 +7,7 @@ import time
 from types import SimpleNamespace
 from bpy.props import StringProperty, BoolProperty, EnumProperty, FloatProperty, IntProperty
 from bpy.types import Operator, Panel, PropertyGroup
-from .constants import (ADDON_PACKAGE, build_source_project_cache_name, OUTPUT_SYNC_POLL_INTERVAL, OUTPUT_SYNC_QUIET_PERIOD, OUTPUT_SYNC_POST_PROCESS_TIMEOUT)
+from .constants import (ADDON_PACKAGE, build_source_project_cache_name, OUTPUT_SYNC_POLL_INTERVAL, OUTPUT_SYNC_QUIET_PERIOD, OUTPUT_SYNC_POST_PROCESS_TIMEOUT, CONNECTION_HEALTH_INTERVAL, CONNECTION_HEALTH_TIMEOUT, CONNECTION_HEALTH_MAX_FAILURES)
 from .paths import PathSecurityError, normalize_relative_path, resolve_under_root, relative_path_under_root
 from .protocol import error_response
 from .file_sync import file_sync_manager
@@ -364,6 +364,98 @@ def start_remote_render_progress_monitoring(target_node, cancel_event=None):
 		return OUTPUT_SYNC_POLL_INTERVAL
 
 	timer_manager.register_timer(monitor_progress, interval=1.0, persistent=True)
+
+def start_connection_health_monitor():
+	"""Periodically probe the connected Target and disconnect if unreachable.
+
+	Single persistent main-thread timer fires every CONNECTION_HEALTH_INTERVAL.
+	When a Target is connected and no probe is in flight, a daemon thread runs
+	test_connection; on completion it posts the result back via a one-shot
+	bpy.app.timers.register call (the documented thread-safe Blender idiom).
+	"""
+	state = {
+		'in_flight': False,
+		'failures': 0,
+		'last_result': None,
+		'probe_node_id': None,
+	}
+
+	def apply_result():
+		state['in_flight'] = False
+		ok = state['last_result']
+		probed_node_id = state['probe_node_id']
+		state['last_result'] = None
+		state['probe_node_id'] = None
+
+		if ok:
+			state['failures'] = 0
+			return None
+
+		state['failures'] += 1
+		if state['failures'] < CONNECTION_HEALTH_MAX_FAILURES:
+			return None
+
+		ctx = bpy.context
+		if not ctx:
+			return None
+		try:
+			p = get_remote_props(ctx)
+		except Exception as exc:
+			print(f"Render Remote: health monitor could not read props: {exc}")
+			return None
+
+		still_connected = get_connected_remote_node(ctx, p)
+		if still_connected and still_connected.node_id == probed_node_id:
+			print(f"Render Remote: target {still_connected.name} is unreachable — disconnecting")
+			clear_connected_remote_nodes(ctx)
+			p.remote_sync_status = 'disconnected'
+			p.remote_sync_detail = ""
+			if ctx.screen:
+				for area in ctx.screen.areas:
+					if area.type in {'PROPERTIES', 'VIEW_3D'}:
+						area.tag_redraw()
+
+		state['failures'] = 0
+		return None
+
+	def probe(ip, port, auth_token):
+		try:
+			ok = network_manager.test_connection(ip, port, auth_token, timeout=CONNECTION_HEALTH_TIMEOUT)
+		except Exception as exc:
+			print(f"Render Remote: health probe error: {exc}")
+			ok = False
+		state['last_result'] = ok
+		bpy.app.timers.register(apply_result, first_interval=0.0)
+
+	def check_health():
+		if state['in_flight']:
+			return CONNECTION_HEALTH_INTERVAL
+
+		ctx = bpy.context
+		if not ctx:
+			return CONNECTION_HEALTH_INTERVAL
+
+		try:
+			props = get_remote_props(ctx)
+		except Exception as exc:
+			print(f"Render Remote: health monitor could not read props: {exc}")
+			return CONNECTION_HEALTH_INTERVAL
+
+		connected_node = get_connected_remote_node(ctx, props)
+		if not connected_node:
+			state['failures'] = 0
+			return CONNECTION_HEALTH_INTERVAL
+
+		state['in_flight'] = True
+		state['probe_node_id'] = connected_node.node_id
+		threading.Thread(
+			target=probe,
+			args=(connected_node.ip, connected_node.port, connected_node.auth_token),
+			daemon=True,
+		).start()
+		return CONNECTION_HEALTH_INTERVAL
+
+	bpy.app.timers.register(check_health, first_interval=CONNECTION_HEALTH_INTERVAL, persistent=True)
 
 # ----
 # Property Groups for UI State

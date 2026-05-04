@@ -1133,7 +1133,7 @@ class NetworkManager:
 			send_message(sock, request)
 			return recv_message(sock)
 
-	def test_connection(self, ip, port, auth_token=None):
+	def test_connection(self, ip, port, auth_token=None, timeout=5):
 		"""Test connection to a remote node"""
 		try:
 			test_message = {
@@ -1141,7 +1141,7 @@ class NetworkManager:
 				'auth_token': auth_token,
 				'timestamp': time.time()
 			}
-			response = self._send_request(ip, port, test_message, timeout=5)
+			response = self._send_request(ip, port, test_message, timeout=timeout)
 			return response.get('status') == 'success'
 
 		except Exception as e:
