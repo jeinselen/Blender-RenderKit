@@ -609,7 +609,7 @@ class NetworkManager:
 			return self._handle_request_file(message, client_sock)
 
 		else:
-			return {'status': 'error', 'message': 'Unknown message type'}
+			return error_response('unknown_message_type', 'Unknown message type')
 
 	def _handle_auth_challenge(self, message, addr):
 		"""Create a challenge for passcode proof authentication"""
@@ -730,23 +730,23 @@ class NetworkManager:
 		try:
 			relative_path = message.get('relative_path')
 			if not relative_path:
-				return {'status': 'error', 'message': 'File path required'}
+				return error_response('invalid_request', 'File path required')
 
 			if not render_manager or not render_manager.output_file_monitor:
-				return {'status': 'error', 'message': 'No output files available'}
+				return error_response('outputs_unavailable', 'No output files available')
 
 			normalized_relative_path = normalize_relative_path(relative_path)
 			output_manifest = render_manager.output_file_monitor.get_output_manifest()
 			manifest_entry = output_manifest.get(normalized_relative_path)
 			if not manifest_entry:
-				return {'status': 'error', 'message': 'Output file not available'}
+				return error_response('file_unavailable', 'Output file not available')
 
 			output_root = render_manager.output_file_monitor.project_root
 			file_path = resolve_under_root(output_root, normalized_relative_path)
 
 			if not os.path.isfile(file_path):
 				print(f"File not found for request: {normalized_relative_path}")
-				return {'status': 'error', 'message': 'File not found'}
+				return error_response('file_not_found', 'File not found')
 
 			file_size = validate_file_size(os.path.getsize(file_path))
 
@@ -770,7 +770,7 @@ class NetworkManager:
 			return None  # Response already sent
 
 		except PathSecurityError:
-			return {'status': 'error', 'message': 'Invalid file path'}
+			return error_response('invalid_path', 'Invalid file path')
 		except ProtocolError as e:
 			print(f"File request protocol failed: {e}")
 			return error_response('protocol_error', str(e))
@@ -787,7 +787,7 @@ class NetworkManager:
 			return {'status': 'success', 'manifest': manifest}
 
 		except PathSecurityError:
-			return {'status': 'error', 'message': 'Invalid project path'}
+			return error_response('invalid_project_path', 'Invalid project path')
 		except Exception as e:
 			print(f"Manifest request failed: {e}")
 			return error_response('manifest_failed', 'Failed to get manifest')
@@ -801,11 +801,11 @@ class NetworkManager:
 			manifest_entry = file_sync_manager.sanitize_manifest_entry(message.get('manifest_entry', {}))
 
 			if not file_path:
-				return {'status': 'error', 'message': 'File path required'}
+				return error_response('invalid_request', 'File path required')
 
 			relative_path = normalize_relative_path(file_path)
 			if is_reserved_input_manifest_path(relative_path):
-				return {'status': 'error', 'message': 'Invalid file path'}
+				return error_response('invalid_path', 'Invalid file path')
 
 			project_cache_dir, _project_id = self._get_project_cache_dir(project_name)
 			target_file_path = resolve_under_root(project_cache_dir, relative_path)
@@ -833,7 +833,7 @@ class NetworkManager:
 			return {'status': 'success', 'message': 'File received'}
 
 		except PathSecurityError:
-			return {'status': 'error', 'message': 'Invalid file path'}
+			return error_response('invalid_path', 'Invalid file path')
 		except ProtocolError as e:
 			print(f"File sync protocol failed: {e}")
 			return error_response('protocol_error', str(e))
@@ -850,7 +850,7 @@ class NetworkManager:
 			project_name = message.get('project_name', 'default')
 			requested_paths = message.get('paths', [])
 			if not isinstance(requested_paths, list):
-				return {'status': 'error', 'message': 'Invalid delete request'}
+				return error_response('invalid_request', 'Invalid delete request')
 
 			project_cache_dir, _project_id = self._get_project_cache_dir(project_name)
 			manifest = self._load_input_manifest(project_cache_dir)
@@ -891,7 +891,7 @@ class NetworkManager:
 			}
 
 		except PathSecurityError:
-			return {'status': 'error', 'message': 'Invalid project path'}
+			return error_response('invalid_project_path', 'Invalid project path')
 		except Exception as e:
 			print(f"Obsolete input delete failed: {e}")
 			return error_response('delete_failed', 'Failed to delete obsolete inputs')
@@ -915,6 +915,8 @@ class NetworkManager:
 			engine = settings['engine']
 			if not isinstance(engine, str) or not re.match(r'^[A-Z][A-Z0-9_]*$', engine):
 				errors.append("engine must be a valid uppercase identifier (e.g. 'CYCLES')")
+			elif engine not in {'CYCLES', 'BLENDER_EEVEE_NEXT', 'BLENDER_WORKBENCH'}:
+				errors.append("engine is not supported for remote rendering")
 
 		for key in ('frame_start', 'frame_end', 'frame_current'):
 			if key in settings:
@@ -975,7 +977,7 @@ class NetworkManager:
 			return result
 
 		except PathSecurityError:
-			return {'status': 'error', 'message': 'Invalid render path'}
+			return error_response('invalid_render_path', 'Invalid render path')
 		except Exception as e:
 			print(f"Render request failed: {e}")
 			self.is_rendering = False

@@ -1,6 +1,6 @@
-# AGENTS.md - Render Remote Current Status
+Be Brief.
 
-Render Remote has completed Stages 1-5 of the development checklist. Treat the implementation, hardening, and subpackage split as done unless a fresh review proves otherwise. The active remaining work is **Stage 6: local test coverage**.
+Ignore zip, image, and media files in the repository.
 
 ## Current Project Shape
 
@@ -28,60 +28,7 @@ Other relevant files:
 - [README.md](README.md) - user-facing setup/security notes
 - [tests/test_render_remote.py](tests/test_render_remote.py) - current unit coverage
 
-## Completed Work
-
-### Stage 1 - Blender 5 / Extension Compliance
-
-- [x] Added extension `network` permission in `blender_manifest.toml`.
-- [x] Gated networking behind `bpy.app.online_access`.
-- [x] Replaced Blender version checks with capability checks where applicable.
-- [x] Verified/added explicit `bl_idname` values, including `RENDER_PT_render_region`.
-- [x] Removed stale `bl_info` metadata from Render Remote.
-
-### Stage 2 - Thread Safety / Main-Thread Discipline
-
-- [x] Routed Blender state access reachable from daemon threads through the timer/main-thread pathway or cached it before worker use.
-- [x] Added synchronization around `SecureConnection` auth tokens/challenges.
-- [x] Replaced the plain render-state boolean with a synchronized render-state primitive.
-- [x] Audited and locked output-manifest access.
-- [x] Replaced blocking daemon-loop sleeps with shutdown-aware waits.
-- [x] Confirmed shutdown joins use timeouts.
-
-### Stage 3 - Security Hardening
-
-- [x] Implemented real TLS for TCP connections with self-signed host certificates and TOFU fingerprint pinning.
-- [x] Hardened `resolve_under_root` and `relative_path_under_root` against traversal and symlink escapes.
-- [x] Added inbound render-settings validation and structured rejection.
-- [x] Added message-schema validation.
-- [x] Verified downloaded file hashes and delete failed downloads on mismatch.
-- [x] Replaced bare `except:` clauses with typed exception handling.
-- [x] Added credential-storage threat-model notes and environment-variable overrides.
-- [x] Migrated network logging away from `print(...)` toward `utility_log.py`/logging.
-- [x] Used `hmac.compare_digest` for proofs, tokens, and hashes.
-- [x] Enumerated interface broadcast addresses for discovery.
-- [x] Added failed-authentication rate limiting per peer IP.
-
-### Stage 4 - Edge Cases / Robustness
-
-- [x] Guarded remote render execution against unsaved local work before opening a `.blend`.
-- [x] Cleared dynamically registered render handlers during unregister/shutdown.
-- [x] Protected load handlers from resetting state during in-flight renders.
-- [x] Handled file-sync TOCTOU failures.
-- [x] Normalized socket timeout constants.
-- [x] Added retry-with-backoff for discovery and file requests, excluding authentication.
-- [x] Added an `atexit` shutdown safety hook.
-
-### Stage 5 - Code Quality / Structure
-
-- [x] Split the former monolithic `render_remote.py` into the `Launch_RenderKit/render_remote/` subpackage.
-- [x] Kept `Launch_RenderKit/__init__.py` importing `render_remote` so the public addon surface remains stable.
-- [x] Encapsulated runtime state enough for testable startup/shutdown paths.
-- [x] Standardized structured error responses through `error_response`.
-- [x] Added public-surface type hints for protocol, path, auth, and network helpers.
-- [x] Improved worker-loop exception handling with debug-friendly fallbacks.
-- [x] Moved hardcoded protocol/auth/timeouts into constants and/or tunable preferences where appropriate.
-
-## Active Remaining Work - Stage 6: Local Test Coverage
+## Local Test Coverage
 
 Complete and verify the test suite locally. Do not add or rely on GitHub Actions for this phase. The required command is:
 

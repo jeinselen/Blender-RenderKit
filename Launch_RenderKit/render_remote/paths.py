@@ -1,5 +1,6 @@
 import os
 import re
+from urllib.parse import unquote
 from pathlib import Path, PurePosixPath
 from .constants import INPUT_MANIFEST_FILENAME
 
@@ -86,6 +87,25 @@ def normalize_relative_path(relative_path):
 		raise PathSecurityError("Invalid relative path")
 	if re.match(r'^[A-Za-z]:', path_text):
 		raise PathSecurityError("Absolute paths are not allowed")
+
+	decoded_text = path_text
+	for _ in range(3):
+		next_decoded = unquote(decoded_text)
+		if next_decoded == decoded_text:
+			break
+		decoded_text = next_decoded
+
+	if decoded_text != path_text:
+		decoded_check = decoded_text.replace('\\', '/')
+		if '\x00' in decoded_check:
+			raise PathSecurityError("Invalid relative path")
+		if re.match(r'^[A-Za-z]:', decoded_check):
+			raise PathSecurityError("Absolute paths are not allowed")
+		decoded_path = PurePosixPath(decoded_check)
+		if decoded_path.is_absolute():
+			raise PathSecurityError("Absolute paths are not allowed")
+		if any(part == '..' for part in decoded_path.parts):
+			raise PathSecurityError("Path traversal is not allowed")
 
 	path = PurePosixPath(path_text)
 	if path.is_absolute():

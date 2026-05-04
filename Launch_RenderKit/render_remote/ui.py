@@ -16,6 +16,38 @@ from .network import network_manager
 from .render import render_manager
 from .timers import timer_manager
 
+# ----
+# UI Labels — user-facing strings by section
+# ----
+
+_NETWORK_UI = {
+	'target_passcode_hint':  "Set passcode in Preferences before allowing remote rendering.",
+	'target_listening':      "Listening for LAN remote render jobs",
+	'target_connected':      "Connected: {name}",
+	'target_rendering':      "Remote render in progress",
+	'target_not_listening':  "Not listening for remote render jobs",
+	'target_finalizing':     "Finalizing outputs...",
+	'source_save_first':     "Save project to continue",
+	'source_not_connected':  "Not connected",
+	'source_scanning':       "Scanning...",
+	'source_connect_first':  "Connect target to continue",
+}
+
+_SYNC_UI = {
+	'project_root_missing':   "Project root not found",
+	'external_warning_title': "Warning: {count} external files detected!",
+	'external_warning_body1': "External files will NOT be synced to target computer.",
+	'external_warning_body2': "Only files within the project folder structure are supported.",
+	'missing_warning_title':  "Warning: {count} referenced files are missing!",
+	'missing_warning_body':   "Missing files must be restored before remote rendering.",
+	'up_to_date':             "All dependencies are synced",
+}
+
+_RENDER_UI = {
+	'waiting_output_sync': "Waiting for output sync to settle.",
+	'resolve_refs_first':  "Resolve missing or unsupported references before rendering.",
+}
+
 _SYNCING_LOCAL_REMOTE_STATE = False
 _REMOTE_WORKFLOW_LOCK = threading.Lock()
 _REMOTE_WORKFLOW_ID = 0
@@ -138,7 +170,12 @@ def start_remote_render_progress_monitoring(target_node, cancel_event=None):
 				props.remote_render_status = update.get('render_status')
 			
 			if update.get('sync_status') is not None:
-				props.remote_sync_status = update.get('sync_status')
+				val = update['sync_status']
+				if isinstance(val, tuple):
+					props.remote_sync_status, props.remote_sync_detail = val
+				else:
+					props.remote_sync_status = val
+					props.remote_sync_detail = ""
 			
 			if update.get('stop_monitor'):
 				props.remote_monitor_render = False
@@ -183,7 +220,7 @@ def start_remote_render_progress_monitoring(target_node, cancel_event=None):
 							'stop_monitor': True,
 							'render_status': 'error',
 							'render_error_message': 'Lost connection to remote target',
-							'sync_status': 'Disconnected',
+							'sync_status': ('disconnected', ""),
 						})
 					return
 
@@ -257,13 +294,13 @@ def start_remote_render_progress_monitoring(target_node, cancel_event=None):
 						print(f"Failed to sync output: {relative_path}")
 
 			if download_count:
-				update['sync_status'] = f"Downloading outputs ({download_count} updated)"
+				update['sync_status'] = ('downloading', str(download_count))
 			else:
 				render_status = status.get('status') if status else update.get('render_status')
 				if render_status in ['preparing', 'rendering']:
-					update['sync_status'] = "Rendering..."
+					update['sync_status'] = ('rendering', "")
 				else:
-					update['sync_status'] = "Downloading outputs..."
+					update['sync_status'] = ('downloading', "0")
 
 			if status and status.get('status') in ['preparing', 'rendering']:
 				return
@@ -281,7 +318,7 @@ def start_remote_render_progress_monitoring(target_node, cancel_event=None):
 					return
 
 			update['stop_monitor'] = True
-			update['sync_status'] = "Complete"
+			update['sync_status'] = ('complete', "")
 		finally:
 			if update:
 				schedule_monitor_update(update)
@@ -361,7 +398,8 @@ class RemoteRuntimeState(PropertyGroup):
 		default='SEARCH',
 	)
 	remote_network_scanning: BoolProperty(name="Network Scanning", default=False)
-	remote_sync_status: StringProperty(name="Sync Status", default="Not Scanned")
+	remote_sync_status: StringProperty(name="Sync Status", default="not_scanned")
+	remote_sync_detail: StringProperty(name="Sync Detail", default="")
 	remote_external_files_count: IntProperty(name="External Files Count", default=0)
 	remote_show_external_warning: BoolProperty(name="Show External Warning", default=False)
 	remote_missing_files_count: IntProperty(name="Missing Files Count", default=0)
@@ -435,15 +473,20 @@ def update_sync_ui_from_scan(context, dependencies, sync_changes=None):
 
 		total_files = len(sync_changes['new_files']) + len(sync_changes['modified_files'])
 		if total_files:
-			props.remote_sync_status = f"{total_files} files need sync"
+			props.remote_sync_status = 'needs_sync'
+			props.remote_sync_detail = str(total_files)
 		elif dependencies['external'] or dependencies['missing']:
-			props.remote_sync_status = "Unsupported references found"
+			props.remote_sync_status = 'unsupported_refs'
+			props.remote_sync_detail = ""
 		elif sync_changes['deleted_files']:
-			props.remote_sync_status = f"{len(sync_changes['deleted_files'])} stale remote files"
+			props.remote_sync_status = 'stale_only'
+			props.remote_sync_detail = str(len(sync_changes['deleted_files']))
 		else:
-			props.remote_sync_status = "Up to date"
+			props.remote_sync_status = 'up_to_date'
+			props.remote_sync_detail = ""
 	else:
-		props.remote_sync_status = "Unsupported references found" if (dependencies['external'] or dependencies['missing']) else "Up to date"
+		props.remote_sync_status = 'unsupported_refs' if (dependencies['external'] or dependencies['missing']) else 'up_to_date'
+		props.remote_sync_detail = ""
 
 	for file_path in dependencies['external']:
 		item = get_sync_files(context).add()
@@ -510,7 +553,7 @@ def sync_project_inputs_to_target(target_node, project_cache_name, project_root,
 	}
 
 	if upload_paths and status_callback:
-		status_callback("Uploading inputs...")
+		status_callback(('scanning', ""))
 
 	for relative_path in upload_paths:
 		raise_if_workflow_cancelled(cancel_event)
@@ -539,7 +582,7 @@ def sync_project_inputs_to_target(target_node, project_cache_name, project_root,
 	if delete_paths:
 		raise_if_workflow_cancelled(cancel_event)
 		if status_callback:
-			status_callback("Deleting stale inputs...")
+			status_callback(('scanning', ""))
 		delete_response = network_manager.delete_obsolete_inputs(
 			target_node.ip,
 			target_node.port,
@@ -590,7 +633,11 @@ def schedule_remote_status_update(sync_status=None, render_status=None, render_e
 
 		props = get_remote_props(context)
 		if sync_status is not None:
-			props.remote_sync_status = sync_status
+			if isinstance(sync_status, tuple):
+				props.remote_sync_status, props.remote_sync_detail = sync_status
+			else:
+				props.remote_sync_status = sync_status
+				props.remote_sync_detail = ""
 		if render_status is not None:
 			props.remote_render_status = render_status
 		if render_error_message is not None:
@@ -625,6 +672,46 @@ def format_render_status_label(status):
 		return mapping[status_key]
 	text = str(status or "").strip()
 	return text.replace('_', ' ').title() if text else 'Unknown'
+
+def format_sync_status_label(status, detail=""):
+	"""Human-friendly sync status label for the UI (parallel to format_render_status_label)"""
+	key = str(status or "").strip().lower()
+	detail = str(detail or "").strip()
+	simple = {
+		'not_scanned':      "Not Scanned",
+		'scanning':         "Scanning...",
+		'up_to_date':       "Up to Date",
+		'unsupported_refs': "Unsupported References Found",
+		'rendering':        "Rendering...",
+		'complete':         "Complete",
+		'cancelled':        "Cancelled",
+		'cancel_requested': "Cancel Requested",
+		'disconnected':     "Disconnected",
+	}
+	if key in simple:
+		return simple[key]
+	if key == 'needs_sync':
+		return f"{detail or '?'} Files Need Sync"
+	if key == 'stale_only':
+		return f"{detail or '?'} Stale Remote Files"
+	if key == 'downloading':
+		return f"Downloading Outputs ({detail} Updated)" if detail and detail != "0" else "Downloading Outputs..."
+	if key in ('synced', 'synced_with_errors'):
+		suffix = " (With Errors)" if key == 'synced_with_errors' else ""
+		if detail:
+			parts = detail.split(",")
+			if len(parts) == 2:
+				return f"Synced {parts[0]} Files, Deleted {parts[1]} Stale Inputs{suffix}"
+			return f"Synced {parts[0]} Files{suffix}"
+		return f"Synced{suffix}"
+	if key == 'scan_failed':
+		return f"Scan Failed: {detail}" if detail else "Scan Failed"
+	if key == 'sync_failed':
+		return f"Sync Failed: {detail}" if detail else "Sync Failed"
+	if key == 'prep_failed':
+		return f"Render Preparation Failed: {detail}" if detail else "Render Preparation Failed"
+	text = str(status or "").strip()
+	return text.replace('_', ' ').title() if text else "Unknown"
 
 def draw_progress_indicator(layout, props):
 	"""Draw a non-interactive render progress indicator with a compatibility fallback."""
@@ -781,7 +868,8 @@ class REMOTERENDER_OT_DisconnectNode(Operator):
 		props = get_remote_props(context)
 
 		clear_connected_remote_nodes(context)
-		props.remote_sync_status = "Not Scanned"
+		props.remote_sync_status = 'not_scanned'
+		props.remote_sync_detail = ""
 		props.remote_monitor_render = False
 		props.remote_render_status = "Not Started"
 		props.remote_render_error_message = ""
@@ -873,7 +961,8 @@ class REMOTERENDER_OT_ScanProject(Operator):
 			self.report({'ERROR'}, "Please save your blend file first")
 			return {'CANCELLED'}
 
-		props.remote_sync_status = "Scanning inputs..."
+		props.remote_sync_status = 'scanning'
+		props.remote_sync_detail = ""
 		self.report({'INFO'}, "Scanning project dependencies...")
 
 		def scan_project():
@@ -902,7 +991,8 @@ class REMOTERENDER_OT_ScanProject(Operator):
 				def update_error():
 					context = bpy.context
 					props = get_remote_props(context)
-					props.remote_sync_status = f"Scan failed: {sanitize_ui_message(e)}"
+					props.remote_sync_status = 'scan_failed'
+					props.remote_sync_detail = sanitize_ui_message(str(e))
 					return None
 
 				timer_manager.register_timer(update_error, interval=0.1)
@@ -944,7 +1034,8 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 			self.report({'WARNING'}, "No files selected for sync")
 			return {'CANCELLED'}
 
-		props.remote_sync_status = "Scanning inputs..."
+		props.remote_sync_status = 'scanning'
+		props.remote_sync_detail = ""
 		self.report({'INFO'}, f"Syncing {len(selected_upload_paths)} files and deleting {len(selected_delete_paths)} stale inputs...")
 
 		def sync_files():
@@ -964,15 +1055,18 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 				def update_ui():
 					context = bpy.context
 					props = get_remote_props(context)
-					if sync_result['delete_total']:
-						props.remote_sync_status = f"Synced {sync_result['uploaded']}/{sync_result['upload_total']} files, deleted {sync_result['deleted']}/{sync_result['delete_total']} stale inputs"
-					else:
-						props.remote_sync_status = f"Synced {sync_result['uploaded']}/{sync_result['upload_total']} files"
+					u = sync_result['uploaded']
+					t = sync_result['upload_total']
+					d = sync_result['deleted']
+					s = sync_result['delete_total']
+					detail = f"{u}/{t},{d}/{s}" if s else f"{u}/{t}"
 
 					if sync_result['failed_uploads'] or sync_result['failed_deletes']:
-						props.remote_sync_status = f"{props.remote_sync_status} with errors"
+						props.remote_sync_status = 'synced_with_errors'
+						props.remote_sync_detail = detail
 					else:
-						props.remote_sync_status = "Complete"
+						props.remote_sync_status = 'complete'
+						props.remote_sync_detail = ""
 
 					if sync_result['uploaded'] > 0 or sync_result['deleted'] > 0:
 						bpy.ops.render_remote.scan_project()
@@ -987,7 +1081,8 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 				def update_error():
 					context = bpy.context
 					props = get_remote_props(context)
-					props.remote_sync_status = f"Sync failed: {sanitize_ui_message(e)}"
+					props.remote_sync_status = 'sync_failed'
+					props.remote_sync_detail = sanitize_ui_message(str(e))
 					return None
 
 				timer_manager.register_timer(update_error, interval=0.1)
@@ -1024,7 +1119,8 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 		)
 		workflow_id, cancel_event = begin_remote_workflow()
 		animation = self.animation
-		props.remote_sync_status = "Scanning inputs..."
+		props.remote_sync_status = 'scanning'
+		props.remote_sync_detail = ""
 		props.remote_render_status = "preparing"
 		props.remote_monitor_render = False
 		props.remote_render_error_message = ""
@@ -1087,7 +1183,8 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 						return None
 					context = bpy.context
 					props = get_remote_props(context)
-					props.remote_sync_status = "Rendering..."
+					props.remote_sync_status = 'rendering'
+					props.remote_sync_detail = ""
 					props.remote_render_status = "preparing"
 					return None
 
@@ -1134,7 +1231,8 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 					props = get_remote_props(context)
 					props.remote_render_status = "cancelled"
 					props.remote_monitor_render = False
-					props.remote_sync_status = "Cancelled"
+					props.remote_sync_status = 'cancelled'
+					props.remote_sync_detail = ""
 					return None
 
 				timer_manager.register_timer(update_cancelled, interval=0.1)
@@ -1151,7 +1249,8 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 					props.remote_render_status = "error"
 					props.remote_render_error_message = sanitize_ui_message(error_message)
 					props.remote_monitor_render = False
-					props.remote_sync_status = f"Render preparation failed: {sanitize_ui_message(error_message)}"
+					props.remote_sync_status = 'prep_failed'
+					props.remote_sync_detail = sanitize_ui_message(error_message)
 					return None
 
 				timer_manager.register_timer(update_error, interval=0.1)
@@ -1175,7 +1274,8 @@ class REMOTERENDER_OT_CancelRemoteRender(Operator):
 		target_node = get_connected_remote_node(context, props)
 		if not target_node:
 			props.remote_render_status = "cancelled"
-			props.remote_sync_status = "Cancelled"
+			props.remote_sync_status = 'cancelled'
+			props.remote_sync_detail = ""
 			props.remote_monitor_render = False
 			self.report({'INFO'}, "Local remote render workflow cancelled")
 			return {'CANCELLED'}
@@ -1190,12 +1290,14 @@ class REMOTERENDER_OT_CancelRemoteRender(Operator):
 		if success:
 			self.report({'INFO'}, "Render cancelled")
 			props.remote_render_status = "cancelled"
-			props.remote_sync_status = "Cancelled"
+			props.remote_sync_status = 'cancelled'
+			props.remote_sync_detail = ""
 			props.remote_monitor_render = False
 		else:
 			self.report({'ERROR'}, "Failed to cancel render")
 			props.remote_render_status = "cancelled"
-			props.remote_sync_status = "Cancel requested"
+			props.remote_sync_status = 'cancel_requested'
+			props.remote_sync_detail = ""
 			props.remote_monitor_render = False
 
 		return {'FINISHED'}
@@ -1304,19 +1406,19 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		# Status content — three states when active
 		if network_manager.discovery_active:
 			if network_manager.is_rendering:
-				status.label(text="Remote render in progress", icon='RENDER_ANIMATION')
+				status.label(text=_NETWORK_UI['target_rendering'], icon='RENDER_ANIMATION')
 			else:
 				source_name = network_manager.get_connected_source_name()
 				if source_name:
-					status.label(text=f"Connected: {source_name}", icon='LINKED')
+					status.label(text=_NETWORK_UI['target_connected'].format(name=source_name), icon='LINKED')
 				else:
-					status.label(text="Listening for LAN remote render jobs", icon='CHECKMARK')
+					status.label(text=_NETWORK_UI['target_listening'], icon='CHECKMARK')
 		else:
-			status.label(text="Not listening for remote render jobs", icon='PAUSE') # PAUSE BLANK1
+			status.label(text=_NETWORK_UI['target_not_listening'], icon='PAUSE') # PAUSE BLANK1
 		
 		# Info content and Button disable
 		if not prefs.remote_passcode:
-			info.label(text="Set passcode in Preferences before allowing remote rendering.", icon='PREFERENCES')
+			info.label(text=_NETWORK_UI['target_passcode_hint'], icon='PREFERENCES')
 			button.active = False
 			button.enabled = False
 		else:
@@ -1331,7 +1433,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			
 			# Finalizing label
 			if finalizing:
-				progress_box.label(text="Finalizing outputs...", icon='FILE_REFRESH')
+				progress_box.label(text=_NETWORK_UI['target_finalizing'], icon='FILE_REFRESH')
 			
 			# Progress Bar
 			if render_progress > 0:
@@ -1386,7 +1488,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		
 		# Skip if file is unsaved
 		if not bpy.data.filepath:
-			layout.label(text="Save project to continue", icon='ERROR')
+			layout.label(text=_NETWORK_UI['source_save_first'], icon='ERROR')
 			return
 		
 		# General setup
@@ -1397,7 +1499,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		if connected_node:
 			box.label(text=f"{format_connected_remote_label(connected_node)}", icon='LINKED')
 		else:
-			box.label(text="Not connected", icon='UNLINKED')
+			box.label(text=_NETWORK_UI['source_not_connected'], icon='UNLINKED')
 		
 		grid = box.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=False)
 		subrow = grid.row(align=True)
@@ -1433,7 +1535,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			
 			# Scanning status label (occupies grid cell; replaced by spacer when idle)
 			elif props.remote_network_scanning:
-				grid.label(text="Scanning...", icon='SORTTIME')
+				grid.label(text=_NETWORK_UI['source_scanning'], icon='SORTTIME')
 			
 			# Spacer when no scan has been performed yet
 			else:
@@ -1460,7 +1562,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		if get_connected_remote_node(context, props):
 			self.draw_sync_interface(layout, context, props)
 		else:
-			layout.label(text="Connect target to continue", icon='ERROR')
+			layout.label(text=_NETWORK_UI['source_connect_first'], icon='ERROR')
 	
 	
 	
@@ -1475,7 +1577,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		if project_root:
 			box.label(text=f"Sync root:  {os.path.basename(project_root)}/", icon='FILE_REFRESH') # FILE_FOLDER FILE_REFRESH
 		else:
-			box.label(text="Project root not found", icon='ERROR')
+			box.label(text=_SYNC_UI['project_root_missing'], icon='ERROR')
 		
 		# Scan button and status
 		box.operator("render_remote.scan_project", icon='VIEWZOOM')
@@ -1484,15 +1586,15 @@ class REMOTERENDER_PT_MainPanel(Panel):
 		if props.remote_show_external_warning:
 			warning_box = box.box()
 			warning_box.alert = True
-			warning_box.label(text=f"Warning: {props.remote_external_files_count} external files detected!", icon='ERROR')
-			warning_box.label(text="External files will NOT be synced to target computer.")
-			warning_box.label(text="Only files within the project folder structure are supported.")
+			warning_box.label(text=_SYNC_UI['external_warning_title'].format(count=props.remote_external_files_count), icon='ERROR')
+			warning_box.label(text=_SYNC_UI['external_warning_body1'])
+			warning_box.label(text=_SYNC_UI['external_warning_body2'])
 		
 		if props.remote_show_missing_warning:
 			warning_box = box.box()
 			warning_box.alert = True
-			warning_box.label(text=f"Warning: {props.remote_missing_files_count} referenced files are missing!", icon='ERROR')
-			warning_box.label(text="Missing files must be restored before remote rendering.")
+			warning_box.label(text=_SYNC_UI['missing_warning_title'].format(count=props.remote_missing_files_count), icon='ERROR')
+			warning_box.label(text=_SYNC_UI['missing_warning_body'])
 		
 		# Sync files list
 		if get_sync_files(context):
@@ -1538,8 +1640,8 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			subrow.operator("render_remote.select_all_sync_files", text="All", icon="CHECKBOX_HLT")
 			grid.operator("render_remote.sync_files", text="Sync", icon='FILE_REFRESH')
 		
-		elif props.remote_sync_status == "Up to date":
-			box.label(text="All dependencies are synced", icon='CHECKMARK')
+		elif props.remote_sync_status == 'up_to_date':
+			box.label(text=_SYNC_UI['up_to_date'], icon='CHECKMARK')
 		else:
 			box.label(text="")
 		
@@ -1567,7 +1669,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 				box.operator("render_remote.cancel_remote_render", icon='X')
 			
 			progress_box = box.box()
-			progress_box.label(text=f"Status: {props.remote_sync_status}") # , icon='INFO'
+			progress_box.label(text=f"Status: {format_sync_status_label(props.remote_sync_status, props.remote_sync_detail)}") # , icon='INFO'
 			
 			# Progress Bar
 			if props.remote_render_progress > 0:
@@ -1603,7 +1705,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 					grid.separator()
 			
 			if props.remote_monitor_render and props.remote_render_status not in ['preparing', 'rendering']:
-				progress_box.label(text="Waiting for output sync to settle.", icon='INFO')
+				progress_box.label(text=_RENDER_UI['waiting_output_sync'], icon='INFO')
 			
 			if props.remote_render_error_message:
 				error_box = progress_box.box()
@@ -1613,7 +1715,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			if props.remote_show_external_warning or props.remote_show_missing_warning:
 				warning_box = box.box()
 				warning_box.alert = True
-				warning_box.label(text="Resolve missing or unsupported references before rendering.", icon='ERROR')
+				warning_box.label(text=_RENDER_UI['resolve_refs_first'], icon='ERROR')
 			
 			row = box.row()
 			row.enabled = not (props.remote_show_external_warning or props.remote_show_missing_warning)
