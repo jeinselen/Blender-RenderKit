@@ -25,6 +25,8 @@ class RenderManager:
 		self.render_elapsed_time = None
 		self.render_estimated_time = None
 		self.render_error_message = ""
+		self.render_cancelled_by = ""
+		self.render_cancel_message = ""
 		self.frame_count = 0
 		self.current_frame = 0
 		self.output_paths = []
@@ -87,6 +89,8 @@ class RenderManager:
 		self.render_estimated_time = None
 		self.render_progress = 0.0
 		self.render_error_message = ""
+		self.render_cancelled_by = ""
+		self.render_cancel_message = ""
 		self.active_render = True
 		self._cancel_requested = False
 		if render_settings.get('animation', False):
@@ -226,6 +230,9 @@ class RenderManager:
 		if cancelled or return_code < 0:
 			self.render_status = "cancelled"
 			self.render_error_message = ""
+			if not self.render_cancelled_by:
+				self.render_cancelled_by = "target"
+				self.render_cancel_message = "Render cancelled on target"
 			if self.output_file_monitor:
 				self.output_file_monitor.stop_monitoring()
 				self.output_file_monitor = None
@@ -264,10 +271,16 @@ class RenderManager:
 		)
 		self.output_file_monitor.start_monitoring()
 
-	def cancel_render(self):
+	def cancel_render(self, cancelled_by="target"):
 		"""Cancel active render"""
 		from .network import network_manager
 		self._cancel_requested = True
+		cancelled_by = str(cancelled_by or "target").lower()
+		self.render_cancelled_by = cancelled_by
+		if cancelled_by == "source":
+			self.render_cancel_message = "Render cancelled by source"
+		else:
+			self.render_cancel_message = "Render cancelled on target"
 		self.render_queue.clear()
 
 		with self._render_process_lock:
@@ -304,7 +317,9 @@ class RenderManager:
 			'progress': self.render_progress,
 			'elapsed_time': elapsed_time,
 			'estimated_time': self.render_estimated_time,
-			'error_message': self.render_error_message
+			'error_message': self.render_error_message,
+			'cancelled_by': self.render_cancelled_by,
+			'cancel_message': self.render_cancel_message
 		}
 
 	def cleanup(self):

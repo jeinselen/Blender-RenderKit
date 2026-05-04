@@ -46,6 +46,7 @@ _SYNC_UI = {
 _RENDER_UI = {
 	'waiting_output_sync': "Waiting for output sync to settle.",
 	'resolve_refs_first':  "Resolve missing or unsupported references before rendering.",
+	'target_cancelled':    "Render cancelled on target",
 }
 
 _SYNCING_LOCAL_REMOTE_STATE = False
@@ -156,12 +157,17 @@ def start_remote_render_progress_monitoring(target_node, cancel_event=None):
 			
 			status = update.get('status')
 			if status:
-				props.remote_render_status = status.get('status', 'Unknown')
+				status_name = status.get('status', 'Unknown')
+				props.remote_render_status = status_name
 				props.remote_render_progress = status.get('progress', 0.0)
 				props.remote_render_elapsed_time = status.get('elapsed_time', 0.0)
 				estimated = status.get('estimated_time')
 				props.remote_render_estimated_time = float(estimated) if estimated is not None else 0.0
 				props.remote_render_error_message = sanitize_ui_message(status.get('error_message', ''))
+				if status_name == 'cancelled' and status.get('cancelled_by') == 'target':
+					props.remote_render_error_message = sanitize_ui_message(status.get('cancel_message') or _RENDER_UI['target_cancelled'])
+					props.remote_sync_status = 'target_cancelled'
+					props.remote_sync_detail = ""
 			
 			if update.get('render_error_message') is not None:
 				props.remote_render_error_message = sanitize_ui_message(update.get('render_error_message'))
@@ -303,6 +309,15 @@ def start_remote_render_progress_monitoring(target_node, cancel_event=None):
 					update['sync_status'] = ('downloading', "0")
 
 			if status and status.get('status') in ['preparing', 'rendering']:
+				return
+
+			if status and status.get('status') == 'cancelled' and status.get('cancelled_by') == 'target':
+				update.update({
+					'stop_monitor': True,
+					'render_status': 'cancelled',
+					'render_error_message': status.get('cancel_message') or _RENDER_UI['target_cancelled'],
+					'sync_status': ('target_cancelled', ""),
+				})
 				return
 
 			with state_lock:
@@ -685,6 +700,7 @@ def format_sync_status_label(status, detail=""):
 		'rendering':        "Rendering...",
 		'complete':         "Complete",
 		'cancelled':        "Cancelled",
+		'target_cancelled': "Cancelled on Target",
 		'cancel_requested': "Cancel Requested",
 		'disconnected':     "Disconnected",
 	}
@@ -1302,6 +1318,20 @@ class REMOTERENDER_OT_CancelRemoteRender(Operator):
 
 		return {'FINISHED'}
 
+class REMOTERENDER_OT_CancelLocalRender(Operator):
+	bl_idname = "render_remote.cancel_local_render"
+	bl_label = "Cancel Render"
+	bl_description = "Cancel the render running on this target computer"
+
+	def execute(self, context):
+		if not network_manager.is_rendering and render_manager.render_status not in {'preparing', 'rendering'}:
+			self.report({'WARNING'}, "No target render is running")
+			return {'CANCELLED'}
+
+		render_manager.cancel_render(cancelled_by="target")
+		self.report({'INFO'}, "Render cancelled on target")
+		return {'FINISHED'}
+
 class REMOTERENDER_OT_SelectAllSyncFiles(Operator):
 	bl_idname = "render_remote.select_all_sync_files"
 	bl_label = "Select All"
@@ -1430,6 +1460,9 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			render_progress = render_manager.render_progress
 			render_status = render_manager.render_status
 			finalizing = render_status == 'completed'
+
+			if render_status in {'preparing', 'rendering'}:
+				progress_box.operator("render_remote.cancel_local_render", icon='X')
 			
 			# Finalizing label
 			if finalizing:
@@ -1709,8 +1742,11 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			
 			if props.remote_render_error_message:
 				error_box = progress_box.box()
-				error_box.alert = True
-				error_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
+				if str(props.remote_render_status).lower() == 'cancelled':
+					error_box.label(text=props.remote_render_error_message, icon='INFO')
+				else:
+					error_box.alert = True
+					error_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
 		else:
 			if props.remote_show_external_warning or props.remote_show_missing_warning:
 				warning_box = box.box()
@@ -1725,4 +1761,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 			# Show error if available
 			if props.remote_render_status and props.remote_render_status != "Not Started" and props.remote_render_error_message:
 				status_box = box.box()
-				status_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
+				if str(props.remote_render_status).lower() == 'cancelled':
+					status_box.label(text=props.remote_render_error_message, icon='INFO')
+				else:
+					status_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')

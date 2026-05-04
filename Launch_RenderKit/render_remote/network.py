@@ -997,7 +997,7 @@ class NetworkManager:
 		"""Handle render cancellation request"""
 		from .render import render_manager
 		try:
-			render_manager.cancel_render()
+			render_manager.cancel_render(cancelled_by="source")
 			self.is_rendering = False
 			return {'status': 'success', 'message': 'Render cancelled'}
 		except Exception as e:

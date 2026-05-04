@@ -22,7 +22,7 @@ from .ui import (SyncFileInfo, RemoteNodeProperties, RemoteRuntimeState,
                  REMOTERENDER_OT_ScanProject, REMOTERENDER_OT_SyncFiles,
                  REMOTERENDER_OT_SelectAllSyncFiles, REMOTERENDER_OT_DeselectAllSyncFiles,
                  REMOTERENDER_OT_ClearCache, REMOTERENDER_OT_StartRemoteRender,
-                  REMOTERENDER_OT_CancelRemoteRender,
+                  REMOTERENDER_OT_CancelRemoteRender, REMOTERENDER_OT_CancelLocalRender,
                   REMOTERENDER_PT_MainPanel)
 
 _is_registered = False
@@ -45,6 +45,7 @@ classes = (
 	REMOTERENDER_OT_ClearCache,
 	REMOTERENDER_OT_StartRemoteRender,
 	REMOTERENDER_OT_CancelRemoteRender,
+	REMOTERENDER_OT_CancelLocalRender,
 	REMOTERENDER_PT_MainPanel,
 )
 
