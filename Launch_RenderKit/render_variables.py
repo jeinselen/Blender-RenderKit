@@ -516,19 +516,19 @@ def draw_value_ui(self, context, layout, popup = False, column_count = 1):
 			target_name = None
 			target_type = None
 			
-			if item.startswith('{s') and context.scene:
+			if item.startswith('{{s') and context.scene:
 				target = context.scene
 				target_type = 'SCENE'
 				target_path = 'scene'
-			elif item.startswith('{v') and context.view_layer:
+			elif item.startswith('{{v') and context.view_layer:
 				target = context.view_layer
 				target_type = 'VIEW_LAYER'
 				target_path = 'view_layer'
-			elif item.startswith('{i') and context.view_layer and context.view_layer.objects.active:
+			elif item.startswith('{{i') and context.view_layer and context.view_layer.objects.active:
 				target = context.view_layer.objects.active
 				target_type = 'OBJECT'
 				target_path = 'view_layer.objects.active'
-			elif item.startswith('{m') and context.view_layer and context.view_layer.objects.active and context.view_layer.objects.active.active_material:
+			elif item.startswith('{{m') and context.view_layer and context.view_layer.objects.active and context.view_layer.objects.active.active_material:
 				target = context.view_layer.objects.active.active_material
 				target_type = 'MATERIAL'
 				target_path = 'view_layer.objects.active.active_material'
