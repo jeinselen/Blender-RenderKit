@@ -81,3 +81,60 @@ def render_proxy_menu_item(self,context):
 			layout.operator(render_proxy_start.bl_idname, text="Render Proxy Animation", icon='RENDER_ANIMATION')
 	except Exception as exc:
 		print(str(exc) + " Render Kit | Error in Topbar Mt Render when adding to menu")
+
+
+
+###########################################################################
+# Addon registration functions
+# •Define classes being registered
+# •Define keymap array
+# •Registration function
+# •Unregistration function
+
+classes = (render_proxy_start,)
+
+keymaps = []
+
+def register():
+	# Register classes
+	for cls in classes:
+		bpy.utils.register_class(cls)
+
+	# Add menu item
+	bpy.types.TOPBAR_MT_render.prepend(render_proxy_menu_item)
+
+	# Add keymaps for proxy rendering
+	wm = bpy.context.window_manager
+	kc = wm.keyconfigs.addon
+	if kc:
+		km = wm.keyconfigs.addon.keymaps.new(name='Screen Editing', space_type='EMPTY')
+		kmi = km.keymap_items.new(render_proxy_start.bl_idname, 'RET', 'PRESS', ctrl=True, alt=True, shift=True)
+		keymaps.append((km, kmi))
+	if kc:
+		km = wm.keyconfigs.addon.keymaps.new(name='Screen Editing', space_type='EMPTY')
+		kmi = km.keymap_items.new(render_proxy_start.bl_idname, 'RET', 'PRESS', oskey=True, alt=True, shift=True)
+		keymaps.append((km, kmi))
+	if kc:
+		km = wm.keyconfigs.addon.keymaps.new(name='Screen Editing', space_type='EMPTY')
+		kmi = km.keymap_items.new(render_proxy_start.bl_idname, 'RET', 'PRESS', ctrl=True, alt=True, shift=True)
+		keymaps.append((km, kmi))
+	if kc:
+		km = wm.keyconfigs.addon.keymaps.new(name='Screen Editing', space_type='EMPTY')
+		kmi = km.keymap_items.new(render_proxy_start.bl_idname, 'RET', 'PRESS', oskey=True, alt=True, shift=True)
+		keymaps.append((km, kmi))
+
+def unregister():
+	# Remove keymaps
+	for km, kmi in keymaps:
+		km.keymap_items.remove(kmi)
+	keymaps.clear()
+
+	# Remove menu item
+	bpy.types.TOPBAR_MT_render.remove(render_proxy_menu_item)
+
+	# Deregister classes
+	for cls in reversed(classes):
+		bpy.utils.unregister_class(cls)
+
+if __package__ == "__main__":
+	register()

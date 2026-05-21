@@ -524,15 +524,18 @@ def draw_value_ui(self, context, layout, popup = False, column_count = 1):
 				target = context.view_layer
 				target_type = 'VIEW_LAYER'
 				target_path = 'view_layer'
-			elif item.startswith('{i') and context.view_layer.objects.active:
+			elif item.startswith('{i') and context.view_layer and context.view_layer.objects.active:
 				target = context.view_layer.objects.active
 				target_type = 'OBJECT'
 				target_path = 'view_layer.objects.active'
-			elif item.startswith('{m') and bpy.context.view_layer.objects.active.active_material:
+			elif item.startswith('{m') and context.view_layer and context.view_layer.objects.active and context.view_layer.objects.active.active_material:
 				target = context.view_layer.objects.active.active_material
 				target_type = 'MATERIAL'
 				target_path = 'view_layer.objects.active.active_material'
-				
+
+			if target is None:
+				continue
+
 			if target != None:
 				target_name = target.name
 			
@@ -628,7 +631,7 @@ class RENDER_PT_value_editor_3dview(bpy.types.Panel):
 	bl_space_type = 'VIEW_3D'
 	bl_region_type = 'UI'
 	bl_category = 'Launch'
-	bl_order = 31
+	bl_order = 40
 	bl_options = {'DEFAULT_CLOSED'}
 	
 	@classmethod

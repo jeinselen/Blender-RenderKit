@@ -446,15 +446,15 @@ class batch_camera_update(bpy.types.Operator):
 #	•Images (with folder and material node selection)
 
 class BATCH_PT_batch_render(bpy.types.Panel):
-	bl_idname = 'BATCH_PT_batch_render'
 	bl_label = 'Batch Render'
+	bl_idname = 'BATCH_PT_batch_render'
 	bl_description = 'Manage batch rendering options'
 	bl_space_type = 'PROPERTIES'
 	bl_region_type = 'WINDOW'
 	bl_context = "output"
 	bl_category = 'Batch'
+	bl_order = 44
 	bl_options = {'DEFAULT_CLOSED'}
-	bl_order = 4
 	
 	@classmethod
 	def poll(cls, context):
@@ -711,12 +711,12 @@ class BATCH_PT_batch_render(bpy.types.Panel):
 # Instance panel in the 3D View
 
 class BATCH_PT_batch_render_3dview(bpy.types.Panel):
-	bl_idname = "BATCH_PT_batch_render_3DView"
 	bl_label = "Batch Render"
+	bl_idname = "BATCH_PT_batch_render_3DView"
 	bl_space_type = 'VIEW_3D'
 	bl_region_type = 'UI'
 	bl_category = 'Launch'
-	bl_order = 32
+	bl_order = 40
 	bl_options = {'DEFAULT_CLOSED'}
 	
 	@classmethod

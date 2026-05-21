@@ -18,10 +18,10 @@ FFMPEG_FORMATS = (
 # •Autosave Videos panel
 
 class RENDER_PT_autosave_image(bpy.types.Panel):
+	bl_label = "Autosave Images"
 	bl_space_type = 'PROPERTIES'
 	bl_region_type = 'WINDOW'
 	bl_context = "output"
-	bl_label = "Autosave Images"
 	bl_parent_id = "RENDER_PT_output"
 	
 	@classmethod
@@ -99,10 +99,10 @@ class RENDER_PT_autosave_image(bpy.types.Panel):
 
 
 class RENDER_PT_autosave_video(bpy.types.Panel):
+	bl_label = "Autosave Videos"
 	bl_space_type = 'PROPERTIES'
 	bl_region_type = 'WINDOW'
 	bl_context = "output"
-	bl_label = "Autosave Videos"
 	bl_parent_id = "RENDER_PT_output"
 
 	@classmethod

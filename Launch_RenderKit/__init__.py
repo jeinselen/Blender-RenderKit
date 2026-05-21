@@ -13,8 +13,8 @@ from . import render_autosave
 from . import render_batch
 from . import render_display
 from . import render_node
-from .render_proxy import render_proxy_start, render_proxy_menu_item
-from .render_region import RENDER_PT_render_region
+from . import render_proxy
+from . import render_region
 from . import render_remote
 from . import render_variables
 
@@ -583,6 +583,7 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		
 		########## REMOTE: Render Remote ##########
 		
+		layout.separator(factor = 2.0)
 		layout.label(text="Remote", icon="NETWORK_DRIVE") # NETWORK_DRIVE DISK_DRIVE RENDER_ANIMATION
 		grid0 = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
 		
@@ -1065,13 +1066,10 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 ###########################################################################
 # Addon registration functions
 # •Define classes being registered
-# •Define keymap array
 # •Registration function
 # •Unregistration function
 
-classes = (RenderKitPreferences, RenderKitSettings, render_proxy_start, RENDER_PT_render_region)
-
-keymaps = []
+classes = (RenderKitPreferences, RenderKitSettings)
 
 
 
@@ -1088,9 +1086,6 @@ def register():
 	bpy.context.preferences.addons[__package__].preferences.check_ffmpeg_location()
 	bpy.context.preferences.addons[__package__].preferences.check_voice_location()
 	
-	# Add proxy and batch render menu items
-	bpy.types.TOPBAR_MT_render.prepend(render_proxy_menu_item)
-	
 	# Attach render event handlers
 	bpy.app.handlers.render_init.append(render_kit_start)
 	bpy.app.handlers.render_pre.append(render_kit_frame_pre)
@@ -1103,6 +1098,12 @@ def register():
 	
 	########## Render Batch ##########
 	render_batch.register()
+
+	########## Render Proxy ##########
+	render_proxy.register()
+
+	########## Render Region ##########
+	render_region.register()
 	
 	########## Render Display ##########
 	render_display.register()
@@ -1120,35 +1121,8 @@ def register():
 		except Exception as e:
 			print(f"Remote render registration failed: {e}")
 
-	
-	# Add keymaps for proxy rendering
-	wm = bpy.context.window_manager
-	kc = wm.keyconfigs.addon
-	if kc:
-		km = wm.keyconfigs.addon.keymaps.new(name='Screen Editing', space_type='EMPTY')
-		kmi = km.keymap_items.new(render_proxy_start.bl_idname, 'RET', 'PRESS', ctrl=True, alt=True, shift=True)
-		keymaps.append((km, kmi))
-	if kc:
-		km = wm.keyconfigs.addon.keymaps.new(name='Screen Editing', space_type='EMPTY')
-		kmi = km.keymap_items.new(render_proxy_start.bl_idname, 'RET', 'PRESS', oskey=True, alt=True, shift=True)
-		keymaps.append((km, kmi))
-	if kc:
-		km = wm.keyconfigs.addon.keymaps.new(name='Screen Editing', space_type='EMPTY')
-		kmi = km.keymap_items.new(render_proxy_start.bl_idname, 'RET', 'PRESS', ctrl=True, alt=True, shift=True)
-		keymaps.append((km, kmi))
-	if kc:
-		km = wm.keyconfigs.addon.keymaps.new(name='Screen Editing', space_type='EMPTY')
-		kmi = km.keymap_items.new(render_proxy_start.bl_idname, 'RET', 'PRESS', oskey=True, alt=True, shift=True)
-		keymaps.append((km, kmi))
-
-
 
 def unregister():
-	# Remove keymaps
-	for km, kmi in keymaps:
-		km.keymap_items.remove(kmi)
-	keymaps.clear()
-		
 	########## Render Remote ##########
 	try:
 		render_remote.unregister()
@@ -1166,12 +1140,15 @@ def unregister():
 	
 	########## Render Batch ##########
 	render_batch.unregister()
+
+	########## Render Region ##########
+	render_region.unregister()
+
+	########## Render Proxy ##########
+	render_proxy.unregister()
 	
 	########## Render Autosave ##########
 	render_autosave.unregister()
-	
-	# Remove proxy and batch render menu items
-	bpy.types.TOPBAR_MT_render.remove(render_proxy_menu_item)
 	
 	# Remove render event handlers
 	bpy.app.handlers.render_init.remove(render_kit_start)

@@ -280,10 +280,12 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 # UI rendering classes
 
 class RENDERKIT_PT_render_node(bpy.types.Panel):
+	bl_label = "Render Node"
 	bl_space_type = 'NODE_EDITOR'
 	bl_region_type = 'UI'
 	bl_category = 'Node'
-	bl_label = "Render Node"
+	bl_order = 40
+	bl_options = {'DEFAULT_CLOSED'}
 	
 	@classmethod
 	def poll(cls, context):

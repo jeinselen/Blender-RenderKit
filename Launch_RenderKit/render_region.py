@@ -1,12 +1,11 @@
 import bpy
 
 class RENDER_PT_render_region(bpy.types.Panel):
+	bl_label = "Render Region Values"
 	bl_space_type = 'PROPERTIES'
 	bl_region_type = 'WINDOW'
 	bl_context = "render"
 	bl_parent_id = "RENDER_PT_format"
-	bl_label = "Render Region Values"
-	# bl_options = {'DEFAULT_CLOSED'}
 	bl_options = {'HIDE_HEADER'}
 	
 	@classmethod
@@ -27,3 +26,26 @@ class RENDER_PT_render_region(bpy.types.Panel):
 		row1 = layout.row(align=True, heading='')
 		row1.prop(bpy.context.scene.render, 'border_min_y', text='Region Y')
 		row1.prop(bpy.context.scene.render, 'border_max_y', text='')
+
+
+
+###########################################################################
+# Addon registration functions
+# •Define classes being registered
+# •Registration function
+# •Unregistration function
+
+classes = (RENDER_PT_render_region,)
+
+def register():
+	# Register classes
+	for cls in classes:
+		bpy.utils.register_class(cls)
+
+def unregister():
+	# Deregister classes
+	for cls in reversed(classes):
+		bpy.utils.unregister_class(cls)
+
+if __package__ == "__main__":
+	register()

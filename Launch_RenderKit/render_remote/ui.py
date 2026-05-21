@@ -1477,8 +1477,8 @@ class REMOTERENDER_PT_MainPanel(Panel):
 	bl_space_type = "VIEW_3D"
 	bl_region_type = "UI"
 	bl_category = "Launch"
+	bl_order = 48
 	bl_options = {'DEFAULT_CLOSED'}
-	bl_order = 64
 	
 	@classmethod
 	def poll(cls, context):
@@ -1857,3 +1857,4 @@ class REMOTERENDER_PT_MainPanel(Panel):
 					status_box.label(text=props.remote_render_error_message, icon='INFO')
 				else:
 					status_box.label(text=f"Error: {props.remote_render_error_message}", icon='ERROR')
+					
