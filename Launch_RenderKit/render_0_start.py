@@ -16,7 +16,18 @@ from . import utility_data
 
 @persistent
 def render_kit_start(scene):
+	# Isolate handler faults from the render loop
+	try:
+		_render_kit_start(scene)
+	except Exception:
+		import traceback
+		print("[RenderKit] error in render_init handler:")
+		traceback.print_exc()
+
+def _render_kit_start(scene):
 	prefs = bpy.context.preferences.addons[__package__].preferences
+	# Cache preferences for the per-frame handlers so they avoid bpy.context access mid-render
+	utility_data.cache_prefs(prefs)
 	settings = scene.render_kit_settings
 	
 	# Get compositing nodes for either Blender 4.5 or 5.0

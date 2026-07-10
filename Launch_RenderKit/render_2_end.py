@@ -20,7 +20,19 @@ from . import utility_data
 
 @persistent
 def render_kit_end(scene):
-	prefs = bpy.context.preferences.addons[__package__].preferences
+	# Isolate handler faults from the render loop
+	try:
+		_render_kit_end(scene)
+	except Exception:
+		import traceback
+		print("[RenderKit] error in render_complete/render_cancel handler:")
+		traceback.print_exc()
+
+def _render_kit_end(scene):
+	# Use preferences cached at render_init to avoid bpy.context access mid-render
+	prefs = utility_data.get_prefs()
+	if prefs is None:
+		prefs = bpy.context.preferences.addons[__package__].preferences
 	settings = scene.render_kit_settings
 	
 	# Reset sequence tracking and start frame

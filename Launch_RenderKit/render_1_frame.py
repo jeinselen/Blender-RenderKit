@@ -17,6 +17,15 @@ from . import utility_data
 
 @persistent
 def render_kit_frame_pre(scene):
+	# Isolate handler faults from the render loop
+	try:
+		_render_kit_frame_pre(scene)
+	except Exception:
+		import traceback
+		print("[RenderKit] error in render_pre handler:")
+		traceback.print_exc()
+
+def _render_kit_frame_pre(scene):
 	settings = scene.render_kit_settings
 	
 	# If video sequence is inactive and our current frame is not our starting frame, assume we're rendering a sequence
@@ -29,12 +38,18 @@ def render_kit_frame_pre(scene):
 	
 	# If file name processing is enabled and a sequence is underway, re-process output variables
 	# Note: {serial} usage is not checked here as it should have already been completed by the render_kit_start function
-	prefs = bpy.context.preferences.addons[__package__].preferences
+	# Use preferences cached at render_init to avoid per-frame bpy.context access
+	prefs = utility_data.get_prefs()
+	if prefs is None:
+		prefs = bpy.context.preferences.addons[__package__].preferences
 	if prefs.render_variable_enable:
 		# Filter render output file path
 		if settings.output_file_path:
 			# Replace scene filepath output with the processed version from the original saved version
-			scene.render.filepath = replaceVariables(scene, settings.output_file_path)
+			# Write only when the resolved value changes to avoid redundant per-frame RNA writes
+			new_filepath = replaceVariables(scene, settings.output_file_path)
+			if scene.render.filepath != new_filepath:
+				scene.render.filepath = new_filepath
 		
 		# Filter compositing node file paths
 		compositing = scene.node_tree if bpy.app.version < tuple([5,0,0]) else scene.compositing_node_group
@@ -54,15 +69,19 @@ def render_kit_frame_pre(scene):
 					if isinstance(node, bpy.types.CompositorNodeOutputFile) and not node.mute:
 						if bpy.app.version < tuple([5,0,0]):
 							# Reset base path
-							node.base_path = node_data.get("directory", node.base_path)
 							# Replace dynamic variables in the base path
-							node.base_path = replaceVariables(scene, node.base_path)
+							# Write only when the resolved value changes to avoid redundant per-frame RNA writes
+							new_base_path = replaceVariables(scene, node_data.get("directory", node.base_path))
+							if node.base_path != new_base_path:
+								node.base_path = new_base_path
 						else:
 							# Reset base path
-							node.directory = node_data.get("directory", node.directory)
 							# Replace dynamic variables in the base path
-							node.directory = replaceVariables(scene, node.directory)
-						
+							# Write only when the resolved value changes to avoid redundant per-frame RNA writes
+							new_directory = replaceVariables(scene, node_data.get("directory", node.directory))
+							if node.directory != new_directory:
+								node.directory = new_directory
+
 						# Get output port data
 						output_port_data = node_data.get("outputs", {})
 						for i, port_data in output_port_data.items():
@@ -71,9 +90,11 @@ def render_kit_frame_pre(scene):
 								output_port = node.file_slots[int(i)]
 								if output_port:
 									# Reset slot path
-									output_port.path = port_data.get("path", output_port.path)
 									# Replace dynamic variables in the slot path
-									output_port.path = replaceVariables(scene, output_port.path)
+									# Write only when the resolved value changes to avoid redundant per-frame RNA writes
+									new_path = replaceVariables(scene, port_data.get("path", output_port.path))
+									if output_port.path != new_path:
+										output_port.path = new_path
 							else:
 								# --- Blender 5.x: use JSON data instead of IDProperties on file_output_items ---
 								output_item = node.file_output_items[int(i)]
@@ -84,15 +105,27 @@ def render_kit_frame_pre(scene):
 										# allow outputs to be stored as plain strings too
 										# This should be revisited when 4.5 support is dropped
 										original_name = port_data or output_item.name
-									
+
 									# Re-apply variables on the original name,
 									# not on the already-expanded one
-									output_item.name = replaceVariables(scene, original_name)
+									# Write only when the resolved value changes to avoid redundant per-frame RNA writes
+									new_name = replaceVariables(scene, original_name)
+									if output_item.name != new_name:
+										output_item.name = new_name
 
 
 
 @persistent
 def render_kit_frame_post(scene):
+	# Isolate handler faults from the render loop
+	try:
+		_render_kit_frame_post(scene)
+	except Exception:
+		import traceback
+		print("[RenderKit] error in render_post handler:")
+		traceback.print_exc()
+
+def _render_kit_frame_post(scene):
 	settings = scene.render_kit_settings
 	
 	# If sequence rendering is currently active
@@ -112,7 +145,10 @@ def render_kit_frame_post(scene):
 			# print('Estimated Time Remaining: ' + settings.estimated_time)
 		
 		# If FFmpeg processing is enabled and command path exists
-		prefs = bpy.context.preferences.addons[__package__].preferences
+		# Use preferences cached at render_init to avoid per-frame bpy.context access
+		prefs = utility_data.get_prefs()
+		if prefs is None:
+			prefs = bpy.context.preferences.addons[__package__].preferences
 		if prefs.ffmpeg_processing and prefs.ffmpeg_exists:
 			# If any of the FFmpeg options are enabled
 			if settings.autosave_video_prores or settings.autosave_video_mp4 or settings.autosave_video_custom:

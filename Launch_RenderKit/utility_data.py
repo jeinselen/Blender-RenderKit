@@ -9,6 +9,13 @@ _state = {
 	"estimated_time": -1.0,
 }
 
+# Cached addon preferences reference, captured once at render_init and used during the
+# render loop. Reading bpy.context inside render_pre/render_post handlers every frame is a
+# known trigger for "Python context internal state bug" on long sequences, so handlers read
+# from this cache instead. The reference is cleared on render_set_end() to keep its lifetime
+# bound to a single render and avoid stale StructRNA references after addon reload or reload.
+_prefs = None
+
 ##################################################
 # Set data groups
 
@@ -21,11 +28,13 @@ def render_set_start(start_time: float):
 		_state["estimated_time"] = -1.0
 
 def render_set_end():
+	global _prefs
 	with _lock:
 		_state["start_time"] = 0.0
 		_state["start_frame"] = -1
 		_state["sequence_active"] = False
 		_state["estimated_time"] = -1.0
+		_prefs = None
 
 # Set individual data elements
 
@@ -50,6 +59,17 @@ def render_set_sequence(frame: int):
 def render_set_estimate(time: float):
 	with _lock:
 		_state["estimated_time"] = float(time)
+
+# Cache / read the addon preferences reference for use inside render handlers
+
+def cache_prefs(prefs):
+	global _prefs
+	with _lock:
+		_prefs = prefs
+
+def get_prefs():
+	with _lock:
+		return _prefs
 
 ##################################################
 # Get data groups
