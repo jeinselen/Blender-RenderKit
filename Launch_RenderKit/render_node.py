@@ -8,6 +8,7 @@ from .utility_filecheck import checkExistingAndIncrement
 from .utility_notifications import render_notifications
 from .utility_time import secondsToReadable
 from . import utility_data
+from . import utility_panel
 
 # ImageMagick processing
 from re import sub
@@ -286,6 +287,7 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 	bl_category = 'Node'
 	bl_order = 40
 	bl_options = {'DEFAULT_CLOSED'}
+	category_preference = "rendernode_category"
 	
 	@classmethod
 	def poll(cls, context):
@@ -373,15 +375,24 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 #def menu_func(self, context):
 #	self.layout.operator(RENDERKIT_OT_render_node.bl_idname)
 
-classes = (RENDERKIT_OT_render_node, RENDERKIT_PT_render_node,)
+classes = [RENDERKIT_OT_render_node]
+
+# Registered from the tab category set in the extension preferences
+panels = [RENDERKIT_PT_render_node]
 
 def register():
 	# Register classes
 	for cls in classes:
 		bpy.utils.register_class(cls)
+	
+	# Register panels
+	utility_panel.register_panels(panels)
 #	bpy.types.NODE_MT_context_menu.append(menu_func)
 
 def unregister():
+	# Deregister panels
+	utility_panel.unregister_panels(panels)
+	
 	# Deregister classes
 	for cls in reversed(classes):
 		bpy.utils.unregister_class(cls)

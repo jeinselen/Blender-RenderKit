@@ -6,6 +6,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, St
 from shutil import which
 
 # Local imports
+from . import utility_panel
 from .render_0_start import render_kit_start
 from .render_1_frame import render_kit_frame_pre, render_kit_frame_post
 from .render_2_end import render_kit_end
@@ -41,18 +42,11 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		default=True)
 	
 	def update_batch_category(self, context):
-		category = bpy.context.preferences.addons[__package__].preferences.batch_category
-		try:
-			bpy.utils.unregister_class(render_batch.BATCH_PT_batch_render_3dview)
-		except RuntimeError:
-			pass
-		if len(category) > 0:
-			render_batch.BATCH_PT_batch_render_3dview.bl_category = category
-			bpy.utils.register_class(render_batch.BATCH_PT_batch_render_3dview)
+		utility_panel.register_panels(render_batch.panels)
 	
 	batch_category: StringProperty(
-		name="Batch Render Panel",
-		description="Choose a category tab for the panel to be placed in",
+		name="3D View",
+		description="Choose a 3D view tab category for the batch render panel to be placed in, or leave empty to hide the panel",
 		default="Launch",
 		update=update_batch_category)
 		# Consider adding search_options=(list of currently available tabs) for easier operation
@@ -62,6 +56,16 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		name='Render Node',
 		description='Adds node baking to the Node Properties panel of the material editor',
 		default=True)
+	
+	def update_rendernode_category(self, context):
+		utility_panel.register_panels(render_node.panels)
+	
+	rendernode_category: StringProperty(
+		name="Node Editor",
+		description="Choose a node editor tab category for the render node panel to be placed in, or leave empty to hide the panel",
+		default="Node",
+		update=update_rendernode_category)
+		# Consider adding search_options=(list of currently available tabs) for easier operation
 	
 	# Render node settings (auto process output images)
 	magick_location: StringProperty(
@@ -98,10 +102,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		name='Render Proxy',
 		description='Adds a proxy rendering option to the rendering menu',
 		default=True)
-	proxy_show_settings: BoolProperty(
-		name='Proxy Settings   ',
-		description='Shows proxy rendering options in the preferences panel',
-		default=False)
 	
 	# Proxy render engine overrides
 	proxy_renderEngine: EnumProperty(
@@ -155,18 +155,14 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		description='Implements remote rendering on a target Blender instance over the local network',
 		default=False,
 		update=update_remote_enable)
-	remote_show_settings: BoolProperty(
-		name='Remote Settings   ',
-		description='Shows remote rendering options in the preferences panel',
-		default=False)
 	
 	def update_remote_category(self, context):
 		category = bpy.context.preferences.addons[__package__].preferences.remote_category
 		render_remote.set_panel_category(category)
 	
 	remote_category: StringProperty(
-		name="Remote Render Panel",
-		description="Choose a category tab for the panel to be placed in",
+		name="3D View",
+		description="Choose a 3D view tab category for the remote render panel to be placed in, or leave empty to hide the panel",
 		default="Launch",
 		update=update_remote_category)
 	# Consider adding search_options=(list of currently available tabs) for easier operation
@@ -225,18 +221,11 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		default=True)
 	
 	def update_variable_category(self, context):
-		category = bpy.context.preferences.addons[__package__].preferences.variable_category
-		try:
-			bpy.utils.unregister_class(render_variables.RENDER_PT_value_editor_3dview)
-		except RuntimeError:
-			pass
-		if len(category) > 0:
-			render_variables.RENDER_PT_value_editor_3dview.bl_category = category
-			bpy.utils.register_class(render_variables.RENDER_PT_value_editor_3dview)
+		utility_panel.register_panels(render_variables.panels)
 	
 	variable_category: StringProperty(
-		name="Batch Render Panel",
-		description="Choose a category tab for the panel to be placed in",
+		name="3D View",
+		description="Choose a 3D view tab category for the render values panel to be placed in, or leave empty to hide the panel",
 		default="Launch",
 		update=update_variable_category)
 		# Consider adding search_options=(list of currently available tabs) for easier operation
@@ -283,8 +272,8 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	
 	# Override individual project autosave location and file name settings
 	override_autosave_render: BoolProperty(
-		name="Global Overrides",
-		description="Show available global overrides, replacing local project settings",
+		name="Global Override",
+		description="Show available global override values, replacing local project settings",
 		default=False)
 	file_location_global: StringProperty(
 		name="Global File Location",
@@ -459,56 +448,45 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		grid0.prop(self, "region_enable")
 		grid0.separator()
 		grid0.prop(self, "batch_enable")
-		input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+		input = grid0.row()
 		if not self.batch_enable:
 			input.active = False
 			input.enabled = False
-		input.prop(self, "batch_category", text="")
-		input.separator()
+		input.prop(self, "batch_category", text="", icon="VIEW3D")
 		
 		# Render Node settings
 		grid0.prop(self, "rendernode_enable")
-		input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+		input = grid0.row()
 		if not self.rendernode_enable:
 			input.active = False
 			input.enabled = False
+		input.prop(self, "rendernode_category", text="", icon="NODETREE")
 		
 		# ImageMagick settings
-		input.prop(self, "magick_location", text="")
-		# Location exists success/fail
-		if self.magick_exists:
-			input.label(text="✔︎ installed")
-		else:
-			input.label(text="✘ missing")
+		if self.rendernode_enable:
+			grid0.separator()
+			input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+			if not self.rendernode_enable:
+				input.active = False
+				input.enabled = False
+			input.prop(self, "magick_location", text="")
+			# Location exists success/fail
+			if self.magick_exists:
+				input.label(text="✔︎ installed")
+			else:
+				input.label(text="✘ missing")
 		
 		# Proxy settings
 		grid0.prop(self, "proxy_enable")
-		input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-		if not self.proxy_enable:
-			input.active = False
-			input.enabled = False
-			input.prop(self, "proxy_show_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
-		elif self.proxy_show_settings:
-			input.prop(self, "proxy_show_settings", icon = "DISCLOSURE_TRI_DOWN", emboss = False)
-		else:
-			input.prop(self, "proxy_show_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
-		input.separator()
-		
-		if self.proxy_enable and self.proxy_show_settings:
-			# Subgrid Layout
-			margin = layout.row()
-			margin.separator(factor=2.0)
-			subgrid = margin.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-			margin.separator(factor=2.0)
-			
-			subgrid.prop(self, "proxy_renderEngine", text="")
+		if self.proxy_enable:
+			grid0.prop(self, "proxy_renderEngine", text="")
 			if self.proxy_renderEngine == "BLENDER_EEVEE":
-				subgrid.prop(self, "proxy_renderSamples")
+				grid0.prop(self, "proxy_renderSamples")
 			else:
-				subgrid.prop(context.scene.display, "render_aa", text="")
-			subgrid.prop(self, "proxy_compositing", text="")
-			subgrid.prop(self, "proxy_resolutionMultiplier")
-			subgrid.prop(self, "proxy_format", text="")
+				grid0.prop(context.scene.display, "render_aa", text="")
+			grid0.prop(self, "proxy_compositing", text="")
+			grid0.prop(self, "proxy_resolutionMultiplier")
+			grid0.prop(self, "proxy_format", text="")
 		
 		
 		
@@ -520,11 +498,11 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		grid1 = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
 		
 		grid1.prop(self, "render_variable_enable")
-		input = grid1.grid_flow(row_major=True, columns=1, even_columns=True, even_rows=False, align=False)
+		input = grid1.row()
 		if not self.render_variable_enable:
 			input.active = False
 			input.enabled = False
-		input.prop(self, "variable_category", text="")
+		input.prop(self, "variable_category", text="", icon="VIEW3D")
 		
 		# Autosave Videos
 		grid1.prop(self, "ffmpeg_processing")
@@ -541,37 +519,35 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		
 		# Autosave Images
 		grid1.prop(self, "enable_autosave_render")
-		grid1.prop(self, "override_autosave_render")
+		input = grid1.row()
+		if not self.enable_autosave_render:
+			input.active = False
+			input.enabled = False
+		input.prop(self, "override_autosave_render")
 		
-		# Global Overrides
+		# Global Override
 		if self.enable_autosave_render and self.override_autosave_render:
-			# Subgrid Layout
-			margin = layout.row()
-			margin.separator(factor=2.0)
-			subgrid = margin.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-			margin.separator(factor=2.0)
+			# Layout within single parent grid space
+			grid1.separator()
+#			subgrid = grid1.grid_flow(row_major=True, columns=1, even_columns=True, even_rows=True, align=False)
+			subgrid = grid1.column()
 			
 			# File location
-			subgrid.separator_spacer()
 			input = subgrid.column(align=True)
 			input.prop(self, "file_location_global", text='')
 			# Display global serial number if used
 			if '{serial}' in self.file_location_global:
 				input.prop(self, "file_serial_global")
-				input.separator()
 			
 			# File name
-			subgrid.separator_spacer()
 			input = subgrid.column(align=True)
 			input.prop(self, "file_name_type_global", text='', icon='FILE_TEXT')
 			if (self.file_name_type_global == 'CUSTOM'):
 				input.prop(self, "file_name_custom_global", text='')
 				if self.file_name_type_global == 'CUSTOM' and '{serial}' in self.file_name_custom_global:
 					input.prop(self, "file_serial_global")
-				input.separator()
 			
 			# File format
-			subgrid.separator_spacer()
 			input = subgrid.column()
 			input.prop(self, "file_format_global", text='', icon='FILE_IMAGE')
 			if self.file_format_global == 'SCENE' and context.scene.render.image_settings.file_format == 'OPEN_EXR_MULTILAYER':
@@ -589,24 +565,13 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		
 		# Render Remote settings
 		grid0.prop(self, "remote_enable")
-		input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+		input = grid0.row()
 		if not self.remote_enable:
 			input.active = False
 			input.enabled = False
-			input.prop(self, "remote_show_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
-		elif self.remote_show_settings:
-			input.prop(self, "remote_show_settings", icon = "DISCLOSURE_TRI_DOWN", emboss = False)
-		else:
-			input.prop(self, "remote_show_settings", icon = "DISCLOSURE_TRI_RIGHT", emboss = False)
-		input.separator()
-		
-		if self.remote_enable and self.remote_show_settings:
-			# Subgrid Layout
-			margin = layout.row()
-			margin.separator(factor=2.0)
-			subgrid = margin.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-			margin.separator(factor=2.0)
-			
+		input.prop(self, "remote_category", text="", icon="VIEW3D")
+		if self.remote_enable:
+			subgrid = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
 			subgrid.prop(self, "remote_cache_directory", text="")
 			subgrid.prop(self, "remote_passcode", text="")
 			subgrid.operator("render_remote.clear_cache", icon='TRASH')

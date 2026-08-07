@@ -3,8 +3,6 @@
 
 import bpy
 import os
-import subprocess
-from re import sub
 
 # Local imports
 from .utility_time import secondsToReadable, readableToSeconds

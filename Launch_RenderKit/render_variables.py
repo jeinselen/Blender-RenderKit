@@ -4,14 +4,14 @@ import datetime
 
 # File paths
 import os
-from pathlib import Path
 
 # Variable data
 import platform
-from re import findall, search, sub
+from re import sub
 
 # Internal imports
 from .utility_time import secondsToStrings
+from . import utility_panel
 
 
 
@@ -633,6 +633,7 @@ class RENDER_PT_value_editor_3dview(bpy.types.Panel):
 	bl_category = 'Launch'
 	bl_order = 40
 	bl_options = {'DEFAULT_CLOSED'}
+	category_preference = "variable_category"
 	
 	@classmethod
 	def poll(cls, context):
@@ -743,12 +744,23 @@ def NODE_PT_output_path_variable_list(self, context):
 # •Registration function
 # •Unregistration function
 			
-classes = (CopyVariableToClipboard, RenderKit_Property_Add, VariablePopup, ValuePopup, RENDER_PT_value_editor_3dview)
+classes = [
+	CopyVariableToClipboard,
+	RenderKit_Property_Add,
+	VariablePopup,
+	ValuePopup
+]
+
+# Registered from the tab category set in the extension preferences
+panels = [RENDER_PT_value_editor_3dview]
 
 def register():
 	# Register classes
 	for cls in classes:
 		bpy.utils.register_class(cls)
+	
+	# Register panels
+	utility_panel.register_panels(panels)
 	
 	# Add variable popup UI
 	bpy.types.RENDER_PT_output.prepend(RENDER_PT_output_path_variable_list)
@@ -758,6 +770,9 @@ def unregister():
 	# Remove variable popup UI
 	bpy.types.NODE_PT_active_node_properties.remove(NODE_PT_output_path_variable_list)
 	bpy.types.RENDER_PT_output.remove(RENDER_PT_output_path_variable_list)
+	
+	# Deregister panels
+	utility_panel.unregister_panels(panels)
 	
 	# Deregister classes
 	for cls in reversed(classes):

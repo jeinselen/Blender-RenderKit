@@ -9,7 +9,6 @@ from bpy.props import StringProperty, BoolProperty, EnumProperty, FloatProperty,
 from bpy.types import Operator, Panel, PropertyGroup
 from .constants import (ADDON_PACKAGE, build_source_project_cache_name, OUTPUT_SYNC_POLL_INTERVAL, OUTPUT_SYNC_QUIET_PERIOD, OUTPUT_SYNC_POST_PROCESS_TIMEOUT, CONNECTION_HEALTH_INTERVAL, CONNECTION_HEALTH_TIMEOUT, CONNECTION_HEALTH_MAX_FAILURES)
 from .paths import PathSecurityError, normalize_relative_path, resolve_under_root, relative_path_under_root
-from .protocol import error_response
 from .file_sync import file_sync_manager
 from .local_state import (default_remote_node_name, get_local_lan_ip, get_local_remote_mode, set_local_remote_mode)
 from .network import network_manager
@@ -1479,6 +1478,7 @@ class REMOTERENDER_PT_MainPanel(Panel):
 	bl_category = "Launch"
 	bl_order = 48
 	bl_options = {'DEFAULT_CLOSED'}
+	category_preference = "remote_category"
 	
 	@classmethod
 	def poll(cls, context):

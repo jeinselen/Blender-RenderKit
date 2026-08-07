@@ -2,7 +2,6 @@ import json
 import os
 import struct
 from .constants import PROTOCOL_MAX_MESSAGE_SIZE, PROTOCOL_MAX_FILE_SIZE, FILE_TRANSFER_CHUNK_SIZE
-from .paths import PathSecurityError
 
 class ProtocolError(Exception):
 	"""Raised when a network message or file payload violates protocol limits"""

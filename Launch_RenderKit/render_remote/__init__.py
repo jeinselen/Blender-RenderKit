@@ -4,7 +4,7 @@ from .timers import timer_manager
 from .file_sync import file_sync_manager
 from .network import network_manager, NetworkManager
 from .render import render_manager, RenderManager
-from .constants import (ADDON_PACKAGE, AUTH_MAX_CHALLENGES, AUTH_PBKDF2_ITERATIONS,
+from .constants import (AUTH_MAX_CHALLENGES, AUTH_PBKDF2_ITERATIONS,
                         INPUT_MANIFEST_FILENAME, PROTOCOL_MAX_MESSAGE_SIZE,
                         addon_package_from_module_package,
                         default_remote_cache_directory, is_allowed_lan_ip)
@@ -14,6 +14,7 @@ from .protocol import (ProtocolError, error_response, recv_file, recv_message,
                        send_file, send_message, validate_message)
 from .handlers import (cleanup_on_exit, cleanup_on_load_pre, reset_connection_status_on_load,
                        shutdown)
+from .. import utility_panel
 from .ui import (SyncFileInfo, RemoteNodeProperties, RemoteRuntimeState,
                  initialize_remote_runtime_state, start_connection_health_monitor,
                  REMOTERENDER_OT_StartDiscovery, REMOTERENDER_OT_StopDiscovery,
@@ -46,8 +47,10 @@ classes = (
 	REMOTERENDER_OT_StartRemoteRender,
 	REMOTERENDER_OT_CancelRemoteRender,
 	REMOTERENDER_OT_CancelLocalRender,
-	REMOTERENDER_PT_MainPanel,
 )
+
+# Registered from the tab category set in the extension preferences
+panels = [REMOTERENDER_PT_MainPanel]
 
 def register():
 	global _is_registered, _atexit_registered
@@ -55,20 +58,19 @@ def register():
 	if _is_registered:
 		return
 
-	try:
-		REMOTERENDER_PT_MainPanel.bl_category = bpy.context.preferences.addons[ADDON_PACKAGE].preferences.remote_category
-	except (AttributeError, KeyError):
-		pass
-
 	# Register all classes
 	for cls in classes:
-		if cls is REMOTERENDER_PT_MainPanel and not REMOTERENDER_PT_MainPanel.bl_category:
-			continue
 		try:
 			bpy.utils.register_class(cls)
 		except (RuntimeError, ValueError) as e:
 			if "already registered" not in str(e):
 				raise
+
+	# Register panels
+	try:
+		utility_panel.register_panels(panels)
+	except (AttributeError, KeyError):
+		pass
 
 	# Register transient runtime collections on WindowManager so Render Remote does not dirty .blend files.
 	if not hasattr(bpy.types.WindowManager, 'remote_render_discovered_nodes'):
@@ -119,6 +121,9 @@ def unregister():
 			pass
 		_atexit_registered = False
 
+	# Unregister panels
+	utility_panel.unregister_panels(panels)
+
 	# Unregister classes
 	for cls in reversed(classes):
 		try:
@@ -145,17 +150,11 @@ def is_registered():
 
 def set_panel_category(category):
 	"""Update the 3D View panel category without registering Render Remote when disabled."""
-	REMOTERENDER_PT_MainPanel.bl_category = category
 	if not _is_registered:
+		REMOTERENDER_PT_MainPanel.bl_category = category
 		return
 
-	try:
-		bpy.utils.unregister_class(REMOTERENDER_PT_MainPanel)
-	except (RuntimeError, ValueError):
-		pass
-
-	if len(category) > 0:
-		bpy.utils.register_class(REMOTERENDER_PT_MainPanel)
+	utility_panel.register_panels(panels)
 
 __all__ = (
 	"AUTH_MAX_CHALLENGES",

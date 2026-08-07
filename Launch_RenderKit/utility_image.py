@@ -3,7 +3,6 @@
 
 import bpy
 import os
-import subprocess
 from re import findall, M as multiline
 import traceback
 

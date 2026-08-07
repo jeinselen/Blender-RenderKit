@@ -4,6 +4,7 @@ from re import search
 
 # Internal imports
 from .render_variables import renderkit_variable_ui
+from . import utility_panel
 
 ###########################################################################
 # Batch Render Functions
@@ -718,6 +719,7 @@ class BATCH_PT_batch_render_3dview(bpy.types.Panel):
 	bl_category = 'Launch'
 	bl_order = 40
 	bl_options = {'DEFAULT_CLOSED'}
+	category_preference = "batch_category"
 	
 	@classmethod
 	def poll(cls, context):
@@ -747,12 +749,18 @@ def render_batch_menu_item(self,context):
 # •Registration function
 # •Unregistration function
 
-classes = (batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render, BATCH_PT_batch_render_3dview)
+classes = [batch_render_start, batch_image_target, batch_camera_update, BATCH_PT_batch_render]
+
+# Registered from the tab category set in the extension preferences
+panels = [BATCH_PT_batch_render_3dview]
 
 def register():
 	# Register classes
 	for cls in classes:
 		bpy.utils.register_class(cls)
+	
+	# Register panels
+	utility_panel.register_panels(panels)
 	
 	# Add menu item
 	bpy.types.TOPBAR_MT_render.prepend(render_batch_menu_item)
@@ -760,6 +768,9 @@ def register():
 def unregister():
 	# Remove menu item
 	bpy.types.TOPBAR_MT_render.remove(render_batch_menu_item)
+	
+	# Deregister panels
+	utility_panel.unregister_panels(panels)
 	
 	# Deregister classes
 	for cls in reversed(classes):
