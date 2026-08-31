@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import struct
 from .constants import PROTOCOL_MAX_MESSAGE_SIZE, PROTOCOL_MAX_FILE_SIZE, FILE_TRANSFER_CHUNK_SIZE
 
@@ -10,6 +11,17 @@ class ProtocolError(Exception):
 def error_response(code, message):
 	"""Build a structured error without local filesystem details"""
 	return {'status': 'error', 'code': code, 'message': message}
+
+def describe_error(error):
+	"""Return a short, path-free description of an exception for remote responses"""
+	if isinstance(error, OSError) and error.strerror:
+		return error.strerror
+	text = str(error).strip()
+	if not text:
+		return type(error).__name__
+	# Never leak local filesystem layout back to the peer
+	text = re.sub(r'(?:[A-Za-z]:)?[\\/](?:[^\\/\s]+[\\/])*[^\\/\s]*', '[path]', text)
+	return text.strip() or type(error).__name__
 
 def validate_message(msg, schema):
 	"""Check that msg contains all required fields with the correct types.
@@ -51,6 +63,15 @@ def recv_exact(sock, byte_count):
 		chunks.append(chunk)
 		remaining -= len(chunk)
 	return b''.join(chunks)
+
+def discard_exact(sock, byte_count):
+	"""Read and discard exactly byte_count bytes so the message stream stays framed"""
+	remaining = max(0, int(byte_count))
+	while remaining > 0:
+		chunk = sock.recv(min(remaining, FILE_TRANSFER_CHUNK_SIZE))
+		if not chunk:
+			raise ProtocolError("Connection closed")
+		remaining -= len(chunk)
 
 def send_message(sock, message):
 	"""Send a bounded length-prefixed JSON message"""
@@ -94,18 +115,24 @@ def send_file(sock, file_path, file_size=None, should_cancel=None):
 			bytes_sent += len(chunk)
 
 def recv_file(sock, target_file_path, file_size, should_cancel=None):
-	"""Receive a bounded file payload into a temporary sibling path"""
+	"""Receive a bounded file payload into a temporary sibling path.
+
+	The announced payload is always consumed, even when the local write fails, so the
+	caller can report the real error over a still-framed connection.
+	"""
 	file_size = validate_file_size(file_size)
 	temp_file_path = f"{target_file_path}.part"
 	bytes_received = 0
+	cancelled = False
 	try:
 		with open(temp_file_path, 'wb') as f:
 			while bytes_received < file_size:
 				if should_cancel and should_cancel():
+					cancelled = True
 					raise ProtocolError("File transfer cancelled")
 				chunk = recv_exact(sock, min(FILE_TRANSFER_CHUNK_SIZE, file_size - bytes_received))
-				f.write(chunk)
 				bytes_received += len(chunk)
+				f.write(chunk)
 		os.replace(temp_file_path, target_file_path)
 	except Exception:
 		try:
@@ -113,4 +140,9 @@ def recv_file(sock, target_file_path, file_size, should_cancel=None):
 				os.remove(temp_file_path)
 		except OSError:
 			pass
+		if not cancelled:
+			try:
+				discard_exact(sock, file_size - bytes_received)
+			except Exception:
+				pass
 		raise

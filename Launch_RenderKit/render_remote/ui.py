@@ -655,7 +655,8 @@ def sync_project_inputs_to_target(target_node, project_cache_name, project_root,
 		'deleted': 0,
 		'delete_total': len(delete_paths),
 		'failed_uploads': [],
-		'failed_deletes': []
+		'failed_deletes': [],
+		'upload_error': ""
 	}
 
 	if upload_paths and status_callback:
@@ -665,7 +666,9 @@ def sync_project_inputs_to_target(target_node, project_cache_name, project_root,
 		raise_if_workflow_cancelled(cancel_event)
 		local_file_path = resolve_under_root(project_root, relative_path)
 		if not os.path.exists(local_file_path):
+			print(f"File sync skipped (local file missing): {relative_path}")
 			result['failed_uploads'].append(relative_path)
+			result['upload_error'] = result['upload_error'] or "Local file missing"
 			continue
 
 		success = network_manager.sync_file_to_remote(
@@ -683,6 +686,7 @@ def sync_project_inputs_to_target(target_node, project_cache_name, project_root,
 			result['uploaded'] += 1
 		else:
 			result['failed_uploads'].append(relative_path)
+			result['upload_error'] = result['upload_error'] or str(network_manager.last_error or "Unknown error")
 		raise_if_workflow_cancelled(cancel_event)
 
 	if delete_paths:
@@ -1170,7 +1174,8 @@ class REMOTERENDER_OT_SyncFiles(Operator):
 
 					if sync_result['failed_uploads'] or sync_result['failed_deletes']:
 						props.remote_sync_status = 'synced_with_errors'
-						props.remote_sync_detail = detail
+						reason = sync_result.get('upload_error')
+						props.remote_sync_detail = f"{detail} - {sanitize_ui_message(reason)}" if reason else detail
 					else:
 						props.remote_sync_status = 'complete'
 						props.remote_sync_detail = ""
@@ -1280,7 +1285,8 @@ class REMOTERENDER_OT_StartRemoteRender(Operator):
 				raise_if_workflow_cancelled(cancel_event)
 
 				if sync_result['failed_uploads']:
-					raise Exception(f"Failed to sync {len(sync_result['failed_uploads'])} input files")
+					reason = sync_result.get('upload_error') or "Unknown error"
+					raise Exception(f"Failed to sync {len(sync_result['failed_uploads'])} input files: {reason}")
 
 				if sync_result['failed_deletes']:
 					raise Exception(f"Failed to delete {len(sync_result['failed_deletes'])} stale remote inputs")

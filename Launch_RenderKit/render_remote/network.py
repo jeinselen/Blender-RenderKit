@@ -16,8 +16,9 @@ from .constants import (ADDON_PACKAGE, ADDON_VERSION, DISCOVERY_REPLY_TIMEOUT, C
                         default_remote_cache_directory)
 from .paths import (PathSecurityError, normalize_relative_path, resolve_under_root,
                     is_reserved_input_manifest_path)
-from .protocol import (ProtocolError, error_response, validate_message, validate_file_size,
-                       send_message, recv_message, send_file, recv_file)
+from .protocol import (ProtocolError, error_response, describe_error, validate_message,
+                       validate_file_size, send_message, recv_message, send_file, recv_file,
+                       discard_exact)
 from .auth import SecureConnection
 from .file_sync import file_sync_manager
 
@@ -570,6 +571,7 @@ class NetworkManager:
 
 		auth_error = self._require_authenticated(message, addr)
 		if auth_error:
+			self._discard_message_payload(message, client_sock)
 			return auth_error
 
 		if msg_type == 'connection_test':
@@ -607,6 +609,15 @@ class NetworkManager:
 
 		else:
 			return error_response('unknown_message_type', 'Unknown message type')
+
+	def _discard_message_payload(self, message, client_sock):
+		"""Consume an announced file payload so an early error keeps the stream framed"""
+		if message.get('type') != 'sync_file':
+			return
+		try:
+			discard_exact(client_sock, validate_file_size(message.get('file_size', 0)))
+		except Exception:
+			pass
 
 	def _handle_auth_challenge(self, message, addr):
 		"""Create a challenge for passcode proof authentication"""
@@ -791,18 +802,21 @@ class NetworkManager:
 
 	def _handle_sync_file(self, message, client_sock):
 		"""Handle file synchronization request"""
+		file_size = 0
+		payload_pending = False
 		try:
 			project_name = message.get('project_name', 'default')
 			file_path = message.get('file_path')
 			file_size = validate_file_size(message.get('file_size', 0))
+			payload_pending = True
 			manifest_entry = file_sync_manager.sanitize_manifest_entry(message.get('manifest_entry', {}))
 
 			if not file_path:
-				return error_response('invalid_request', 'File path required')
+				raise ValueError("File path required")
 
 			relative_path = normalize_relative_path(file_path)
 			if is_reserved_input_manifest_path(relative_path):
-				return error_response('invalid_path', 'Invalid file path')
+				raise PathSecurityError("Reserved input manifest path")
 
 			project_cache_dir, _project_id = self._get_project_cache_dir(project_name)
 			target_file_path = resolve_under_root(project_cache_dir, relative_path)
@@ -810,6 +824,8 @@ class NetworkManager:
 			# Create directory if needed
 			os.makedirs(os.path.dirname(target_file_path), exist_ok=True)
 
+			# recv_file always consumes the announced payload, even if the local write fails
+			payload_pending = False
 			recv_file(client_sock, target_file_path, file_size)
 
 			try:
@@ -829,14 +845,28 @@ class NetworkManager:
 
 			return {'status': 'success', 'message': 'File received'}
 
-		except PathSecurityError:
-			return error_response('invalid_path', 'Invalid file path')
+		except PathSecurityError as e:
+			print(f"File sync rejected: {e}")
+			response = error_response('invalid_path', 'Invalid file path')
 		except ProtocolError as e:
 			print(f"File sync protocol failed: {e}")
-			return error_response('protocol_error', str(e))
+			response = error_response('protocol_error', str(e))
+		except ValueError as e:
+			print(f"File sync rejected: {e}")
+			response = error_response('invalid_request', describe_error(e))
 		except Exception as e:
 			print(f"File sync failed: {e}")
-			return error_response('file_sync_failed', 'File sync failed')
+			response = error_response('file_sync_failed', f"File sync failed on target: {describe_error(e)}")
+
+		# Drain the payload the source is still sending so it receives this error
+		# instead of a broken pipe from a connection closed mid-transfer.
+		if payload_pending:
+			try:
+				discard_exact(client_sock, file_size)
+			except Exception:
+				pass
+
+		return response
 
 	def _handle_delete_obsolete_inputs(self, message):
 		"""Delete stale target inputs that are owned by the stored input manifest"""
@@ -1213,9 +1243,12 @@ class NetworkManager:
 
 	def sync_file_to_remote(self, ip, port, auth_token, project_name, file_path, local_file_path, manifest_entry=None, cancel_event=None):
 		"""Sync a file to remote node"""
+		self.last_error = ""
 		try:
 			relative_path = normalize_relative_path(file_path)
 			if is_reserved_input_manifest_path(relative_path):
+				self.last_error = "Reserved input manifest path"
+				print(f"File sync skipped (reserved path): {relative_path}")
 				return False
 			file_size = validate_file_size(os.path.getsize(local_file_path))
 			manifest_entry = file_sync_manager.sanitize_manifest_entry(manifest_entry or {})
@@ -1236,10 +1269,16 @@ class NetworkManager:
 				send_file(sock, local_file_path, file_size, should_cancel=should_cancel)
 				response = recv_message(sock)
 
-				return response.get('status') == 'success'
+				if response.get('status') == 'success':
+					return True
+
+				self.last_error = str(response.get('message') or response.get('code') or 'Unknown error')
+				print(f"File sync rejected by target for {relative_path}: {self.last_error}")
+				return False
 
 		except Exception as e:
-			print(f"File sync failed: {e}")
+			self.last_error = str(e)
+			print(f"File sync failed for {file_path}: {e}")
 			return False
 
 	def delete_obsolete_inputs(self, ip, port, auth_token, project_name, paths):
