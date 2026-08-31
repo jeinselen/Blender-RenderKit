@@ -89,7 +89,8 @@ def send_pushover(subject, message):
 
 def voice_say(message):
 	# This can be expanded to support other systems if needed, but right now it's MacOS exclusive
+	# Pass arguments as a list (no shell) so the message can't break the command or freeze on a shell
 	try:
-		subprocess.Popen('say "' + message + '"', shell=True)
+		subprocess.Popen(['say', message])
 	except Exception as exc:
-		print(str(exc) + " | Error in Render Kit Notifications: failed to send Pushover notification")
+		print(str(exc) + " | Error in Render Kit Notifications: failed to announce voice notification")

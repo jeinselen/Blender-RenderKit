@@ -101,25 +101,33 @@ def resolveMarker(scene, scene_frame, spec):
 # 	•Replaces {serial} only if valid 0+ integer is provided
 
 def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
-	context = bpy.context
-	view_layer = context.view_layer
-#	scene = context.scene
+	# Resolve the render engine without depending on bpy.context to help prevent potential access errors
+	render_engine = scene.render.engine
+	
+	# Fall back to the scene's first view layer if context view layer isn't accessible via bpy.context
+	try:
+		view_layer = bpy.context.view_layer
+	except (AttributeError, RuntimeError):
+		view_layer = None
+	if view_layer is None or view_layer.id_data is not scene:
+		view_layer = scene.view_layers[0] if len(scene.view_layers) else None
+	
 	settings = scene.render_kit_settings
 	
 	# Get render engine feature sets
-	if bpy.context.engine == 'BLENDER_WORKBENCH':
+	if render_engine == 'BLENDER_WORKBENCH':
 		renderEngine = 'Workbench'
 		renderDevice = 'GPU'
 		renderSamples = scene.display.render_aa
 		renderFeatures = scene.display.shading.light.title().replace("Matcap", "MatCap") + '+' + scene.display.shading.color_type.title()
 	
-	elif bpy.context.engine == 'HYDRA_STORM':
+	elif render_engine == 'HYDRA_STORM':
 		renderEngine = 'HydraStorm'
 		renderDevice = 'GPU'
 		renderSamples = str(scene.hydra_storm.final.max_lights)
 		renderFeatures = str(scene.hydra_storm.final.volume_raymarching_step_size) + '+' + str(scene.hydra_storm.final.volume_raymarching_step_size_lighting) + '+' + str(scene.hydra_storm.final.volume_max_texture_memory_per_field)
 	
-	elif bpy.context.engine in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT'):
+	elif render_engine in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT'):
 		renderEngine = 'Eevee'
 		renderDevice = 'GPU'
 		
@@ -179,7 +187,7 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 		else:
 			renderFeatures = 'NoRT'
 	
-	elif bpy.context.engine == 'CYCLES':
+	elif render_engine == 'CYCLES':
 		renderEngine = 'Cycles'
 		renderDevice = scene.cycles.device
 		# Add compute device type if GPU is enabled
@@ -188,7 +196,7 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 		renderSamples = str(round(scene.cycles.adaptive_threshold, 4)) + '+' + str(scene.cycles.samples) + '+' + str(scene.cycles.adaptive_min_samples)
 		renderFeatures = str(scene.cycles.max_bounces) + '+' + str(scene.cycles.diffuse_bounces) + '+' + str(scene.cycles.glossy_bounces) + '+' + str(scene.cycles.transmission_bounces) + '+' + str(scene.cycles.volume_bounces) + '+' + str(scene.cycles.transparent_max_bounces)
 	
-	elif bpy.context.engine == 'RPR':
+	elif render_engine == 'RPR':
 		renderEngine = 'ProRender'
 		# Compile array of enabled devices
 		renderDevicesArray = []
@@ -201,7 +209,7 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 		renderSamples = str(scene.rpr.limits.min_samples) + '+' + str(scene.rpr.limits.max_samples) + '+' + str(round(scene.rpr.limits.noise_threshold, 4))
 		renderFeatures = str(scene.rpr.max_ray_depth) + '+' + str(scene.rpr.diffuse_depth) + '+' + str(scene.rpr.glossy_depth) + '+' + str(scene.rpr.refraction_depth) + '+' + str(scene.rpr.glossy_refraction_depth) + '+' + str(scene.rpr.shadow_depth)
 	
-	elif bpy.context.engine == 'LUXCORE':
+	elif render_engine == 'LUXCORE':
 		renderEngine = 'LuxCore'
 		renderDevice = 'CPU' if scene.luxcore.config.device == 'CPU' else 'GPU'
 		# Samples returns the halt conditions for time, samples, and/or noise threshold
@@ -227,14 +235,14 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 			renderFeatures += '+' + str(scene.luxcore.denoiser.type)
 	
 	else:
-		renderEngine = bpy.context.engine
+		renderEngine = render_engine
 		renderDevice = 'unknown'
 		renderSamples = 'unknown'
 		renderFeatures = 'unknown'
 	
 	# Get conditional project variables Item > Material > Node
 	projectItem = projectMaterial = projectNode = 'none'
-	if view_layer.objects.active:
+	if view_layer and view_layer.objects.active:
 		# Set active object
 		obj = view_layer.objects.active
 		
@@ -295,8 +303,17 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 	# Project variables
 	string = string.replace("{project}", os.path.splitext(os.path.basename(bpy.data.filepath))[0])
 	string = string.replace("{scene}", scene.name)
-	string = string.replace("{viewlayer}", view_layer.name)
-	string = string.replace("{collection}", settings.batch_collection_name if len(settings.batch_collection_name) > 0 else bpy.context.collection.name)
+	if view_layer:
+		string = string.replace("{viewlayer}", view_layer.name)
+	# Active collection fallback if bpy.context is unavailable inside a handler
+	if len(settings.batch_collection_name) > 0:
+		collection_name = settings.batch_collection_name
+	else:
+		try:
+			collection_name = bpy.context.collection.name
+		except (AttributeError, RuntimeError):
+			collection_name = scene.collection.name
+	string = string.replace("{collection}", collection_name)
 	string = string.replace("{camera}", scene.camera.name if scene.camera else 'none')
 	string = string.replace("{object}", "{item}") # Alternate variable naming convention
 	string = string.replace("{item}", projectItem)
@@ -310,7 +327,7 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 	
 	
 	# Image variables
-	sceneOverride = scene.render.image_settings if bpy.context.scene.render.image_settings.color_management == "OVERRIDE" else scene
+	sceneOverride = scene.render.image_settings if scene.render.image_settings.color_management == "OVERRIDE" else scene
 	string = string.replace("{display}", sceneOverride.display_settings.display_device.replace(" ", "").replace(".", ""))
 	string = string.replace("{space}", sceneOverride.view_settings.view_transform.replace(" ", ""))
 	string = string.replace("{look}", sceneOverride.view_settings.look.replace(" ", "").replace("AgX-", "").replace("FalseColor-", ""))

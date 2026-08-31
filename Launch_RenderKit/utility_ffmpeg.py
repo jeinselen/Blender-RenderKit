@@ -8,6 +8,7 @@ from re import sub
 
 # Local imports
 from .render_variables import replaceVariables
+from . import utility_data
 
 FFMPEG_FORMATS = (
 	'BMP',
@@ -18,7 +19,11 @@ FFMPEG_FORMATS = (
 	'TIFF')
 
 def process_ffmpeg(scene, render_path='', render_time=-1):
-	prefs = bpy.context.preferences.addons[__package__].preferences
+	# Use preferences cached at render_init to avoid bpy.context access mid-render;
+	# process_ffmpeg is called from the render_post handler during the render loop
+	prefs = utility_data.get_prefs()
+	if prefs is None:
+		prefs = bpy.context.preferences.addons[__package__].preferences
 #	scene = bpy.context.scene
 	settings = scene.render_kit_settings
 	format_compatible = True if scene.render.image_settings.file_format in FFMPEG_FORMATS else False

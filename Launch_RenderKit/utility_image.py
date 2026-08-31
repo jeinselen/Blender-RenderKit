@@ -8,6 +8,7 @@ import traceback
 
 # Local imports
 from .render_variables import replaceVariables
+from . import utility_data
 
 # Image extension list (used when generating serial numbers based on existing files)
 IMAGE_EXTENSIONS = (
@@ -27,7 +28,11 @@ IMAGE_EXTENSIONS = (
 # Multilayer EXR files are not supported via the Python API - https://developer.blender.org/T71087
 
 def save_image(scene, render_time=-1.0, serial=-1):
-	prefs = bpy.context.preferences.addons[__package__].preferences
+	# Use preferences cached at render_init to avoid bpy.context access in the
+	# render_complete handler; fall back to a direct lookup outside a render
+	prefs = utility_data.get_prefs()
+	if prefs is None:
+		prefs = bpy.context.preferences.addons[__package__].preferences
 #	scene = bpy.context.scene
 	settings = scene.render_kit_settings
 	
