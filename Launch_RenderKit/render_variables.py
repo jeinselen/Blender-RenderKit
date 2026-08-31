@@ -7,13 +7,15 @@ import os
 
 # Variable data
 import platform
-from re import sub
+from re import sub, compile
 
 # Internal imports
 from .utility_time import secondsToStrings
 from . import utility_panel
 
-
+# Matches {marker} and {marker:...} tokens after unescaping (single braces)
+# Group 1 is the raw spec after the first colon (or None for a bare {marker})
+markerToken = compile(r'\{marker(?::([^}]*))?\}')
 
 # Available variables
 # Includes both headers (string starting with "title,") and variables (string with brackets, commas segment multi-variable lines)
@@ -28,8 +30,6 @@ variableArray = ["title,Project,SCENE_DATA",
 				"title,Identifier,COPY_ID",
 					"{{date}}", "{{y}},{{m}},{{d}}", "{{time}}", "{{H}},{{M}},{{S}}", "{{serial}}", "{{frame}}", "{{batch}}",
 				]
-
-
 
 # Available values
 # Includes both headers (string starting with "title,") and value properties (string with brackets)
@@ -48,6 +48,52 @@ valueName = "RenderKit_Value_"
 
 
 ###########################################################################
+# Marker variable resolver
+# 	•spec is the raw text after the first colon, or None for a bare {marker} variable
+# 	•NEXT and CAM are reserved case-sensitive keywords (look ahead / require camera)
+# 	•any other token filters results with first occurrence stripped from the returned marker name
+# 	•prefix a filter with = to use it as a filter even when it collides with a keyword {marker:=CAM}
+# 	•keywords/filter can be stacked in any order; if multiple filters are given, the last one wins
+# Data reads only (marker.frame/.camera/.name) — no operators or context access
+
+def resolveMarker(scene, scene_frame, spec):
+	marker_next = False
+	marker_cam = False
+	marker_contains = ''
+	if spec:
+		for token in spec.split(':'):
+			if token.startswith('='): # Force string filter (=CAM matches marker names containing "CAM")
+				marker_contains = token[1:]
+			elif token == 'NEXT':
+				marker_next = True
+			elif token == 'CAM':
+				marker_cam = True
+			elif token: # Non-empty, non-keyword token is a substring filter
+				marker_contains = token
+	
+	nearest_name = 'none'
+	nearest_frame = 1000000000 if marker_next else -1000000000
+	for marker in scene.timeline_markers:
+		if marker_next:
+			if marker.frame < scene_frame or marker.frame >= nearest_frame:
+				continue
+		else:
+			if marker.frame > scene_frame or marker.frame <= nearest_frame:
+				continue
+		if marker_cam and not marker.camera:
+			continue
+		if marker_contains and marker_contains not in marker.name:
+			continue
+		nearest_frame = marker.frame
+		nearest_name = marker.name
+	
+	# Strip the filter string from the resulting marker name (only first occurrence in name)
+	if marker_contains and nearest_name != 'none':
+		nearest_name = nearest_name.replace(marker_contains, '', 1)
+	return nearest_name
+
+
+
 # Variable replacement function
 # •Prepopulate data that requires more logic
 # •Replace all variables
@@ -129,7 +175,6 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 				renderFeatures += '+' + str("%.2f" % scene.eevee.fast_gi_quality)
 				renderFeatures += '+' + str("%.2f" % scene.eevee.fast_gi_distance) + 'm'
 				renderFeatures += '+' + str("%.2f" % scene.eevee.fast_gi_thickness_near) + 'm'
-				renderFeatures += '+' + str("%.2f" % (scene.eevee.fast_gi_thickness_far * 57.29577951)) + 'd'
 				renderFeatures += '+' + str("%.2f" % scene.eevee.fast_gi_bias)
 		else:
 			renderFeatures = 'NoRT'
@@ -235,24 +280,6 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 	# Get current frame
 	scene_frame = scene.frame_current
 	
-	# Get marker names if markers exist
-	markerName = 'none'
-	if len(scene.timeline_markers) > 0:
-		if settings.output_marker_direction == 'PREV':
-			# Find closest marker at or before current frame
-			frame = -100000
-			for marker in scene.timeline_markers:
-				if marker.frame <= scene_frame and marker.frame > frame:
-					frame = marker.frame
-					markerName = marker.name
-		else:
-			# Find closest marker at or following current frame
-			frame = 100000
-			for marker in scene.timeline_markers:
-				if marker.frame >= scene_frame and marker.frame < frame:
-					frame = marker.frame
-					markerName = marker.name
-	
 	# Get output serial number if not provided
 	if serial < 0:
 		serial = settings.output_file_serial
@@ -277,7 +304,8 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 	string = string.replace("{node}", projectNode)
 	if len(socket) > 0: # Only enabled if a value is supplied
 		string = string.replace("{socket}", str(socket))
-	string = string.replace("{marker}", markerName)
+	if len(scene.timeline_markers) > 0: # Only enabled if one or more timeline markers exist
+		string = markerToken.sub(lambda mt: resolveMarker(scene, scene_frame, mt.group(1)), string)
 	
 	
 	
@@ -681,13 +709,6 @@ def renderkit_variable_ui(layout, context, paths="", postrender=True, noderender
 			input.prop(settings, 'file_serial', text='serial')
 	else:
 		input.prop(settings, 'output_file_serial', text='serial')
-	
-	# Local project marker direction
-	option = bar.column()
-	if not '{marker}' in paths:
-		option.active = False
-		option.enabled = False
-	option.prop(settings, 'output_marker_direction', text='')
 
 
 

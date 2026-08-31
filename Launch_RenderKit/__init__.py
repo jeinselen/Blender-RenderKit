@@ -791,14 +791,6 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	output_file_serial: IntProperty(
 		name="Serial Number",
 		description="Current serial number, automatically increments with every render")
-	output_marker_direction: EnumProperty(
-		name='Marker Direction',
-		description='Use previous or next marker name for the {marker} variable',
-		items=[
-			('PREV', 'Previous Marker', 'Look behind: the nearest marker before the current frame number'),
-			('NEXT', 'Next Marker', 'Look ahead; the nearest marker after the current frame number'),
-			],
-		default='NEXT')
 	
 	# FFmpeg image sequence compilation
 	autosave_video_render_path: StringProperty(
