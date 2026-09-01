@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 id = "Launch_Render_Kit"
 name = "Launch Render Kit"
-version = "0.2.8"
+version = "0.2.9"
 tagline = "Render variables, video compression, autosaving, proxy, and render region controls"
 maintainer = "John Einselen <jeinselen@gmail.com>"
 website = "https://github.com/jeinselen/Blender-RenderKit"
@@ -44,6 +44,6 @@ license = ["SPDX:GPL-3.0-or-later"]
 ## For longer explanations use the documentation or detail page.
 
 [permissions]
-network = "Discovery and render coordination with other Blender instances on the LAN"
+network = "Discovery and render coordination with other Blender instances on the LAN, sending Pushover notifications"
 files = "Saving videos, incremental images, and render time logs"
 clipboard = "Copy and paste output variables"

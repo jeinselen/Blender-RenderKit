@@ -107,6 +107,11 @@ class RenderManager:
 		command = [
 			blender_binary,
 			'--background',
+			# Never auto-run Python embedded in a peer-supplied .blend (registered/auto-run
+			# text blocks, load handlers, driver expressions). A synced blend is untrusted
+			# input from another LAN node, and the renderer never needs its scripts to run.
+			# This flag must precede the blend file argument to take effect.
+			'--disable-autoexec',
 			blend_file_path,
 		]
 

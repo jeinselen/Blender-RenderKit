@@ -113,7 +113,7 @@ def _render_kit_end(scene):
 			save_image(scene=scene, render_time=render_time)
 	
 	# Render complete notifications
-	if prefs.email_enable or prefs.pushover_enable or prefs.voice_enable:
+	if prefs.pushover_enable or prefs.voice_enable:
 		render_notifications(scene, render_time)
 	
 	# Increment the output serial number if it was used in any output path

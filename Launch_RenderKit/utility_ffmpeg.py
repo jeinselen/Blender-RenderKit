@@ -43,126 +43,108 @@ def process_ffmpeg(scene, render_path='', render_time=-1):
 			absolute_path = sub(r'#+(?!.*#)', "*", absolute_path)
 		else:
 			absolute_path += "*"
-		# Create input image glob pattern
-		glob_pattern = '-pattern_type glob -i "' + absolute_path + scene.render.file_extension + '"'
-		# Create floating point FPS value
-		fps_float = '-r ' + str(scene.render.fps / scene.render.fps_base)
+		
+		# Input image glob pattern (passed to FFmpeg as a single argument)
+		input_glob = absolute_path + scene.render.file_extension
+		
+		# Floating point FPS value
+		fps_value = str(scene.render.fps / scene.render.fps_base)
+		
+		# Resolve a configured output template to an absolute path and ensure its folder exists
+		# Returns None when the template is effectively empty (nothing to write)
+		def prepare_output_path(path_template):
+			if len(path_template) <= 1:
+				return None
+			# Replace dynamic variables
+			output_path = replaceVariables(scene, path_template, render_time=render_time)
+			# Convert relative path into absolute path for Python and CLI compatibility
+			output_path = bpy.path.abspath(output_path)
+			# Create the project subfolder if it doesn't already exist
+			output_dir = sub(r'[^/]*$', "", output_path)
+			if output_dir and not os.path.exists(output_dir):
+				os.makedirs(output_dir)
+			return output_path
 		
 		# ProRes output
 		if settings.autosave_video_prores:
-			# Set FFmpeg processing to true so the Image View window can display status
-			if len(settings.autosave_video_prores_path) > 1:
-				# Replace dynamic variables
-				output_path = replaceVariables(scene, settings.autosave_video_prores_path, render_time=render_time)
-				# Convert relative path into absolute path for Python and CLI compatibility
-				output_path = bpy.path.abspath(output_path)
-				# Create the project subfolder if it doesn't already exist
-				output_dir = sub(r'[^/]*$', "", output_path)
-				if not os.path.exists(output_dir):
-					os.makedirs(output_dir)
-				# Wrap with FFmpeg settings
-				output_path = '-y "' + output_path + '"'
-			
-			# FFmpeg location
-			ffmpeg_command = ffmpeg_location
-			# Frame rate
-			ffmpeg_command += ' ' + fps_float
-			# Image sequence pattern
-			ffmpeg_command += ' ' + glob_pattern
-			# ProRes format
-			ffmpeg_command += ' -c:v prores -pix_fmt yuv422p10le'
-			# ProRes profile (Proxy, LT, 422 HQ)
-			ffmpeg_command += ' -profile:v ' + str(settings.autosave_video_prores_quality)
-			# Final output settings
-			ffmpeg_command += ' -vendor apl0 -an -sn'
-			# Output file path
-			ffmpeg_command += ' ' + output_path + '.mov'
-			# Remove any accidental double+ spaces
-			ffmpeg_command = sub(r'\s{2,}', " ", ffmpeg_command)
-			
-			# Print command to the terminal
-			print(f'FFmpeg ProRes command: {ffmpeg_command}')
-			
-			# Run FFmpeg command
-			try:
-				subprocess.Popen(ffmpeg_command, shell=True)
-			except Exception as exc:
-				print(str(exc) + " | Error in Render Kit: failed to process FFmpeg ProRes command")
+			output_path = prepare_output_path(settings.autosave_video_prores_path)
+			if output_path is not None:
+				ffmpeg_command = [
+					ffmpeg_location,
+					'-r', fps_value,
+					'-pattern_type', 'glob', '-i', input_glob,
+					'-c:v', 'prores', '-pix_fmt', 'yuv422p10le',
+					# ProRes profile (Proxy, LT, 422 HQ)
+					'-profile:v', str(settings.autosave_video_prores_quality),
+					'-vendor', 'apl0', '-an', '-sn',
+					'-y', output_path + '.mov',
+				]
+				
+				# Print command to the terminal
+				print(f'FFmpeg ProRes command: {ffmpeg_command}')
+				
+				# Run FFmpeg command (no shell)
+				try:
+					subprocess.Popen(ffmpeg_command)
+				except Exception as exc:
+					print(str(exc) + " | Error in Render Kit: failed to process FFmpeg ProRes command")
 		
 		# MP4 output
 		if settings.autosave_video_mp4:
-			# Set FFmpeg processing to true so the Image View window can display status
-			if len(settings.autosave_video_mp4_path) > 1:
-				# Replace dynamic variables
-				output_path = replaceVariables(scene, settings.autosave_video_mp4_path, render_time=render_time)
-				# Convert relative path into absolute path for Python and CLI compatibility
-				output_path = bpy.path.abspath(output_path)
-				# Create the project subfolder if it doesn't already exist
-				output_dir = sub(r'[^/]*$', "", output_path)
-				if not os.path.exists(output_dir):
-					os.makedirs(output_dir)
-				# Wrap with FFmpeg settings
-				output_path = '-y "' + output_path + '"'
-			
-			# FFmpeg location
-			ffmpeg_command = ffmpeg_location
-			# Frame rate
-			ffmpeg_command += ' ' + fps_float
-			# Image sequence pattern
-			ffmpeg_command += ' ' + glob_pattern
-			# MP4 format
-			ffmpeg_command += ' -c:v libx264 -preset slow'
-			# MP4 quality (0-51 from highest to lowest quality)
-			ffmpeg_command += ' -crf ' + str(settings.autosave_video_mp4_quality)
-			# Final output settings
-			ffmpeg_command += ' -pix_fmt yuv420p -movflags rtphint'
-			# Output file path
-			ffmpeg_command += ' ' + output_path + '.mp4'
-			# Remove any accidental double+ spaces
-			ffmpeg_command = sub(r'\s{2,}', " ", ffmpeg_command)
-			
-			# Print command to the terminal
-			print(f'FFmpeg MP4 command: {ffmpeg_command}')
-			
-			# Run FFmpeg command
-			try:
-				subprocess.Popen(ffmpeg_command, shell=True)
-			except Exception as exc:
-				print(str(exc) + " | Error in Render Kit: failed to process FFmpeg MP4 command")
+			output_path = prepare_output_path(settings.autosave_video_mp4_path)
+			if output_path is not None:
+				ffmpeg_command = [
+					ffmpeg_location,
+					'-r', fps_value,
+					'-pattern_type', 'glob', '-i', input_glob,
+					'-c:v', 'libx264', '-preset', 'slow',
+					# MP4 quality (0-51 from highest to lowest quality)
+					'-crf', str(settings.autosave_video_mp4_quality),
+					'-pix_fmt', 'yuv420p', '-movflags', 'rtphint',
+					'-y', output_path + '.mp4',
+				]
+				
+				# Print command to the terminal
+				print(f'FFmpeg MP4 command: {ffmpeg_command}')
+				
+				# Run FFmpeg command (no shell)
+				try:
+					subprocess.Popen(ffmpeg_command)
+				except Exception as exc:
+					print(str(exc) + " | Error in Render Kit: failed to process FFmpeg MP4 command")
 		
-		# Custom output
+		# Custom argument list
 		if settings.autosave_video_custom:
-			# Set FFmpeg processing to true so the Image View window can display status
-			if len(settings.autosave_video_custom_path) > 1:
-				# Replace dynamic variables
-				output_path = replaceVariables(scene, settings.autosave_video_custom_path, render_time=render_time)
-				# Convert relative path into absolute path for Python and CLI compatibility
-				output_path = bpy.path.abspath(output_path)
-				# Create the project subfolder if it doesn't already exist
-				output_dir = sub(r'[^/]*$', "", output_path)
-				if not os.path.exists(output_dir):
-					os.makedirs(output_dir)
-				# Wrap with FFmpeg settings
-				output_path = '-y "' + output_path + '"'
-			
-			# FFmpeg location
-			ffmpeg_command = ffmpeg_location + ' ' + settings.autosave_video_custom_command
-			# Replace variables
-			ffmpeg_command = ffmpeg_command.replace("{{fps}}", fps_float)
-			ffmpeg_command = ffmpeg_command.replace("{{input}}", glob_pattern)
-			ffmpeg_command = ffmpeg_command.replace("{{output}}", output_path)
-			# Remove any accidental double+ spaces
-			ffmpeg_command = sub(r'\s{2,}', " ", ffmpeg_command)
-			
-			# Print command to the terminal
-			print(f'FFmpeg custom command: {ffmpeg_command}')
-			
-			# Run FFmpeg command
-			try:
-				subprocess.Popen(ffmpeg_command, shell=True)
-			except Exception as exc:
-				print(str(exc) + " | Error in Render Kit: failed to process FFmpeg custom command")
-	
+			custom_command = settings.autosave_video_custom_command
+			output_path = prepare_output_path(settings.autosave_video_custom_path)
+			if output_path is None:
+				pass
+			elif "{{output}}" not in custom_command:
+				# Without an {{output}} placeholder there is no destination to write to; skip rather than run a command that produces nothing
+				print("Error in Render Kit: FFmpeg custom command has no {{output}} placeholder, skipping")
+			else:
+				# FFmpeg location, then the user template split into arguments with placeholders expanded
+				ffmpeg_command = [ffmpeg_location]
+				# Match placeholders as substrings so affixes (e.g. {{output}}_alpha.mov) are preserved,
+				# while keeping each argument as a separate list item to avoid shell interpretation
+				for token in custom_command.split():
+					if "{{fps}}" in token:
+						ffmpeg_command += ['-r', token.replace("{{fps}}", fps_value)]
+					elif "{{input}}" in token:
+						ffmpeg_command += ['-pattern_type', 'glob', '-i', token.replace("{{input}}", input_glob)]
+					elif "{{output}}" in token:
+						ffmpeg_command += ['-y', token.replace("{{output}}", output_path)]
+					else:
+						ffmpeg_command.append(token)
+				
+				# Print command to the terminal
+				print(f'FFmpeg custom command: {ffmpeg_command}')
+				
+				# Run FFmpeg command (no shell)
+				try:
+					subprocess.Popen(ffmpeg_command)
+				except Exception as exc:
+					print(str(exc) + " | Error in Render Kit: failed to process FFmpeg custom command")
 	else:
 		print("Error in Render Kit: FFmpeg check failed, the output image format may not be compatible")
 		

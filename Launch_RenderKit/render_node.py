@@ -11,7 +11,6 @@ from . import utility_data
 from . import utility_panel
 
 # ImageMagick processing
-from re import sub
 import subprocess
 
 
@@ -205,29 +204,24 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		# Process output file with ImageMagick (mip flooding)
 		if settings.node_postprocess != "NONE" and prefs.magick_exists:
 			absolute_path = bpy.path.abspath(file_path)
+			blend = settings.node_postprocess == "BLEND"
 			# Pyramid scaling reference: https://imagemagick.org/Usage/canvas/#sparse-color
 			# Mip flooding reference: https://www.artstation.com/blogs/secarri/XOBq/the-god-of-war-texture-optimization-algorithm-mip-flooding
-			magick_command = prefs.magick_location + ' "' + absolute_path + '" -channel alpha -threshold 99% +channel'
-			if settings.node_postprocess == "BLEND":
-				magick_command += r' \( +clone -filter Gaussian -resize 50% -channel alpha -threshold 1% +channel \)' * 10
-				magick_command += ' -layers RemoveDups -filter Gaussian'
-			else:
-				magick_command += r' \( +clone -filter Gaussian -resize 50% -channel alpha -threshold 12.5% +channel \)' * 10
-				magick_command += ' -layers RemoveDups -filter Point'
-			magick_command += ' -resize ' + str(settings.node_resolution_x) + 'x' + str(settings.node_resolution_y) + r'\! -reverse'
-			if settings.node_postprocess == "BLEND":
-				magick_command += ' -channel alpha -gamma 4 +channel'
-			magick_command += ' -background None -flatten -alpha off "' + absolute_path + '"'
-			
-			# Remove any accidental double spaces
-			magick_command = sub(r'\s{2,}', " ", magick_command)
-			
+			magick_command = [prefs.magick_location, absolute_path, '-channel', 'alpha', '-threshold', '99%', '+channel']
+			# Repeated pyramid-scaling group (threshold differs between blend and flood modes)
+			magick_command += ['(', '+clone', '-filter', 'Gaussian', '-resize', '50%', '-channel', 'alpha', '-threshold', '1%' if blend else '12.5%', '+channel', ')'] * 10
+			magick_command += ['-layers', 'RemoveDups', '-filter', 'Gaussian' if blend else 'Point']
+			magick_command += ['-resize', str(settings.node_resolution_x) + 'x' + str(settings.node_resolution_y) + '!', '-reverse']
+			if blend:
+				magick_command += ['-channel', 'alpha', '-gamma', '4', '+channel']
+			magick_command += ['-background', 'None', '-flatten', '-alpha', 'off', absolute_path]
+
 			# Print command to the terminal
 			print(f'ImageMagick command: {magick_command}')
 			
 			# Run ImageMagick command in a new process
 			try:
-				subprocess.Popen(magick_command, shell=True)
+				subprocess.Popen(magick_command)
 			except Exception as exc:
 				print(str(exc) + " | Error in Render Kit: failed to process ImageMagick command")
 		

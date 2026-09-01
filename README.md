@@ -72,7 +72,7 @@ This is an ongoing challenge, and will not be solved by the end of 2025. Plannin
 
 - ### Render Notifications
 
-  - Sends an email, push notification, or announces render statistics at the completion of renders over a given time limit
+  - Sends a push notification or announces render statistics at the completion of renders over a given time limit
 
 
 

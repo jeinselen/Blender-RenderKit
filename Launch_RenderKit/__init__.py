@@ -345,46 +345,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		description="Minimum rendering time required before notifications will be enabled, in seconds",
 		default=300)
 	
-	# Email notifications
-	email_enable: BoolProperty(
-		name='Email Notification',
-		description='Enable email notifications',
-		default=False)
-	email_server: StringProperty(
-		name="SMTP Server",
-		description="SMTP server address",
-		default="smtp.gmail.com",
-		maxlen=64)
-	email_port: IntProperty(
-		name="SMTP Port",
-		description="Port number used by the SMTP server",
-		default=465)
-	email_from: StringProperty(
-		name="Username",
-		description="Email address of the account emails will be sent from",
-		default="user@gmail.com",
-		maxlen=64)
-	email_password: StringProperty(
-		name="Password",
-		description="Password of the account emails will be sent from (Gmail accounts require 2FA and a custom single-use App Password)",
-		default="password",
-		subtype="PASSWORD")
-	email_to: StringProperty(
-		name="Recipients",
-		description="Comma separated list of recipient addresses, use https://freecarrierlookup.com/ to get the correct address for text messages",
-		default="email@server.com, 1234567890@carrier.net",
-		maxlen=1024)
-	email_subject: StringProperty(
-		name="Email Subject",
-		description="Text string sent as the email subject line",
-		default="{{project}} rendering completed",
-		maxlen=1024)
-	email_message: StringProperty(
-		name="Email Body",
-		description="Text string sent as the email body copy",
-		default="{{project}} rendering completed in {{rH}}:{{rM}}:{{rS}} on {{host}}",
-		maxlen=4096)
-	
 	# Pushover app notifications
 	pushover_enable: BoolProperty(
 		name='Pushover Notification',
@@ -618,44 +578,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		row1.label(text="Render Completed Notifications")
 		row1.prop(self, "minimum_time", icon="TIME")
 		
-		# Email notifications
-		grid3.prop(self, "email_enable")
-		if self.email_enable:
-			# Subgrid Layout
-			margin = grid3.row()
-			margin.separator(factor=2.0)
-			subgrid = margin.column()
-			margin.separator(factor=2.0)
-			
-			# Security Warning
-			box = subgrid.box()
-			warning = box.column(align=True)
-			warning.label(text="WARNING:")
-			warning.label(text="Blender does not encrypt settings and stores credentials as plain text,")
-			warning.label(text="account details entered here are NOT SECURED in the file system")
-			
-			# Account
-			settings1 = subgrid.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-			column1 = settings1.column(align=True)
-			column1.label(text="Server")
-			column1.prop(self, "email_server", text="", icon="EXPORT")
-			column1.prop(self, "email_port")
-			column2 = settings1.column(align=True)
-			column2.label(text="Account")
-			column2.prop(self, "email_from", text="", icon="USER")
-			column2.prop(self, "email_password", text="", icon="LOCKED")
-			
-			# Message
-			subgrid.separator(factor=0.5)
-			settings2 = subgrid.column(align=True)
-			settings2.label(text="Message")
-			settings2.prop(self, "email_to", text="", icon="USER")
-			settings2.prop(self, "email_subject", text="", icon="FILE_TEXT")
-			settings2.prop(self, "email_message", text="", icon="ALIGN_JUSTIFY")
-			
-			# Spacing
-			subgrid.separator(factor=2.0)
-		
 		# Pushover notifications
 		grid3.prop(self, "pushover_enable")
 		if self.pushover_enable:
@@ -864,7 +786,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		name="Custom FFmpeg Command",
 		description="Custom FFmpeg command line string; {{input}} {{fps}} {{output}} variables must be included, but the command path is automatically prepended",
 		default='{{fps}} {{input}} -c:v qtrle -pix_fmt argb {{output}}_alpha.mov',
-			#{{fps}} {{input}} -vf scale=-2:1080 -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -movflags +rtphint -movflags +faststart {{output}}_1080p.mp4
+			#{{fps}} {{input}} -vf scale=-2:1080 -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -movflags +rtphint+faststart {{output}}_1080p.mp4
 			#{{fps}} {{input}} -c:v hevc_videotoolbox -pix_fmt bgra -b:v 1M -alpha_quality 1 -allow_sw 1 -vtag hvc1 {{output}}_alpha.mov
 			#{{fps}} {{input}} -c:v hevc_videotoolbox -require_sw 1 -allow_sw 1 -alpha_quality 1.0 -vtag hvc1 {{output}}_alpha.mov
 			#{{fps}} {{input}} -pix_fmt yuva420p {{output}}_alpha.webm

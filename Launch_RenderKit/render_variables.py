@@ -13,6 +13,10 @@ from re import sub, compile
 from .utility_time import secondsToStrings
 from . import utility_panel
 
+# Replace characters that are unsafe in file paths, Windows is the most limited (< > : " / \ | ? *)
+def sanitiseName(name):
+	return sub(r'[<>:"/\\\|?*]+', "-", name)
+
 # Matches {marker} and {marker:...} tokens after unescaping (single braces)
 # Group 1 is the raw spec after the first colon (or None for a bare {marker})
 markerToken = compile(r'\{marker(?::([^}]*))?\}')
@@ -90,7 +94,7 @@ def resolveMarker(scene, scene_frame, spec):
 	# Strip the filter string from the resulting marker name (only first occurrence in name)
 	if marker_contains and nearest_name != 'none':
 		nearest_name = nearest_name.replace(marker_contains, '', 1)
-	return nearest_name
+	return sanitiseName(nearest_name)
 
 
 
@@ -247,14 +251,14 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 		obj = view_layer.objects.active
 		
 		# Set active object name
-		projectItem = sub(r'[<>:"/\\\|?*]+', "-", obj.name) # Sanitise the most commonly problematic filesystem characters (Microsoft Windows is just the worst)
+		projectItem = sanitiseName(obj.name)
 		
 		if obj.active_material:
 			# Set active material
 			mat = obj.active_material
 			
 			# Set active material slot name
-			projectMaterial = sub(r'[<>:"/\\\|?*]+', "-", mat.name) # Sanitised
+			projectMaterial = sanitiseName(mat.name)
 			
 			if mat.use_nodes and mat.node_tree.nodes.active:
 				# Set active node tree node
@@ -276,7 +280,7 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 				else:
 					projectNode = node.name.replace(" ", "_")
 				# Spaces are replaced with underscores only for the two naming options that are not user-defined
-				projectNode = sub(r'[<>:"/\\\|?*]+', "-", projectNode) # Sanitised
+				projectNode = sanitiseName(projectNode)
 	
 	# Set node name to the Batch Render Target if active and available
 	if settings.batch_active and settings.batch_type == 'imgs' and bpy.data.materials.get(settings.batch_images_material) and bpy.data.materials[settings.batch_images_material].node_tree.nodes.get(settings.batch_images_node):
@@ -301,10 +305,10 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 	
 	
 	# Project variables
-	string = string.replace("{project}", os.path.splitext(os.path.basename(bpy.data.filepath))[0])
-	string = string.replace("{scene}", scene.name)
+	string = string.replace("{project}", sanitiseName(os.path.splitext(os.path.basename(bpy.data.filepath))[0]))
+	string = string.replace("{scene}", sanitiseName(scene.name))
 	if view_layer:
-		string = string.replace("{viewlayer}", view_layer.name)
+		string = string.replace("{viewlayer}", sanitiseName(view_layer.name))
 	# Active collection fallback if bpy.context is unavailable inside a handler
 	if len(settings.batch_collection_name) > 0:
 		collection_name = settings.batch_collection_name
@@ -313,14 +317,14 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 			collection_name = bpy.context.collection.name
 		except (AttributeError, RuntimeError):
 			collection_name = scene.collection.name
-	string = string.replace("{collection}", collection_name)
-	string = string.replace("{camera}", scene.camera.name if scene.camera else 'none')
+	string = string.replace("{collection}", sanitiseName(collection_name))
+	string = string.replace("{camera}", sanitiseName(scene.camera.name) if scene.camera else 'none')
 	string = string.replace("{object}", "{item}") # Alternate variable naming convention
 	string = string.replace("{item}", projectItem)
 	string = string.replace("{material}", projectMaterial)
 	string = string.replace("{node}", projectNode)
 	if len(socket) > 0: # Only enabled if a value is supplied
-		string = string.replace("{socket}", str(socket))
+		string = string.replace("{socket}", sanitiseName(str(socket)))
 	if len(scene.timeline_markers) > 0: # Only enabled if one or more timeline markers exist
 		string = markerToken.sub(lambda mt: resolveMarker(scene, scene_frame, mt.group(1)), string)
 	
@@ -406,7 +410,7 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 			value = 'none'
 #		value = str(value)
 		value = f"{value}"
-		value = sub(r'[<>:"/\\\|?*]+', "-", value) # Rudimentary sanitisation, this feature is pretty insecure
+		value = sanitiseName(value)
 		return value
 	string = sub(property_pattern, get_property_value, string)
 	
