@@ -392,26 +392,29 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 	
 	
 	
-	# Value properties
-	property_pattern = r"\{\{([a-z])(\d)\}\}"
+	# Value properties (custom data stored on the scene, view layer, active object, or material)
+	# Variables have already been unescaped from {{x0}} to {x0} above, so match single braces.
+	# Reads from the scene and the resolved view_layer rather than bpy.context to stay safe
+	# inside render handlers; any lookup failure falls back to 'none' so a render never breaks.
+	property_pattern = r"\{([a-z])(\d)\}"
+	active_object = view_layer.objects.active if view_layer else None
 	def get_property_value(match):
-		type = f"{match.group(1)}"
-		property = f"{valueName}{match.group(2)}"
-		value = ""
-		if type == 's' and property in context.scene:
-			value = context.scene[property]
-		elif type == 'v' and property in context.view_layer:
-			value = context.view_layer[property]
-		elif (type == 'i' or type == 'o') and context.view_layer.objects.active and property in context.view_layer.objects.active:
-			value = context.view_layer.objects.active[property]
-		elif type == 'm' and context.view_layer.objects.active and context.view_layer.objects.active.active_material and property in context.view_layer.objects.active.active_material:
-			value = context.view_layer.objects.active.active_material[property]
-		else:
+		try:
+			kind = match.group(1)
+			property = f"{valueName}{match.group(2)}"
+			if kind == 's' and property in scene:
+				value = scene[property]
+			elif kind == 'v' and view_layer is not None and property in view_layer:
+				value = view_layer[property]
+			elif (kind == 'i' or kind == 'o') and active_object and property in active_object:
+				value = active_object[property]
+			elif kind == 'm' and active_object and active_object.active_material and property in active_object.active_material:
+				value = active_object.active_material[property]
+			else:
+				value = 'none'
+		except Exception:
 			value = 'none'
-#		value = str(value)
-		value = f"{value}"
-		value = sanitiseName(value)
-		return value
+		return sanitiseName(f"{value}")
 	string = sub(property_pattern, get_property_value, string)
 	
 	

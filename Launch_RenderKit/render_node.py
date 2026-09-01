@@ -260,7 +260,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		# Provide success feedback
 		self.report({'INFO'}, f"Node render saved to {file_path}")
 		self.show_completion_popup(context, file_path, render_time)
-		render_notifications(render_time)
+		render_notifications(scene, render_time)
 		
 		return {'FINISHED'}
 	

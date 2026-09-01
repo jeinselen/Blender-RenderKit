@@ -133,8 +133,8 @@ class RENDER_PT_autosave_video(bpy.types.Panel):
 		# Combine all used paths for variable checks
 		paths = ''
 		paths += settings.autosave_video_prores_location if settings.autosave_video_prores else ''
-		paths += settings.autosave_video_mp4_location if settings.autosave_video_prores else ''
-		paths += settings.autosave_video_custom_location if settings.autosave_video_prores else ''
+		paths += settings.autosave_video_mp4_location if settings.autosave_video_mp4 else ''
+		paths += settings.autosave_video_custom_location if settings.autosave_video_custom else ''
 		
 		# Variable list UI
 		renderkit_variable_ui(layout, context, paths=paths, postrender=True, noderender=False, autoclose=True)
