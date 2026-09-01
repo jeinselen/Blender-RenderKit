@@ -16,7 +16,6 @@ from . import render_display
 from . import render_node
 from . import render_proxy
 from . import render_region
-from . import render_remote
 from . import render_variables
 
 
@@ -140,78 +139,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			],
 		default='OFF')
 	
-	# Render Remote Preferences
-	def update_remote_enable(self, context):
-		try:
-			if self.remote_enable:
-				render_remote.register()
-			else:
-				render_remote.unregister()
-		except Exception as e:
-			print(f"Remote render enable update failed: {e}")
-
-	remote_enable: BoolProperty(
-		name='Render Remote',
-		description='Implements remote rendering on a target Blender instance over the local network',
-		default=False,
-		update=update_remote_enable)
-	
-	def update_remote_category(self, context):
-		category = bpy.context.preferences.addons[__package__].preferences.remote_category
-		render_remote.set_panel_category(category)
-	
-	remote_category: StringProperty(
-		name="3D View",
-		description="Choose a 3D view tab category for the remote render panel to be placed in, or leave empty to hide the panel",
-		default="Launch",
-		update=update_remote_category)
-	# Consider adding search_options=(list of currently available tabs) for easier operation
-	
-	# Render remote settings
-	def update_remote_passcode(self, context):
-		try:
-			if self.remote_passcode and render_remote.is_registered():
-				render_remote.network_manager.configure_authentication(self.remote_passcode)
-			elif render_remote.is_registered():
-				render_remote.shutdown(force=True)
-		except Exception as e:
-			print(f"Remote render passcode update failed: {e}")
-
-	remote_cache_directory: StringProperty(
-		name="Cache Directory",
-		description="Local directory for caching remote projects",
-		subtype='DIR_PATH',
-		options={'PATH_SUPPORTS_BLEND_RELATIVE'},
-		default=render_remote.default_remote_cache_directory()
-	)
-	remote_discovery_port: IntProperty(
-		name="Discovery Port",
-		default=5001,
-		min=1024,
-		max=65535,
-		description="Port for network discovery"
-	)
-	remote_communication_port: IntProperty(
-		name="Communication Port", 
-		default=5002,
-		min=1024,
-		max=65535,
-		description="Port for secure communication"
-	)
-	remote_passcode: StringProperty(
-		name="Authentication Passcode",
-		description="Global passcode required for connections to this computer",
-		subtype='PASSWORD',
-		default="",
-		update=update_remote_passcode
-	)
-
-	remote_manual_ip: StringProperty(name="Manual IP", description="Manually enter IP address", default="")
-	remote_manual_port: IntProperty(name="Manual Port", description="Port for manual connection", default=5002, min=1024, max=65535)
-	remote_connection_password: StringProperty(name="Connection Password", description="Password for connecting to remote node", subtype='PASSWORD', default="")
-	
-	
-	
 	########## Render Variables and Autosave ##########
 	
 	# Render variables
@@ -332,8 +259,8 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	external_log_name: StringProperty(
 		name="File Name",
 		description="Log file name; use {{project}} for per-project tracking, remove it for per-directory tracking",
-#		default="{{project}}-TotalRenderTime.txt",
 		default="RenderKit-TotalTime.txt",
+			# Alt: {{project}}-TotalRenderTime.txt
 		maxlen=4096)
 	
 	
@@ -489,7 +416,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		if self.enable_autosave_render and self.override_autosave_render:
 			# Layout within single parent grid space
 			grid1.separator()
-#			subgrid = grid1.grid_flow(row_major=True, columns=1, even_columns=True, even_rows=True, align=False)
 			subgrid = grid1.column()
 			
 			# File location
@@ -514,30 +440,6 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 				error = input.box()
 				error.label(text="Python API can only save single layer EXR files")
 				error.label(text="Report: https://developer.blender.org/T71087")
-		
-		
-		
-		########## REMOTE: Render Remote ##########
-		
-		layout.separator(factor = 2.0)
-		layout.label(text="Remote", icon="NETWORK_DRIVE") # NETWORK_DRIVE DISK_DRIVE RENDER_ANIMATION
-		grid0 = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-		
-		# Render Remote settings
-		grid0.prop(self, "remote_enable")
-		input = grid0.row()
-		if not self.remote_enable:
-			input.active = False
-			input.enabled = False
-		input.prop(self, "remote_category", text="", icon="VIEW3D")
-		if self.remote_enable:
-			subgrid = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-			subgrid.prop(self, "remote_cache_directory", text="")
-			subgrid.prop(self, "remote_passcode", text="")
-			subgrid.operator("render_remote.clear_cache", icon='TRASH')
-			subrow = subgrid.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-			subrow.prop(self, "remote_discovery_port", text="")
-			subrow.prop(self, "remote_communication_port", text="")
 		
 		
 		
@@ -678,28 +580,6 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		name="Total Render Time",
 		description="Stores the total time spent rendering in seconds",
 		default=0)
-	
-	# VARIABLES THAT CAN BE REPLACED WITH GLOBAL THREAD-SAFE DATA VALUES
-#	start_time: StringProperty(
-#		name="Render Start Date",
-#		description="Stores the date when rendering started in seconds as a string",
-#		default="")
-#	start_frame: IntProperty(
-#		name="Starting frame",
-#		description="Saves the starting frame when render begins (helps correctly estimate partial renders)",
-#		default=0)
-#	estimated_time: StringProperty(
-#		name="Estimated Render Time",
-#		description="Stores the estimated time remaining to render",
-#		default="0:00:00.00")
-#	sequence_active: BoolProperty(
-#		name="Sequence Active",
-#		description="Indicates if a sequence is being rendering to ensure FFmpeg is enabled only when more than one frame has been rendered",
-#		default=False)
-#	serial_used: BoolProperty(
-#		name="Output Serial Number Used",
-#		description="Indicates if any of the output modules use the {serial} variable",
-#		default=False)
 	
 	# Variables for output file path processing
 	output_file_path: StringProperty(
@@ -992,22 +872,9 @@ def register():
 	
 	########## Render Variables ##########
 	render_variables.register()
-		
-	########## Render Remote ##########
-	if bpy.context.preferences.addons[__package__].preferences.remote_enable:
-		try:
-			render_remote.register()
-		except Exception as e:
-			print(f"Remote render registration failed: {e}")
 
 
 def unregister():
-	########## Render Remote ##########
-	try:
-		render_remote.unregister()
-	except Exception as e:
-		print(f"Remote render unregistration failed: {e}")
-	
 	########## Render Variables ##########
 	render_variables.unregister()
 	
