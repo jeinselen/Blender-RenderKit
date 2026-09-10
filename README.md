@@ -6,20 +6,117 @@
 
 - ### Render Variables
 
-  - Adds dynamic variables to rendering output paths, including:
+  - Adds dynamic variables to rendering output paths
 
+    - Project variables:
+
+      - `{{project}}` = current project name (project must be saved for this to work)
+
+      - `{{scene}}` = active scene as defined in the UI (not rendered output)
+
+      - `{{viewlayer}}` = active view layer as defined in the UI (not rendered output)
+
+      - `{{collection}}` = active collection name (as selected in the outliner, also works with Batch Render feature)
+
+      - `{{camera}}` = active camera name (works with Batch Render feature)
+
+      - `{{item}}` = active item name (as selected in the outliner or 3D view, also works with Batch Render feature)
+    
+      - `{{material}}` = active material name of the active item (most useful in the context of the Render Node feature)
+    
+      - `{{node}}` = active node of the active material of the active item (most useful in the context of the Render Node feature)
+    
+      - `{{socket}}` = selected socket of the active node being rendered (only available when using Render Node from within the Material Editor)
+    
+      - `{{marker}}` = name of the nearest marker at or before the current frame
+        - `{{marker:NEXT}}` = name of the nearest marker at or *after* the current frame
+    
+        - `{{marker:CAM}}` = name of the nearest marker at or before the current frame *with a camera attached*
+    
+        - `{{marker:string}}` = name of the nearest marker at or before the current frame *that contains the string*
+    
+        - Stacking all three options is allowed: `{{marker:NEXT:CAM:string}}`
+    
+        - To use the reserved `NEXT` or `CAM` variables as a test string, prepend an equal sign: `{{marker:=CAM}}` (will return markers with names that contain the string "CAM" regardless of camera attachment)
+    
+    - Image variables:
+    
+      - `{{display}}` = display device set in colour management
+    
+      - `{{space}}` = view transform applied in colour management
+    
+      - `{{look}}` = look applied in colour management
+    
+      - `{{exposure}}` = scene exposure value
+    
+      - `{{gamma}}` = scene gamma value
+    
+      - `{{curves}}` = indicates if scene curves are enabled (otherwise "off")
+    
+      - `{{balance}}` = returns kelvin and tint values if scene white balance is enabled (otherwise "off")
+    
+      - `{{compositing}}` = indicates if compositing is enabled (otherwise "off")
+    
+    - Render variables:
+    
+      - `{{engine}}` = render engine (Workbench, Eeevee, Cycles, Hydra Storm, Radeon ProRender, LuxCore)
+    
+      - `{{device}}` = render device (CPU, GPU)
+    
+      - `{{samples}}` = number of samples (includes different sets of data depending on engine)
+    
+      - `{{features}}` = render engine features enabled/disabled (includes different sets of data depending on engine)
+    
+      - `{{duration}}` = total render time in seconds (only available for final outputs)
+    
+      - `{{rtime}}` = total render time in HH-MM-SS format (only available for final outputs)
+    
+      - `{{rH}}` `{{rM}}` `{{rS}}` = total render time hour, minute, or second (for custom total render time formatting)
+    
+    - System variables:
+    
+      - `{{host}}` = computer name
+    
+      - `{{processor}}` = hardware info
+    
+      - `{{platform}}` = operating system (MacOS, Linux, Windows)
+    
+      - `{{system}}` = system info
+    
+      - `{{release}}` = Blender release info
+    
+      - `{{python}}` = current Python version in Blender
+    
+      - `{{blender}}` = current Blender version
+    
+    - Identifier variables:
+    
+      - `{{date}}` = current date in YYYY-MM-DD format
+    
+      - `{{y}}` `{{m}}` `{{d}}` = the current year, month, or day (for custom date formats)
+    
+      - `{{time}}` = current time in HH-MM-SS format
+    
+      - `{{H}}` `{{M}}` `{{S}}` = the current hour, minute, or second (for custom time formats)
+    
+      - `{{serial}}` = current render serial number (increments each time a render is started)
+    
+      - `{{frame}}` = current frame being rendered (same as `####`)
+    
+      - `{{batch}}` = batch rendering index (returns 0 if not batch rendering)
+    
     - The name of the current project, scene, view layer, collection, camera, selected item, material, node, socket (for node rendering only), or closest timeline marker
-
+    
     - The selected render engine, device, samples, features, and rendering duration (in total seconds or HH:MM:SS formats)
-
+    
     - The current computer host, processor, platform, system type, OS version, Python version, and Blender version
-
+    
     - Date, time, global serial number, current frame, and batch rendering index (see below batch feature)
-
+    
       ![Screenshot-VariableList](images/Screenshot-VariableList.png)
-
-    - Custom scene, render layer, and object data values that can be set using drivers or animation data
-
+    
+    - Custom scene, render layer, and item data options are listed in a popup and a 3D view panel, with values that can be set using drivers or animation data
+    
       ![Screenshot-VariableData](images/Screenshot-VariableData.png)
 
 - ### Autosave Images

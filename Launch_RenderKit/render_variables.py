@@ -26,7 +26,7 @@ markerToken = compile(r'\{marker(?::([^}]*))?\}')
 variableArray = ["title,Project,SCENE_DATA",
 					"{{project}}", "{{scene}}", "{{viewlayer}}", "{{collection}}", "{{camera}}", "{{item}}", "{{material}}", "{{node}}", "{{socket}}", "{{marker}}",
 				"title,Image,NODE_COMPOSITING",
-					"{{display}}", "{{space}}", "{{look}}", "{{exposure}}", "{{gamma}}", "{{curves}}", "{{compositing}}",
+					"{{display}}", "{{space}}", "{{look}}", "{{exposure}}", "{{gamma}}", "{{curves}}", "{{balance}}", "{{compositing}}",
 				"title,Render,SCENE",
 					"{{engine}}", "{{device}}", "{{samples}}", "{{features}}", "{{duration}}", "{{rtime}}", "{{rH}},{{rM}},{{rS}}",
 				"title,System,DESKTOP",
@@ -337,8 +337,12 @@ def replaceVariables(scene, string, render_time=-1.0, serial=-1, socket=''):
 	string = string.replace("{look}", sceneOverride.view_settings.look.replace(" ", "").replace("AgX-", "").replace("FalseColor-", ""))
 	string = string.replace("{exposure}", str(sceneOverride.view_settings.exposure))
 	string = string.replace("{gamma}", str(sceneOverride.view_settings.gamma))
-	string = string.replace("{curves}", "Curves" if sceneOverride.view_settings.use_curve_mapping else "none")
-	string = string.replace("{compositing}", "Compositing" if scene.render.use_compositing else "none")
+	string = string.replace("{curves}", "Curves" if sceneOverride.view_settings.use_curve_mapping else "off")
+	if sceneOverride.view_settings.use_white_balance:
+		string = string.replace("{balance}", f"{int(sceneOverride.view_settings.white_balance_temperature)}K+{int(sceneOverride.view_settings.white_balance_tint)}".replace("+-", "-"))
+	else:
+		string = string.replace("{balance}", "off")
+	string = string.replace("{compositing}", "Compositing" if scene.render.use_compositing else "off")
 	
 	
 	
