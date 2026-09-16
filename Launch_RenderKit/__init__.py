@@ -16,6 +16,7 @@ from . import render_display
 from . import render_node
 from . import render_proxy
 from . import render_region
+from . import render_sync
 from . import render_variables
 
 
@@ -32,6 +33,12 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 	region_enable: BoolProperty(
 		name='Render Region',
 		description='Adds numerical render region controls to the Properties > Output > Format panel',
+		default=True)
+	
+	# Render settings synchronisation
+	sync_enable: BoolProperty(
+		name='Render Settings Sync',
+		description='Adds a panel to the Properties > Scene section for copying render and output settings from the current scene to other scenes',
 		default=True)
 	
 	# Batch rendering
@@ -375,6 +382,8 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			grid0.prop(self, "proxy_resolutionMultiplier")
 			grid0.prop(self, "proxy_format", text="")
 		
+		# Sync settings
+		grid0.prop(self, "sync_enable")
 		
 		
 		
@@ -536,6 +545,24 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 # Local project settings
 
 class RenderKitSettings(bpy.types.PropertyGroup):
+	# Render settings synchronisation
+	sync_render: BoolProperty(
+		name="Render Properties",
+		description="Sync render engine, sampling, film, colour management, and performance settings",
+		default=True)
+	sync_output: BoolProperty(
+		name="Output Properties",
+		description="Sync resolution, pixel aspect, frame rate, output path, and file format settings (frame range and current frame are never copied)",
+		default=True)
+	sync_renderkit: BoolProperty(
+		name="Render Kit Properties",
+		description="Sync Render Kit's own settings: autosave image naming/format, autosave video (ProRes/MP4/Custom) encoding, general batch options, and render node bake settings (serial counters, render times, and content-specific targets like batch selections and node UV map/socket are never copied)",
+		default=True)
+	sync_target: BoolProperty(
+		name="Sync Target",
+		description="Include this scene as a target when syncing settings from another scene",
+		default=False)
+	
 	# Variables for autosave images
 	file_location: StringProperty(
 		name="File Location",
@@ -857,12 +884,15 @@ def register():
 	
 	########## Render Batch ##########
 	render_batch.register()
-
+	
 	########## Render Proxy ##########
 	render_proxy.register()
-
+	
 	########## Render Region ##########
 	render_region.register()
+	
+	########## Render settings synchronisation ##########
+	render_sync.register()
 	
 	########## Render Display ##########
 	render_display.register()
@@ -872,6 +902,7 @@ def register():
 	
 	########## Render Variables ##########
 	render_variables.register()
+
 
 
 def unregister():
@@ -886,10 +917,13 @@ def unregister():
 	
 	########## Render Batch ##########
 	render_batch.unregister()
-
+	
+	########## Render settings synchronisation ##########
+	render_sync.unregister()
+	
 	########## Render Region ##########
 	render_region.unregister()
-
+	
 	########## Render Proxy ##########
 	render_proxy.unregister()
 	
@@ -914,4 +948,3 @@ def unregister():
 
 if __package__ == "__main__":
 	register()
-	
