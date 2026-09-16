@@ -128,6 +128,36 @@ def render_kit_frame_post(scene):
 def _render_kit_frame_post(scene):
 	settings = scene.render_kit_settings
 	
+	# Save the path and frame position before trackers are updated below
+	# Used both for segment-boundary detection and for the final frame
+	prev_path = settings.autosave_video_render_path
+	curr_path = scene.render.filepath
+	segment_changed = bool(prev_path) and prev_path != curr_path
+	last_frame = scene.frame_current == scene.frame_end
+	
+	# If processing is enabled and command path exists
+	# Use preferences cached at render_init to avoid per-frame bpy.context access
+	prefs = utility_data.get_prefs()
+	if prefs is None:
+		prefs = bpy.context.preferences.addons[__package__].preferences
+	
+	# Determine if outputs should be compiled this frame
+	process_outputs = (
+		prefs.ffmpeg_processing and prefs.ffmpeg_exists
+		and (settings.autosave_video_prores or settings.autosave_video_mp4
+			or settings.autosave_video_custom or settings.autosave_video_still))
+	
+	# Track usage of output serial in Autosave Video outputs
+	def track_serial():
+		if settings.autosave_video_prores and '{serial}' in settings.autosave_video_prores_location:
+			utility_data.render_set_serial(True)
+		if settings.autosave_video_mp4 and '{serial}' in settings.autosave_video_mp4_location:
+			utility_data.render_set_serial(True)
+		if settings.autosave_video_custom and '{serial}' in settings.autosave_video_custom_location:
+			utility_data.render_set_serial(True)
+		if settings.autosave_video_still and '{serial}' in settings.autosave_video_still_location:
+			utility_data.render_set_serial(True)
+	
 	# If sequence rendering is currently active
 #	if settings.sequence_active:
 	if utility_data.render_get_sequence():
@@ -144,33 +174,19 @@ def _render_kit_frame_post(scene):
 			utility_data.render_set_estimate(render_time)
 			# print('Estimated Time Remaining: ' + settings.estimated_time)
 		
-		# If FFmpeg processing is enabled and command path exists
-		# Use preferences cached at render_init to avoid per-frame bpy.context access
-		prefs = utility_data.get_prefs()
-		if prefs is None:
-			prefs = bpy.context.preferences.addons[__package__].preferences
-		if prefs.ffmpeg_processing and prefs.ffmpeg_exists:
-			# If any of the FFmpeg options are enabled
-			if settings.autosave_video_prores or settings.autosave_video_mp4 or settings.autosave_video_custom:
-				# If path is different than previous, start a new FFmpeg process to compile the previous range of images
-				# Or if this is the last frame in the render range
-				if (settings.autosave_video_render_path and settings.autosave_video_render_path != scene.render.filepath) or (scene.frame_current == scene.frame_end):
-					# Process FFmpeg outputs
-					process_ffmpeg(scene, render_path=settings.autosave_video_render_path)
-					
-					# Track usage of output serial in FFmpeg outputs
-					if settings.autosave_video_prores and '{serial}' in settings.autosave_video_prores_location:
-#						settings.serial_used = True
-						utility_data.render_set_serial(True)
-					if settings.autosave_video_mp4 and '{serial}' in settings.autosave_video_mp4_location:
-#						settings.serial_used = True
-						utility_data.render_set_serial(True)
-					if settings.autosave_video_custom and '{serial}' in settings.autosave_video_custom_location:
-#						settings.serial_used = True
-						utility_data.render_set_serial(True)
+		# When the output path changes mid-sequence, previous segment (or end of timeline) has completed rendering and can be processed
+		if process_outputs and (segment_changed or last_frame):
+			process_ffmpeg(scene, render_path=prev_path)
+			track_serial()
 	
-	# Store processed render path for checking against during a video sequence
-	settings.autosave_video_render_path = scene.render.filepath
+	# Store processed render path for checking against during a video sequence, and to give the final frame fix below the current frame's output paths
+	settings.autosave_video_render_path = curr_path
 	settings.autosave_video_prores_path = replaceVariables(scene, settings.autosave_video_prores_location)
 	settings.autosave_video_mp4_path = replaceVariables(scene, settings.autosave_video_mp4_location)
 	settings.autosave_video_custom_path = replaceVariables(scene, settings.autosave_video_custom_location)
+	settings.autosave_video_still_path = replaceVariables(scene, settings.autosave_video_still_location)
+	
+	# Final frame fix: when the last frame starts a brand-new segment, only the PREVIOUS segment has been compiled, leaving the final frame unpressed
+	if utility_data.render_get_sequence() and process_outputs and segment_changed and last_frame:
+		process_ffmpeg(scene, render_path=curr_path)
+		track_serial()

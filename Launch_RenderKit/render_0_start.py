@@ -45,6 +45,7 @@ def _render_kit_start(scene):
 	settings.autosave_video_prores_path = ""
 	settings.autosave_video_mp4_path = ""
 	settings.autosave_video_custom_path = ""
+	settings.autosave_video_still_path = ""
 	
 	# If variable processing is turned on
 	if prefs.render_variable_enable:

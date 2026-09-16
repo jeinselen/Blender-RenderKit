@@ -135,6 +135,7 @@ class RENDER_PT_autosave_video(bpy.types.Panel):
 		paths += settings.autosave_video_prores_location if settings.autosave_video_prores else ''
 		paths += settings.autosave_video_mp4_location if settings.autosave_video_mp4 else ''
 		paths += settings.autosave_video_custom_location if settings.autosave_video_custom else ''
+		paths += settings.autosave_video_still_location if settings.autosave_video_still else ''
 		
 		# Variable list UI
 		renderkit_variable_ui(layout, context, paths=paths, postrender=True, noderender=False, autoclose=True)
@@ -187,6 +188,16 @@ class RENDER_PT_autosave_video(bpy.types.Panel):
 		if not settings.autosave_video_custom:
 			row1b.active = False
 			row1b.enabled = False
+			row2.active = False
+			row2.enabled = False
+		
+		# Single Frame alternate UI
+		layout.separator()
+		row1 = layout.row()
+		row1.prop(settings, 'autosave_video_still', text='Copy Single Frame')
+		row2 = layout.row()
+		row2.prop(settings, 'autosave_video_still_location', text='')
+		if not settings.autosave_video_still:
 			row2.active = False
 			row2.enabled = False
 

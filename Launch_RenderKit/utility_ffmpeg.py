@@ -3,7 +3,9 @@
 
 import bpy
 import os
+import shutil
 import subprocess
+from glob import glob
 from re import sub
 
 # Local imports
@@ -64,6 +66,27 @@ def process_ffmpeg(scene, render_path='', render_time=-1):
 			if output_dir and not os.path.exists(output_dir):
 				os.makedirs(output_dir)
 			return output_path
+		
+		# Detect single-frame segments by counting the images the glob matches
+		# Only runs at segment boundaries (see render_kit_frame_post)
+		matched_frames = sorted(glob(input_glob))
+		
+		# When a sequence segment only contains a single image and single-frame output is enabled
+		# Copy the source image to the configured location and file name then skip video encoding
+		if len(matched_frames) == 1 and settings.autosave_video_still:
+			output_path = prepare_output_path(settings.autosave_video_still_path)
+			if output_path is not None:
+				source_frame = matched_frames[0]
+				# Preserve the source image extension; the location template only names the file
+				destination = output_path + os.path.splitext(source_frame)[1]
+				# Guard against copying the source onto itself (e.g. saving alongside the sequence)
+				if os.path.abspath(destination) != os.path.abspath(source_frame):
+					print(f'FFmpeg single frame copy: {source_frame} -> {destination}')
+					try:
+						shutil.copy2(source_frame, destination)
+					except Exception as exc:
+						print(str(exc) + " | Error in Render Kit: failed to copy single frame output")
+			return
 		
 		# ProRes output
 		if settings.autosave_video_prores:

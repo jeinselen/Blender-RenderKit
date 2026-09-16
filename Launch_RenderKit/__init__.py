@@ -638,6 +638,10 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		name="Custom Path",
 		description="Track the output path during rendering in order to support multi-segment timelines",
 		default="")
+	autosave_video_still_path: StringProperty(
+		name="Single Frame Path",
+		description="Track the output path during rendering in order to support multi-segment timelines",
+		default="")
 	
 	# ProRes
 	autosave_video_prores: BoolProperty(
@@ -706,6 +710,19 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		subtype="FILE_PATH",
 		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
 		default="//../Outputs/{{project}}",
+		maxlen=4096)
+	
+	# Single Frame
+	autosave_video_still: BoolProperty(
+		name="Enable Single Frame Output",
+		description="When a rendered sequence only contains a single frame, copy the source image instead of encoding a one-frame video",
+		default=False)
+	autosave_video_still_location: StringProperty(
+		name="Custom File Location",
+		description="Set single frame file output location and name, using a single forward slash to save the image alongside the image sequence makes no sense, don't do that here",
+		subtype="FILE_PATH",
+		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
+		default="//../Renders/{{project}}",
 		maxlen=4096)
 	
 	# Batch rendering options

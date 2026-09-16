@@ -30,6 +30,7 @@ RENDER_KIT_ATTRS = (
 	'autosave_video_prores', 'autosave_video_prores_quality', 'autosave_video_prores_location',
 	'autosave_video_mp4', 'autosave_video_mp4_quality', 'autosave_video_mp4_location',
 	'autosave_video_custom', 'autosave_video_custom_command', 'autosave_video_custom_location',
+	'autosave_video_still', 'autosave_video_still_location',
 	# Batch rendering (general options only)
 	'batch_type', 'batch_range',
 	# Render node bake settings (general options only)
