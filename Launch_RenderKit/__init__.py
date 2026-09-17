@@ -16,6 +16,7 @@ from . import render_display
 from . import render_node
 from . import render_proxy
 from . import render_region
+from . import render_screenshot
 from . import render_sync
 from . import render_variables
 
@@ -72,6 +73,21 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		default="Node",
 		update=update_rendernode_category)
 		# Consider adding search_options=(list of currently available tabs) for easier operation
+	
+	# Render screenshot
+	renderscreenshot_enable: BoolProperty(
+		name='Render Screenshot',
+		description='Adds high-resolution node tree screenshot export to the node editor sidebar',
+		default=True)
+	
+	def update_renderscreenshot_category(self, context):
+		utility_panel.register_panels(render_screenshot.panels)
+	
+	renderscreenshot_category: StringProperty(
+		name="Node Editor",
+		description="Choose a node editor tab category for the render screenshot panel to be placed in, or leave empty to hide the panel",
+		default="Node",
+		update=update_renderscreenshot_category)
 	
 	# Render node settings (auto process output images)
 	magick_location: StringProperty(
@@ -339,6 +355,8 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 		layout.label(text="General", icon="PREFERENCES") # TOOL_SETTINGS SETTINGS PREFERENCES
 		grid0 = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
 		
+		grid0.prop(self, "sync_enable")
+		grid0.separator()
 		grid0.prop(self, "region_enable")
 		grid0.separator()
 		grid0.prop(self, "batch_enable")
@@ -348,6 +366,14 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			input.enabled = False
 		input.prop(self, "batch_category", text="", icon="VIEW3D")
 		
+		# Render Screenshot settings
+		grid0.prop(self, "renderscreenshot_enable")
+		input = grid0.row()
+		if not self.renderscreenshot_enable:
+			input.active = False
+			input.enabled = False
+		input.prop(self, "renderscreenshot_category", text="", icon="NODETREE")
+		
 		# Render Node settings
 		grid0.prop(self, "rendernode_enable")
 		input = grid0.row()
@@ -356,19 +382,18 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			input.enabled = False
 		input.prop(self, "rendernode_category", text="", icon="NODETREE")
 		
-		# ImageMagick settings
-		if self.rendernode_enable:
-			grid0.separator()
-			input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-			if not self.rendernode_enable:
-				input.active = False
-				input.enabled = False
-			input.prop(self, "magick_location", text="")
-			# Location exists success/fail
-			if self.magick_exists:
-				input.label(text="✔︎ installed")
-			else:
-				input.label(text="✘ missing")
+		# Render Node ImageMagick settings
+		grid0.separator()
+		input = grid0.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+		if not self.rendernode_enable:
+			input.active = False
+			input.enabled = False
+		input.prop(self, "magick_location", text="")
+		# Location exists success/fail
+		if self.magick_exists:
+			input.label(text="✔︎ installed")
+		else:
+			input.label(text="✘ missing")
 		
 		# Proxy settings
 		grid0.prop(self, "proxy_enable")
@@ -381,9 +406,8 @@ class RenderKitPreferences(bpy.types.AddonPreferences):
 			grid0.prop(self, "proxy_compositing", text="")
 			grid0.prop(self, "proxy_resolutionMultiplier")
 			grid0.prop(self, "proxy_format", text="")
-		
-		# Sync settings
-		grid0.prop(self, "sync_enable")
+		else:
+			grid0.separator()
 		
 		
 		
@@ -861,6 +885,50 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 	node_margin: IntProperty(
 		name="Margin",
 		default=0)
+	
+	# Render screenshot
+	screenshot_filepath: StringProperty(
+		name="File Path",
+		subtype="DIR_PATH",
+		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
+		default="//{{project}}",
+		maxlen=4096)
+	screenshot_filename: StringProperty(
+		name="File Name",
+		subtype="FILE_NAME",
+		options={'SUPPORTS_TEMPLATES'},
+		default="{{project}}-{{item}}",
+		maxlen=4096)
+	screenshot_overwrite: BoolProperty(
+		name="Allow Overwrite",
+		description="Files with the same name in the same location will be overwritten",
+		default=False)
+	screenshot_format: EnumProperty(
+		name="File Format",
+		items=[	('PNG', "PNG", ""),
+				('JPEG', "JPEG", ""),
+				('TIFF', "TIF", "") ],
+		default='PNG')
+	screenshot_quality: IntProperty(
+		name="Quality",
+		description="Compression quality for PNG and JPEG output",
+		default=90,
+		min=0,
+		max=100,
+		subtype="PERCENTAGE")
+	screenshot_padding: IntProperty(
+		name="Padding",
+		description="Additional space captured beyond the node bounding area, in output pixels",
+		default=128,
+		min=0,
+		max=1024)
+	screenshot_scale: FloatProperty(
+		name="Scale",
+		description="Resolution multiplier relative to the node editor's native size (2.0 = double resolution)",
+		default=1.0,
+		min=0.25,
+		max=2.0,
+		subtype="FACTOR")
 
 
 
@@ -917,6 +985,9 @@ def register():
 	########## Render Node ##########
 	render_node.register()
 	
+	########## Render Screenshot ##########
+	render_screenshot.register()
+	
 	########## Render Variables ##########
 	render_variables.register()
 
@@ -925,6 +996,9 @@ def register():
 def unregister():
 	########## Render Variables ##########
 	render_variables.unregister()
+	
+	########## Render Screenshot ##########
+	render_screenshot.unregister()
 	
 	########## Render Node ##########
 	render_node.unregister()
