@@ -149,7 +149,6 @@ class RENDERKIT_OT_render_screenshot(bpy.types.Operator):
 		self.file_format = settings.screenshot_format
 		self.quality = settings.screenshot_quality
 		self.filepath = settings.screenshot_filepath
-		self.filename = settings.screenshot_filename
 		self.overwrite = settings.screenshot_overwrite
 
 		window = context.window
@@ -316,7 +315,7 @@ class RENDERKIT_OT_render_screenshot(bpy.types.Operator):
 	def _write_output(self, canvas, out_w, out_h):
 		# Resolve the output path
 		ext = {'PNG': 'png', 'JPEG': 'jpg', 'TIFF': 'tif'}[self.file_format]
-		file_path = os.path.join(self.filepath, self.filename) + '.' + ext
+		file_path = self.filepath + '.' + ext
 		file_path = replaceVariables(self.scene, file_path)
 		file_path = checkExistingAndIncrement(file_path, overwrite=self.overwrite)
 		absolute_path = bpy.path.abspath(file_path)
@@ -409,18 +408,20 @@ class RENDERKIT_PT_render_screenshot(bpy.types.Panel):
 			grid.prop(settings, "screenshot_padding")
 			panel.separator()
 			
-			# Output filepath and variable list UI
-			renderkit_variable_ui(panel, context, paths=settings.screenshot_filepath + settings.screenshot_filename, postrender=False, noderender=False, autoclose=True)
-			col = panel.column(align=True)
-			col.prop(settings, "screenshot_filepath", text='')
-			col.prop(settings, "screenshot_filename", text='')
+			# Output filepath and variable UI
+			renderkit_variable_ui(panel, context, paths=settings.screenshot_filepath, postrender=False, noderender=False, autoclose=True)
+			panel.prop(settings, "screenshot_filepath", text='')
+			panel.separator()
 			
-			# Format and overwrite
+			# Format
+			col = panel.column(align=True)
 			row = col.row()
 			row.prop(settings, "screenshot_format", expand=True)
 			if settings.screenshot_format in {'PNG', 'JPEG'}:
 				col.prop(settings, "screenshot_quality")
-			col.prop(settings, "screenshot_overwrite")
+			
+			# Overwrite
+			panel.prop(settings, "screenshot_overwrite")
 
 
 

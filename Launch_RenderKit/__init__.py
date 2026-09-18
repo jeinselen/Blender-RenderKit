@@ -891,13 +891,7 @@ class RenderKitSettings(bpy.types.PropertyGroup):
 		name="File Path",
 		subtype="DIR_PATH",
 		options={'OUTPUT_PATH','PATH_SUPPORTS_BLEND_RELATIVE','SUPPORTS_TEMPLATES'},
-		default="//{{project}}",
-		maxlen=4096)
-	screenshot_filename: StringProperty(
-		name="File Name",
-		subtype="FILE_NAME",
-		options={'SUPPORTS_TEMPLATES'},
-		default="{{project}}-{{item}}",
+		default="//{{project}}/{{project}}-{{item}}",
 		maxlen=4096)
 	screenshot_overwrite: BoolProperty(
 		name="Allow Overwrite",
