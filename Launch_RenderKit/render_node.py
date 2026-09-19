@@ -173,7 +173,10 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		utility_data.render_set_start_time(time.time())
 		
 		# Render to image
-		bpy.ops.object.bake(type=output_type)
+		bpy.ops.object.bake(
+			type=output_type,
+			uv_layer=settings.node_uvmap,
+		)
 		
 		# Check for serial number usage in the file path
 #		settings.serial_used = True if '{serial}' in file_path else False
