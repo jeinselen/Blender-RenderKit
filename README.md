@@ -129,6 +129,8 @@
 
   - Automatically processes image sequences using FFmpeg after rendering completes
 
+  - Single-frame sequences can bypass video compression and keep the still image
+
     ![Screenshot-AutosaveVideos](images/Screenshot-AutosaveVideos.png)
 
 - ### Render Batch
@@ -141,7 +143,19 @@
 
   - One-click baking of material nodes to texture files
 
+  - Supports non-mesh items (where mesh data is created by the item or modifiers) via temporary meshing step before rendering
+
     ![Screenshot-Node](images/Screenshot-Node.png)
+
+- ### Render Screenshot
+
+  - Save high-resolution image of selected nodes or entire node tree
+    - Supports Geometry, Material, and Compositing nodes
+    - Avoids local screen resolution limits by stitching multiple captures automatically
+
+- ### Render Settings Sync
+
+  - Copies render, output, and Render Kit settings from the current active scene to other selected scenes in the same project (much simpler than alternatives, but some of the alternatives haven't been updated for modern Blender versions)
 
 - ### Render Proxy
 
