@@ -13,6 +13,9 @@ from . import utility_panel
 # ImageMagick processing
 import subprocess
 
+# Object types that may contain or generate mesh content (directly or via Geometry Nodes modifiers)
+RENDER_NODE_ITEM_TYPES = {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'CURVES', 'POINTCLOUD', 'VOLUME'}
+
 
 class RENDERKIT_OT_render_node(bpy.types.Operator):
 	bl_idname = "node.render_node"
@@ -37,10 +40,10 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		# Reset serial tracking
 		utility_data.render_set_serial(False)
 		
-		# Check for active mesh object
+		# Check for active item that may have mesh content
 		obj = context.active_object
-		if not obj or obj.type != 'MESH' or obj.hide_select or obj.hide_get() or obj.hide_viewport or obj.hide_render:
-			self.report({'ERROR'}, "Render Kit — Render Node no active mesh object selected or is hidden")
+		if not obj or obj.type not in RENDER_NODE_ITEM_TYPES or obj.hide_select or obj.hide_get() or obj.hide_viewport or obj.hide_render:
+			self.report({'ERROR'}, "Render Kit — Render Node no active compatible object selected or is hidden")
 			return {'CANCELLED'}
 		
 		# Ensure the active object is selected in layout
@@ -58,8 +61,10 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 			return {'CANCELLED'}
 		
 		# Check for selected UV map
-		uvmap = obj.data.uv_layers.get(settings.node_uvmap)
-		if not uvmap:
+		# Non-mesh items have no UV layers on their base data (the map may come from Geometry Nodes), so the name is passed to the bake directly
+		uv_layers = getattr(obj.data, 'uv_layers', None)
+		uvmap = uv_layers.get(settings.node_uvmap) if uv_layers is not None else None
+		if uv_layers is not None and not uvmap:
 			self.report({'ERROR'}, f"Render Kit — Render Node UV map '{settings.node_uvmap}' not found")
 			return {'CANCELLED'}
 		
@@ -82,8 +87,56 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		output_type = 'COMBINED' if output_socket.type == 'SHADER' else ('NORMAL' if output_socket.type == 'VECTOR' and output_socket.name == 'Normal' else 'EMIT')
 		
 		# Set active UV map
-		obj.data.uv_layers.active = uvmap
+		if uvmap:
+			uv_layers.active = uvmap
 		
+		# The bake operator only accepts mesh objects as the active item
+		# Curves, text, etc. are baked through a temporary mesh object built from their evaluated geometry (including Geometry Nodes output)
+		bake_obj = None
+		original_selection = []
+		original_active = context.view_layer.objects.active
+		if obj.type != 'MESH':
+			mesh = bpy.data.meshes.new_from_object(obj.evaluated_get(context.evaluated_depsgraph_get()))
+			if mesh is None or len(mesh.polygons) == 0:
+				if mesh is not None:
+					bpy.data.meshes.remove(mesh)
+				self.report({'ERROR'}, "Render Kit — Render Node item does not generate any mesh faces to bake")
+				return {'CANCELLED'}
+			if not mesh.uv_layers.get(settings.node_uvmap):
+				bpy.data.meshes.remove(mesh)
+				self.report({'ERROR'}, f"Render Kit — Render Node UV map '{settings.node_uvmap}' not found in the generated mesh")
+				return {'CANCELLED'}
+			mesh.uv_layers.active = mesh.uv_layers[settings.node_uvmap]
+
+			# Use the active material in every slot, matching the material that holds the temporary bake nodes
+			active_material = obj.active_material
+			if len(mesh.materials) == 0:
+				mesh.materials.append(active_material)
+			else:
+				for index in range(len(mesh.materials)):
+					mesh.materials[index] = active_material
+
+			bake_obj = bpy.data.objects.new("RenderKit_RenderNodeTemp", mesh)
+			bake_obj.matrix_world = obj.matrix_world
+			scene.collection.objects.link(bake_obj)
+			context.view_layer.update()
+
+			# Isolate the temporary object as the only selected and active item
+			original_selection = [item for item in context.view_layer.objects if item.select_get()]
+			for item in original_selection:
+				item.select_set(False)
+			bake_obj.select_set(True)
+			context.view_layer.objects.active = bake_obj
+
+		def cleanup_bake_object():
+			if bake_obj is not None:
+				bake_mesh = bake_obj.data
+				bpy.data.objects.remove(bake_obj)
+				bpy.data.meshes.remove(bake_mesh)
+				for item in original_selection:
+					item.select_set(True)
+				context.view_layer.objects.active = original_active
+
 		# Create render image
 		bpy.ops.image.new(
 			name='RenderKit_RenderNodeImage',
@@ -130,6 +183,7 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 			else:
 				node_tree.links.new(output_socket, output_node.inputs[0])
 		else:
+			cleanup_bake_object()
 			self.report({'ERROR'}, "Render Kit — Render Node could not find the selected output socket")
 			return {'CANCELLED'}
 		
@@ -173,10 +227,13 @@ class RENDERKIT_OT_render_node(bpy.types.Operator):
 		utility_data.render_set_start_time(time.time())
 		
 		# Render to image
-		bpy.ops.object.bake(
-			type=output_type,
-			uv_layer=settings.node_uvmap,
-		)
+		try:
+			bpy.ops.object.bake(
+				type=output_type,
+				uv_layer=settings.node_uvmap,
+			)
+		finally:
+			cleanup_bake_object()
 		
 		# Check for serial number usage in the file path
 #		settings.serial_used = True if '{serial}' in file_path else False
@@ -290,14 +347,17 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 	def poll(cls, context):
 		prefs = context.preferences.addons[__package__].preferences
 #		obj = context.active_object
-		return (prefs.rendernode_enable and context.space_data.tree_type == 'ShaderNodeTree' and context.object is not None and context.object.active_material is not None and context.active_object and context.active_object.data and context.active_object.type == 'MESH' and context.active_node)
+		return (prefs.rendernode_enable and context.space_data.tree_type == 'ShaderNodeTree' and context.object is not None and context.object.active_material is not None and context.active_object and context.active_object.type in RENDER_NODE_ITEM_TYPES and context.active_node)
 	
 	def draw(self, context):
 		settings = context.scene.render_kit_settings
 		layout = self.layout
 		
 		# Primary settings
-		layout.prop_search(settings, "node_uvmap", context.active_object.data, "uv_layers")
+		if hasattr(context.active_object.data, 'uv_layers'):
+			layout.prop_search(settings, "node_uvmap", context.active_object.data, "uv_layers")
+		else:
+			layout.prop(settings, "node_uvmap")
 		layout.prop_search(settings, "node_output", context.active_node, "outputs")
 		
 		# Render node button
@@ -305,7 +365,7 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 		obj = context.active_object
 		obj_valid = True if obj else False
 		if obj_valid:
-			if obj.type != 'MESH':
+			if obj.type not in RENDER_NODE_ITEM_TYPES:
 				obj_valid = False
 			if obj.hide_select:
 				obj_valid = False
@@ -315,7 +375,7 @@ class RENDERKIT_PT_render_node(bpy.types.Panel):
 				obj_valid = False
 			if obj.hide_render:
 				obj_valid = False
-		if settings.node_output not in [output.name for output in context.active_node.outputs] or not obj_valid or not context.active_object.data.uv_layers.get(settings.node_uvmap):
+		if settings.node_output not in [output.name for output in context.active_node.outputs] or not obj_valid or (hasattr(obj.data, 'uv_layers') and not obj.data.uv_layers.get(settings.node_uvmap)):
 			button.active = False
 			button.enabled = False
 		button.operator(RENDERKIT_OT_render_node.bl_idname)
